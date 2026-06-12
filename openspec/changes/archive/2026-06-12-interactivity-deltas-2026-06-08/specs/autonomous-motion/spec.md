@@ -85,9 +85,9 @@ SHALL:
 
 ### Requirement: Drowsy entry after prolonged TPA idle
 
-When Squid has been in the `idle` state continuously and TPA idle
-time exceeds 120 seconds, the frontend SHALL transition Squid to the
-`drowsy` state via a slump animation. The drowsy state SHALL persist until
+The frontend SHALL transition Squid to the `drowsy` state via a slump
+animation when Squid has been in the `idle` state continuously and Code
+Puppy idle time exceeds 120 seconds. The drowsy state SHALL persist until
 either a wake event fires (user gesture) or TPA resumes activity.
 
 #### Scenario: Drowsy entry after TPA idle threshold

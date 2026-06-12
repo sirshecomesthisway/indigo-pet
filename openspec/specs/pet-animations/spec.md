@@ -1,3 +1,12 @@
+# pet-animations Specification
+
+## Purpose
+Define Squid's visual state machine and sprite/animation contract. Squid has
+a small fixed set of visible states (idle, drowsy, sleeping, stretch) plus
+transition animations. Each state has a canonical sprite normalized to a
+consistent bbox. CSS animations layered on the wrapper provide motion
+(walking, slumping, stretching) without per-state asset duplication.
+
 ## Requirements
 
 ### Requirement: One sprite per state, transparent background

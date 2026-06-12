@@ -1,3 +1,12 @@
+# click-passthrough Specification
+
+## Purpose
+Define how Squid's window selectively passes mouse events through to the
+desktop and other apps. Most of the 200x220 window is transparent; only the
+actual pet sprite pixels should capture clicks. Outside the sprite bbox the
+window must be invisible to mouse input so users can interact with whatever
+is underneath (Finder, browser, terminal, etc.).
+
 ## Requirements
 
 ### Requirement: Pre-load alpha masks for all sprites at startup
