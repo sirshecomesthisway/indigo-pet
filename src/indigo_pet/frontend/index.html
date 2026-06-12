@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Indigo</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: grab;
+    }
+    body.dragging { cursor: grabbing; }
+
+    /* Wrapper rotates as a whole. All img-level animations (breathe,
+       walk-bob, look-around) play INSIDE the rotated frame, so they
+       compose with the rotation instead of fighting it. */
+    .pet-wrapper {
+      position: absolute;
+      left: 0; top: 0;
+      width: 100%; height: 100%;
+      /* CRITICAL: pivot must match the pet sprite's center, NOT the window
+         center. The sprite is centered at (100, 210) in a 200x300 window,
+         so origin = 50% 70%. If this is 50% 50%, edge-rotation swings the
+         sprite 60px sideways and the window clips the protruding edge.
+         (Pink 2026-06-12.) */
+      transform-origin: 50% 70%;
+      transition: transform 0.6s ease-in-out;
+      pointer-events: none;
+    }
+
+    .pet {
+      position: absolute;
+      /* Anchor sprite flush with window bottom (window 300px, sprite 180px,
+         center at y=210 -> sprite top at y=120, bottom at y=300).
+         The 80px of headroom is ALL above the sprite (for hearts), zero
+         transparent buffer below. Reduces visible feet-to-Dock gap. */
+      left: 50%; top: 210px;
+      transform: translate(-50%, -50%);
+      width: 180px;
+      height: 180px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      transition: opacity 200ms ease;
+      pointer-events: none;     /* let body capture mouse for drag */
+    }
+    .pet.swapping { opacity: 0; }
+
+    /* ─── Per-state animations ─── */
+    @keyframes breathe { 0%,100%{transform:translate(-50%,-50%) scale(1);} 50%{transform:translate(-50%,-50%) scale(1.04);} }
+    .pet[data-state="idle"] { animation: breathe 3s ease-in-out infinite; }
+
+    @keyframes thinking-tilt { 0%,100%{transform:translate(-50%,-50%) rotate(-4deg);} 50%{transform:translate(-50%,-50%) rotate(4deg);} }
+    .pet[data-state="thinking"] { animation: thinking-tilt 2.4s ease-in-out infinite; }
+
+    @keyframes working-shake { 0%,100%{transform:translate(-50%,-50%) translateX(0);} 25%{transform:translate(-50%,-50%) translateX(-1.5px);} 75%{transform:translate(-50%,-50%) translateX(1.5px);} }
+    .pet[data-state="working"] { animation: working-shake 0.18s linear infinite; }
+
+    @keyframes grooving-bounce { 0%,100%{transform:translate(-50%,-50%) translateY(0) rotate(-5deg);} 25%{transform:translate(-50%,-50%) translateY(-10px) rotate(5deg);} 50%{transform:translate(-50%,-50%) translateY(0) rotate(-5deg);} 75%{transform:translate(-50%,-50%) translateY(-5px) rotate(5deg);} }
+    .pet[data-state="grooving"] { animation: grooving-bounce 0.5s ease-in-out infinite; }
+
+    @keyframes celebrating-jump { 0%{transform:translate(-50%,-50%) translateY(0) scale(1);} 20%{transform:translate(-50%,-50%) translateY(-18px) scale(1.08);} 40%{transform:translate(-50%,-50%) translateY(0) scale(1);} 60%{transform:translate(-50%,-50%) translateY(-10px) scale(1.04);} 80%,100%{transform:translate(-50%,-50%) translateY(0) scale(1);} }
+    .pet[data-state="celebrating"] { animation: celebrating-jump 0.8s ease-out infinite; }
+
+    @keyframes sleeping-breathe { 0%,100%{transform:translate(-50%,-50%) scale(0.94);} 50%{transform:translate(-50%,-50%) scale(1.02);} }
+    .pet[data-state="sleeping"] { animation: sleeping-breathe 4.5s ease-in-out infinite; }
+
+    @keyframes concerned-tremble { 0%,100%{transform:translate(-50%,-50%) translate(0,0);} 10%,30%,50%,70%,90%{transform:translate(-50%,-50%) translate(-1.5px,1.5px);} 20%,40%,60%,80%{transform:translate(-50%,-50%) translate(1.5px,-1.5px);} }
+    .pet[data-state="concerned"] { animation: concerned-tremble 0.25s linear infinite; }
+
+    #hint {
+      position: fixed; bottom: 4px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(40, 15, 60, 0.92); color: #f0c0e0;
+      font: 10px/1.3 -apple-system, system-ui, sans-serif;
+      padding: 4px 10px; border-radius: 10px;
+      white-space: nowrap; pointer-events: none;
+      opacity: 0; transition: opacity 400ms ease;
+    }
+    #hint.show { opacity: 1; }
+
+    #debug {
+      position: fixed; top: 2px; left: 4px;
+      background: rgba(0,0,0,0.7); color: #f08899;
+      font: 9px/1.2 monospace; padding: 2px 4px;
+      border-radius: 3px; display: none; pointer-events: none;
+    }
+    body.debug #debug { display: block; }
+  
+    /* ─────── WALKING animation (when wandering) ─────── */
+    /* Bob up-down + tiny tilt. Two variants: right-facing and left-facing.
+       Both PRESERVE the centering translate(-50%, -50%) so the sprite stays
+       in the middle of the window (otherwise she clips against the edge). */
+    @keyframes walk-bob-right {
+      0%   { transform: translate(-50%, -50%) translateY(0px)  rotate(-2deg); }
+      25%  { transform: translate(-50%, -50%) translateY(-3px) rotate( 0deg); }
+      50%  { transform: translate(-50%, -50%) translateY(0px)  rotate( 2deg); }
+      75%  { transform: translate(-50%, -50%) translateY(-3px) rotate( 0deg); }
+      100% { transform: translate(-50%, -50%) translateY(0px)  rotate(-2deg); }
+    }
+    @keyframes walk-bob-left {
+      0%   { transform: translate(-50%, -50%) scaleX(-1) translateY(0px)  rotate(-2deg); }
+      25%  { transform: translate(-50%, -50%) scaleX(-1) translateY(-3px) rotate( 0deg); }
+      50%  { transform: translate(-50%, -50%) scaleX(-1) translateY(0px)  rotate( 2deg); }
+      75%  { transform: translate(-50%, -50%) scaleX(-1) translateY(-3px) rotate( 0deg); }
+      100% { transform: translate(-50%, -50%) scaleX(-1) translateY(0px)  rotate(-2deg); }
+    }
+    .pet[data-substate="walking-right"] {
+      animation: walk-bob-right 0.45s ease-in-out infinite !important;
+    }
+    .pet[data-substate="walking-left"] {
+      animation: walk-bob-left 0.45s ease-in-out infinite !important;
+    }
+  
+    /* ─────── LOOK-AROUND: curious head-tilt animation ─────── */
+    /* Slow back-and-forth tilt as if scanning the surroundings. */
+    @keyframes look-around-right {
+      0%   { transform: translate(-50%, -50%) rotate(0deg); }
+      25%  { transform: translate(-50%, -50%) rotate(-14deg); }
+      50%  { transform: translate(-50%, -50%) rotate(-14deg); }
+      55%  { transform: translate(-50%, -50%) rotate(8deg); }
+      80%  { transform: translate(-50%, -50%) rotate(14deg); }
+      100% { transform: translate(-50%, -50%) rotate(0deg); }
+    }
+    @keyframes look-around-left {
+      0%   { transform: translate(-50%, -50%) scaleX(-1) rotate(0deg); }
+      25%  { transform: translate(-50%, -50%) scaleX(-1) rotate(-14deg); }
+      50%  { transform: translate(-50%, -50%) scaleX(-1) rotate(-14deg); }
+      55%  { transform: translate(-50%, -50%) scaleX(-1) rotate(8deg); }
+      80%  { transform: translate(-50%, -50%) scaleX(-1) rotate(14deg); }
+      100% { transform: translate(-50%, -50%) scaleX(-1) rotate(0deg); }
+    }
+    .pet[data-substate="looking-around-right"] {
+      animation: look-around-right 1.4s ease-in-out !important;
+    }
+    .pet[data-substate="looking-around-left"] {
+      animation: look-around-left 1.4s ease-in-out !important;
+    }
+
+    /* ─────── TOOLTIP: explains why she's concerned ─────── */
+    #concern-tooltip {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(40, 0, 0, 0.88);
+      color: #ffd0d0;
+      font: 600 11px -apple-system, sans-serif;
+      padding: 5px 9px;
+      border-radius: 6px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      z-index: 20;
+    }
+    #concern-tooltip.show { opacity: 1; }
+    #concern-tooltip.transient {
+      background: rgba(60, 50, 0, 0.85);
+      color: #ffe9a8;
+    }
+
+    /* ============================================================
+       Hearts-on-poke (spec: openspec/changes/hearts-on-poke)
+       Ephemeral reaction effect: 3 hearts rise + fade on poke.
+       Pointer-events: none so they NEVER block drags or clicks.
+       ============================================================ */
+    @keyframes heart-blink {
+        0%   { transform: scale(0.3); opacity: 0; }
+       10%  { transform: scale(1.4); opacity: 1; }
+       20%  { transform: scale(1.0); opacity: 1; }
+       40%  { transform: scale(1.15); opacity: 1; }
+       55%  { transform: scale(1.0); opacity: 1; }
+       80%  { transform: scale(1.0); opacity: 1; }
+      100%  { transform: scale(0.9); opacity: 0; }
+    }
+    .heart {
+      position: absolute;
+      pointer-events: none;
+      width: 38px;  /* pixel-art heart, aspect ~1.09:1 -> ~35px tall */
+      height: 35px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      user-select: none;
+      animation: heart-blink 1200ms ease-out forwards;
+      z-index: 25;  /* above sprite, below tooltip */
+    }
+  </style>
+</head>
+<body>
+  <div class="pet-wrapper" id="pet-wrapper">
+      <img id="pet" class="pet" data-state="" src="" alt="Indigo"/>
+    </div>
+  <div id="concern-tooltip"></div>
+  <div id="hint"></div>
+  <div id="debug">state: <span id="d-state">?</span></div>
+
+  <script>
+    // ====== Hearts-on-poke (hoisted to module scope) ======
+    // Tunable constants. Bump these to taste; spec captures defaults.
+    const HEART_COUNT = 1;
+    const HEART_X_JITTER_PX = 0;
+    const HEART_Y_OFFSET_PX = 8;   // heart center just below sprite top; bottom edge hugs head crown
+    const HEART_STAGGER_MS = 0;
+    const HEART_MAX_LIVE = 12;
+    function spawnHearts(centerX, centerY) {
+      try {
+        if (document.querySelectorAll('.heart').length >= HEART_MAX_LIVE) return;
+        const container = document.body;
+        const msg = `[indigo] spawnHearts at (${centerX.toFixed(0)}, ${centerY.toFixed(0)})  viewport=${window.innerWidth}x${window.innerHeight}`;
+        console.log(msg);
+        try { window.pywebview?.api?.debug_log?.(msg); } catch(_){}
+        for (let i = 0; i < HEART_COUNT; i++) {
+          const h = document.createElement('img');
+          h.className = 'heart';
+          h.src = 'sprites/heart.png';
+          h.alt = '';
+          const jitter = (Math.random() * 2 - 1) * HEART_X_JITTER_PX;
+          h.style.left = (centerX + jitter) + 'px';
+          h.style.top = (centerY + HEART_Y_OFFSET_PX) + 'px';
+          // Center on the (left, top) anchor: subtract half width / height
+          h.style.marginLeft = '-19px';   // half of 38px
+          h.style.marginTop = '-17px';    // half of 35px (round down)
+          h.style.animationDelay = (i * HEART_STAGGER_MS) + 'ms';
+          h.addEventListener('animationend', () => h.remove(), { once: true });
+          container.appendChild(h);
+        }
+      } catch (err) {
+        const emsg = `[indigo] spawnHearts ERROR: ${err.message}`;
+        console.error(emsg, err);
+        try { window.pywebview?.api?.debug_log?.(emsg); } catch(_){}
+      }
+    }
+    // ====== end hoisted hearts ======
+
+    const STATES = ["idle", "thinking", "working", "grooving",
+                    "celebrating", "sleeping", "concerned"];
+
+    const pet     = document.getElementById("pet");
+    const dbgState= document.getElementById("d-state");
+    const hint    = document.getElementById("hint");
+
+    let currentState = "";
+    let pollTimer = null;
+    let isDragging = false;
+    let dragStartScreen = { x: 0, y: 0 };
+    let lastMoveScreen  = { x: 0, y: 0 };
+    let dragMovedPx     = 0;        // total movement during drag
+    let clickStartTime  = 0;
+
+    function spriteUrl(state) { return `sprites/${state}.png`; }
+
+    function setState(state, force = false) {
+      if (!state) return;
+      // Pink's lock: the ONLY visible sprite states are idle/drowsy/stretch.
+      // The backend's rich classifier (thinking/working/grooving/celebrating/
+      // concerned/sleeping/etc.) is tracked for agent_idle_seconds and the debug
+      // overlay, but the sprite display never shows those — they all map to
+      // idle.png. Drowsy and stretch are owned by the mood layer (not setState),
+      // so here we only ever render idle.png.
+      pet.dataset.state = state;       // raw state for debug + agent_idle logic
+      currentState = state;
+      dbgState.textContent = state;
+      if (state === currentState && !force) return;
+      // Mood layer owns the sprite when drowsy/sleeping/stretch is active
+      if (_mood === "drowsy" || _mood === "sleeping" || _mood === "stretch") return;
+      // Render only idle.png (covers idle + any non-mood backend state)
+      const targetSrc = "sprites/idle.png";
+      if (pet.src.endsWith("idle.png")) return;  // already showing
+      pet.classList.add("swapping");
+      setTimeout(() => {
+        pet.src = targetSrc;
+        pet.onload = () => pet.classList.remove("swapping");
+        setTimeout(() => pet.classList.remove("swapping"), 600);
+      }, 150);
+    }
+
+    // Apply walking/look-around sub-state (set by Python wanderer/pulse).
+    // For look-around sub-states, ALSO swap the sprite so her eyes/pupils
+    // actually shift to match the head-tilt direction. Suppressed entirely
+    // while she's in drowsy mood (she should stay drowsy, not turn her head).
+    function applySubState(sub) {
+      sub = sub || "";
+      if (_mood === "drowsy" || _mood === "sleeping" || _mood === "stretch") {
+        // Suppress sub-state animations while drowsy/sleeping/stretching.
+        sub = "";
+      }
+      pet.dataset.substate = sub;
+      const wrapper = document.getElementById("pet-wrapper");
+      if (wrapper) wrapper.dataset.substate = sub;
+
+      // Sprite swap based on sub-state. Instant (no fade).
+      if (sub === "looking-around-left") {
+        setSpriteSrcDirect("sprites/look-left.png");
+      } else if (sub === "looking-around-right") {
+        setSpriteSrcDirect("sprites/look-right.png");
+      } else if (!_mood) {
+        // No sub-state, no mood override -> restore base state sprite.
+        setSpriteSrcDirect(spriteUrl(currentState));
+      }
+    }
+
+    // ───── EDGE ROTATION: feet hug whichever screen edge she's on ─────
+    // Backend's wanderer emits "edge" = "" | "bottom" | "left" | "right" | "top".
+    // Rotate the sprite so feet point toward that edge (gecko-on-wall effect).
+    let _currentEdge = "";
+    function applyWrapperDeg(deg) {
+      // Direct rotation override for sprint (cumulative degrees so CSS
+      // always rotates CW, no shortest-path detours).
+      const wrapperEl = document.getElementById("pet-wrapper");
+      if (wrapperEl) wrapperEl.style.transform = `rotate(${deg}deg)`;
+    }
+
+        function applyEdge(edge) {
+      edge = edge || "";
+      if (edge === _currentEdge) return;
+      _currentEdge = edge;
+      let deg = 0;
+      // CSS rotate(): positive = CW (top of sprite swings right),
+      //                negative = CCW (top of sprite swings left).
+      // We want HEAD (top of sprite) to point toward screen CENTER.
+      if (edge === "left")   deg =  90;   // CW: head points RIGHT (toward center)
+      if (edge === "right")  deg = -90;   // CCW: head points LEFT (toward center)
+      if (edge === "top")    deg = 180;   // upside down: head points DOWN (toward center)
+      // bottom or "" -> 0deg (default upright)
+      // Rotate the WRAPPER, not the img. The img keeps its centering
+      // transform and its CSS keyframe animations (breathe/walk-bob/etc.)
+      // play freely INSIDE the rotated wrapper frame. No more fighting.
+      const wrapperEl = document.getElementById("pet-wrapper");
+      if (wrapperEl) {
+        wrapperEl.style.transform = `rotate(${deg}deg)`;
+      }
+      pet.dataset.edge = edge;
+      console.log(`[indigo] edge -> ${edge || "(none)"} rotate ${deg}deg (wrapper)`);
+    }
+
+    // ─────── EXPRESSION LAYER: mood-driven sprite overrides ───────
+    // Above the 7 base states (idle/thinking/working/...) sits a thin
+    // expression layer that swaps the sprite for transient/mood reasons:
+    //   - blink:    100ms swap to blink.png every ~7s while truly idle
+    //   - drowsy:   sticky swap to drowsy.png after 60s of pure idle
+    //   - stretch:  1.5s swap to stretch.png as the wake-up transition
+    //   - look-around: already handled inline in applySubState
+    // _mood tracks sticky overrides. Empty string = no override.
+    let _mood = "";            // "" | "drowsy" | "sleeping" | "stretch"
+    let _lastWakeSeq = 0;     // tracks backend wake_trigger_seq
+    let _blinkCooldownUntil = 0;
+    const DROWSY_IDLE_SEC   = 60;     // 1 min idle -> drowsy mood
+    const SLEEPING_IDLE_SEC = 300;    // 5 min idle total (4 min after drowsy) -> sleeping
+    const BLINK_MIN_SEC     = 6;
+    const BLINK_MAX_SEC     = 9;
+    const BLINK_DURATION_MS = 120;
+    const STRETCH_DURATION_MS = 1500;
+
+    function setSpriteSrcDirect(src) {
+      // Instant sprite swap, no fade. Used by expression/sub-state layers.
+      if (pet.src.endsWith(src.split("/").pop())) return;  // already showing
+      pet.src = src;
+    }
+
+    function enterDrowsy() {
+      if (_mood === "drowsy") return;
+      _mood = "drowsy";
+      setSpriteSrcDirect("sprites/drowsy.png");
+      console.log("[indigo] -> drowsy mood");
+    }
+
+    function enterSleeping() {
+      if (_mood === "sleeping") return;
+      _mood = "sleeping";
+      setSpriteSrcDirect("sprites/sleeping.png");
+      console.log("[indigo] -> sleeping mood (5 min agent_idle)");
+    }
+
+    function wakeUpWithStretch() {
+      // Wake from EITHER drowsy or sleeping mood. Always play stretch.
+      if (_mood !== "drowsy" && _mood !== "sleeping") return;
+      const from = _mood;
+      _mood = "stretch";
+      setSpriteSrcDirect("sprites/stretch.png");
+      console.log(`[indigo] -> stretch (waking from ${from})`);
+      setTimeout(() => {
+        _mood = "";
+        // Restore current state's base sprite (filter coerces to idle.png)
+        setSpriteSrcDirect(spriteUrl(currentState));
+        console.log("[indigo] stretch complete -> awake");
+      }, STRETCH_DURATION_MS);
+    }
+
+    function checkDrowsyState(result) {
+      // Use agent_idle_seconds (time since TPA left "idle" state). Pink wants
+      // her to nod off based on what TPA is doing, NOT whether Pink is typing
+      // in Slack/email/etc. macOS-wide idle is intentionally ignored.
+      //
+      // Sleep cycle (TPA-idle based):
+      //   0-60s        -> idle.png (mood="")
+      //   60-300s      -> drowsy.png (mood="drowsy")
+      //   300s+        -> sleeping.png (mood="sleeping")
+      //   on TPA wake   -> stretch.png for 1.5s, then idle.png
+      const state = result?.state || "idle";
+      const idleSeconds = result?.agent_idle_seconds || 0;
+      const subState = result?.sub_state || "";
+      const isDragging = document.body.classList.contains("dragging");
+      const trulyIdle = state === "idle" && !subState && !isDragging;
+      // user_wake_remaining > 0 = Pink poked / sprint-triggered recently.
+      // User interaction takes prime over the TPA-idle counter -> Squid
+      // stays awake-faced even if TPA is silent.
+      const userAwake = (result?.user_wake_remaining || 0) > 0;
+
+      if (userAwake && (_mood === "drowsy" || _mood === "sleeping")) {
+        // User just poked / sprinted while she was drowsy -> wake now,
+        // hold idle until override expires.
+        wakeUpWithStretch();
+        return;
+      }
+      if (userAwake) {
+        // Override active and she is awake -> hold idle, do NOT
+        // re-enter drowsy/sleeping even if idleSeconds crosses thresholds.
+        return;
+      }
+
+      if (trulyIdle && idleSeconds >= SLEEPING_IDLE_SEC) {
+        // 5 min mark: deep sleep
+        enterSleeping();
+      } else if (trulyIdle && idleSeconds >= DROWSY_IDLE_SEC && _mood !== "sleeping") {
+        // 1-5 min: drowsy
+        enterDrowsy();
+      } else if ((_mood === "drowsy" || _mood === "sleeping") &&
+                 (idleSeconds < DROWSY_IDLE_SEC || isDragging)) {
+        // Wake trigger is SEMANTIC: real TPA activity (agent_idle reset) or
+        // user dragging only. Pulse/wanderer sub_state animations are NOT
+        // wake signals - they're cosmetic, mood stays sticky through them.
+        wakeUpWithStretch();
+      }
+    }
+
+    function blinkLoop() {
+      const interval = (BLINK_MIN_SEC + Math.random() * (BLINK_MAX_SEC - BLINK_MIN_SEC)) * 1000;
+      setTimeout(() => {
+        const now = Date.now();
+        const canBlink = currentState === "idle"
+                      && !pet.dataset.substate
+                      && !_mood
+                      && !document.body.classList.contains("dragging")
+                      && now >= _blinkCooldownUntil;
+        if (canBlink) {
+          const restoreSrc = pet.src;
+          setSpriteSrcDirect("sprites/blink.png");
+          _blinkCooldownUntil = now + BLINK_DURATION_MS + 200;
+          setTimeout(() => {
+            // Only restore if nothing else swapped the sprite in the meantime.
+            if (pet.src.endsWith("blink.png")) {
+              setSpriteSrcDirect(restoreSrc);
+            }
+          }, BLINK_DURATION_MS);
+        }
+        blinkLoop();  // schedule next beat
+      }, interval);
+    }
+
+    function updateConcernTooltip(state, reason, severity) {
+      const el = document.getElementById("concern-tooltip");
+      if (!el) return;
+      if (state === "concerned" && reason) {
+        el.textContent = reason;
+        el.classList.toggle("transient", severity === "transient");
+        el.classList.add("show");
+      } else {
+        el.classList.remove("show");
+      }
+    }
+
+    let _lastHintSeq = 0;
+    function maybeShowApiHint(text, seq) {
+      if (typeof seq !== "number" || seq === _lastHintSeq) return;
+      _lastHintSeq = seq;
+      if (text) showHint(text, 2200);
+    }
+
+    // Backup watchdog disarm. If pywebview's native on_loaded event
+    // misses (a known cocoa swizzle race that produces ~40% hangs on
+    // this machine), the JS-side signal_ready() call provides the
+    // second path. Idempotent on the Python side.
+    let _readySignaled = false;
+    async function poll() {
+      try {
+        if (window.pywebview?.api?.get_state) {
+          if (!_readySignaled && window.pywebview.api.signal_ready) {
+            _readySignaled = true;
+            window.pywebview.api.signal_ready().catch(() => {});
+          }
+          const result = await window.pywebview.api.get_state();
+          setState(result?.state || "idle");
+          applySubState(result?.sub_state || "");
+        // Sprint fast-transition: speed up wrapper CSS rotation during sprint.
+        const wrapperFast = result?.sprint_fast_transition === true;
+        window._sprintActive = wrapperFast;  // drives poll cadence (see scheduleNextPoll)
+        const wrapperEl0 = document.getElementById("pet-wrapper");
+        if (wrapperEl0) {
+          wrapperEl0.style.transition = wrapperFast
+            ? "transform 0.20s ease-out"
+            : "transform 0.6s ease-in-out";
+        }
+
+        // Wake trigger: when backend bumps wake_trigger_seq, force wake from drowsy/sleeping.
+        const wakeSeq = result?.wake_trigger_seq || 0;
+        if (wakeSeq > _lastWakeSeq) {
+          _lastWakeSeq = wakeSeq;
+          if (_mood === "drowsy" || _mood === "sleeping") {
+            console.log("[indigo] wake trigger fired -> stretch");
+            wakeFromDrowsy();
+          }
+        }
+
+        // Sprint can override the rotation deg directly (bypasses edge->deg
+        // mapping so we can do continuous CW accumulation, no back-flip).
+        if (typeof result?.wrapper_deg === "number") {
+          applyWrapperDeg(result.wrapper_deg);
+        } else {
+          applyEdge(result?.edge || "");
+        }
+          checkDrowsyState(result);
+          updateConcernTooltip(result?.state, result?.concern_reason, result?.concern_severity);
+          maybeShowApiHint(result?.hint_text, result?.hint_seq);
+        }
+      } catch (e) { console.warn("poll failed", e); }
+    }
+
+    function startPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      poll();
+      // Dynamic poll cadence: fast (80ms) during sprint so wrapper_deg
+      // updates land in time; slow (800ms) otherwise to save CPU.
+      // Old fixed 800ms was why "some turns looked slow" - the rotation
+      // change wasn't seen by frontend until the next poll, sometimes 800ms
+      // later, causing CSS transition to start during the walk.
+      function scheduleNextPoll() {
+        const fast = window._sprintActive === true;
+        pollTimer = setTimeout(async () => {
+          await poll();
+          scheduleNextPoll();
+        }, fast ? 80 : 800);
+      }
+      scheduleNextPoll();
+      blinkLoop();  // start the blink heartbeat
+    }
+
+    function showHint(msg, ms = 2500) {
+      hint.textContent = msg;
+      hint.classList.add("show");
+      clearTimeout(showHint._t);
+      showHint._t = setTimeout(() => hint.classList.remove("show"), ms);
+    }
+
+    /* ─────── DRAG: JS only kicks off Python's native drag loop ───────
+       The Python side polls NSEvent.mouseLocation at 60Hz and auto-ends
+       when the OS sees the left mouse button released. No JS↔Python RPC
+       backpressure, no lost-mouseup stalls. */
+    let _pokeDownTime = 0;
+    let _pokeDownX = 0;
+    let _pokeDownY = 0;
+    const POKE_MAX_MS = 250;     // click must complete this fast to be a poke
+    const POKE_MAX_PX = 6;       // and move less than this many px
+
+    document.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;  // left-click only
+      _pokeDownTime = Date.now();
+      _pokeDownX = e.screenX;
+      _pokeDownY = e.screenY;
+      document.body.classList.add("dragging");
+      try { window.pywebview?.api?.drag_start?.(); } catch(_){}
+    });
+
+    // mouseup is now a backup only — Python auto-detects button release.
+    // Also: if down->up was fast AND barely moved, treat as a POKE.
+    document.addEventListener("mouseup", (e) => {
+      document.body.classList.remove("dragging");
+      try { window.pywebview?.api?.drag_end?.(); } catch(_){}
+      // Poke detection
+      const dt = Date.now() - _pokeDownTime;
+      const dx = e.screenX - _pokeDownX;
+      const dy = e.screenY - _pokeDownY;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (e.button === 0 && dt < POKE_MAX_MS && dist < POKE_MAX_PX) {
+        // Defer poke API call so a follow-up dblclick can cancel it.
+        // Browser fires dblclick when 2 clicks happen within ~500ms.
+        // Without this, "boop boop!" would poke AND cycle state (pin thinking).
+        if (window._pokePending) {
+          clearTimeout(window._pokePending);
+          window._pokePending = null;
+        }
+window._pokePending = setTimeout(() => {
+          window._pokePending = null;
+          // Single click = wake only (no heart). Heart is the dblclick reward.
+          try { window.pywebview?.api?.poke?.(); } catch(_){}
+          console.log(`[indigo] poke (single click - wake only)! dt=${dt}ms dist=${dist.toFixed(1)}px`);
+        }, 260);  // > typical dblclick threshold but feels instant
+      }
+    });
+
+    // Extra safety: if pointer leaves the window mid-drag, also fire drag_end
+    // (Python will auto-end on OS button-up too, but this is a fast cleanup
+    // path for the passthrough state).
+    document.addEventListener("mouseleave", () => {
+      document.body.classList.remove("dragging");
+    });
+
+    /* ─────── Right-click: show native context menu ─────── */
+    document.addEventListener("contextmenu", async (e) => {
+      e.preventDefault();
+      isDragging = false;
+      document.body.classList.remove("dragging");
+      try {
+        if (window.pywebview?.api?.show_context_menu) {
+          await window.pywebview.api.show_context_menu();
+        } else if (window.pywebview?.api?.next_corner) {
+          // Fallback: old corner-cycle behavior if menu not available
+          const corner = await window.pywebview.api.next_corner();
+          showHint(`📍 ${corner}`, 1500);
+        }
+      } catch (err) { console.warn("corner snap failed", err); }
+    });
+
+    /* ─────── Double-click: cycle states (forces watcher override) ─────── */
+document.addEventListener("dblclick", async (e) => {
+      e.preventDefault();
+
+      // Cancel any pending single-click poke -- dblclick wins and fires its own
+      if (window._pokePending) {
+        clearTimeout(window._pokePending);
+        window._pokePending = null;
+        console.log("[indigo] cancelled pending poke (dblclick won)");
+      }
+
+      // Dblclick = LIKE gesture: spawn heart + wake (via poke)
+      // Note: poke() ALSO sets 60s wake override, so a dblclick on drowsy
+      // Squid wakes her AND shows a heart -- one gesture, both effects.
+      try {
+        if (window.pywebview?.api?.poke) {
+          await window.pywebview.api.poke();
+        }
+        const sprite = document.getElementById('pet');
+        if (sprite) {
+          const r = sprite.getBoundingClientRect();
+          spawnHearts(r.left + r.width / 2, r.top);
+        }
+        console.log("[indigo] dblclick LIKE (heart + wake)");
+      } catch (err) {
+        const emsg = `[indigo] dblclick handler ERROR: ${err.message}`;
+        console.warn(emsg, err);
+        try { window.pywebview?.api?.debug_log?.(emsg); } catch(_){}
+      }
+    });
+
+    /* ─────── Esc: resume auto state ─────── */
+    document.addEventListener("keydown", async (e) => {
+      if (e.key === "Escape") {
+        try {
+          if (window.pywebview?.api?.clear_force) {
+            await window.pywebview.api.clear_force();
+          }
+        } catch (err) {}
+        showHint("▶ auto", 1200);
+      }
+      if (e.ctrlKey && e.key === "d") {
+        document.body.classList.toggle("debug");
+      }
+    });
+
+    /* ─────── Boot ─────── */
+    setState("idle", true);
+    if (window.pywebview?.api) {
+      startPolling();
+    } else {
+      window.addEventListener("pywebviewready", startPolling);
+      setTimeout(startPolling, 500);
+    }
+    setTimeout(() => showHint("drag • poke • R-click=menu • dbl-click=state", 3500), 1200);
+  </script>
+</body>
+</html>

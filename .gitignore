@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Backup files (covers .bak, .bak2, .bak.<timestamp-suffix>)
+*.bak*
+
+# Build artifacts
+dist/
+build/
+
+# Runtime state
+state.json
+.indigo-pet-state.json
+~/.indigo-pet/
+
+# Editor
+.vscode/
+.idea/
+
+# OpenSpec lockfile (per repo convention)

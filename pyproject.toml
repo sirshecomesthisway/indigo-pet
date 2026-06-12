@@ -1,0 +1,26 @@
+[project]
+name = "indigo-pet"
+version = "0.1.0"
+description = "A desktop companion pet that watches TPA + VS Code and reacts to activity"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pywebview>=5.0",
+    "psutil>=6.0",
+    "pillow",
+]
+
+[project.scripts]
+indigo-pet = "indigo_pet.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/indigo_pet"]
+
+[[tool.uv.index]]
+name = "internal-pypi"
+url = "https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple/"
+default = true

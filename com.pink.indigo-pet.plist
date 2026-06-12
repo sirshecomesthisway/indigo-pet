@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pink.indigo-pet</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/pink/Projects/indigo-pet/.venv/bin/python</string>
+        <string>-m</string>
+        <string>indigo_pet</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/pink/Projects/indigo-pet</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/pink/Projects/indigo-pet/src</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/indigo-pet.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/indigo-pet.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

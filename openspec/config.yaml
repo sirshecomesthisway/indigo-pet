@@ -1,0 +1,69 @@
+schema: spec-driven
+
+context: |
+  ## Project: Indigo Pet
+  An always-on-top, transparent, pixel-art desktop pet (a pink chibi octopus named Indigo)
+  that visually reflects the state of the TPA AI agent running on the user's Mac.
+
+  ## Owner
+  Huiping "Pink" Tan — Senior Product Manager at internal (user pink)
+
+  ## Why
+  Pink runs TPA in long-lived TUI sessions and wanted an ambient companion
+  that gives an at-a-glance read of what the agent is doing without forcing her to
+  flip to the terminal. The pet replaces a previous Cocoa-Pop-Cat-style indicator.
+
+  ## Tech stack
+  - Language: Python 3.13
+  - Package manager: uv (with `.venv`)
+  - Window: pywebview with WKWebView (macOS)
+  - Native OS access: PyObjC (AppKit, Foundation) — included with pywebview
+  - Process inspection: psutil
+  - Image processing: Pillow (for alpha-mask hit-testing)
+  - Frontend: vanilla HTML + CSS keyframe animations (no framework, no bundler)
+  - Sprites: 7 hand-generated PNG sprites (one per state), transparent background,
+    pixel-art / chibi style, ~180x180 displayed
+
+  ## Architecture (high level)
+  - watcher.py    — pure-Python state machine that polls process/CPU/log signals
+                    and writes ~/.indigo-pet/state.json every 1s.
+  - window.py     — pywebview window + JS↔Python bridge (PetApi class).
+                    Owns the NSWindow directly via PyObjC for accurate positioning,
+                    dragging, and click-passthrough.
+  - passthrough.py— background thread that performs pixel-perfect alpha hit-testing
+                    so transparent regions of the window do not block clicks behind.
+  - frontend/index.html — full UI: <img> sprite that swaps based on state, CSS
+                    keyframe animation per state, JS event handlers for drag /
+                    right-click / dbl-click.
+  - frontend/sprites/   — 7 PNGs: idle, thinking, working, grooving, celebrating,
+                    sleeping, concerned.
+
+  ## State model (7 emotional states)
+  Priority order — first match wins each tick:
+    1. sleeping     — macOS idle > 5 min
+    2. celebrating  — held for 4 sec after CPU drops from busy → near-zero
+    3. idle         — TPA not running
+    4. grooving     — subagent file modified in last 30 sec
+    5. concerned    — error log modified in last 60 sec AND cpu low
+    6. working      — TPA CPU > 5% AND session log modified in last 5 sec
+    7. thinking     — TPA CPU > 5% but no recent log writes (LLM call)
+    fallback        — idle/listening
+
+  ## Constraints & conventions
+  - macOS only (uses PyObjC, NSWindow, NSEvent, NSScreen)
+  - No admin / accessibility permissions required (uses native NSWindow APIs only)
+  - Single-user, single-window app — assumes Pink's Mac
+  - Sprites must have a transparent background (alpha=0 on bg) — flood-filled from corners
+  - All Python files use absolute imports within the indigo_pet package
+  - Frontend HTML is loaded as file:// URL; no HTTP server
+
+rules:
+  proposal:
+    - Keep under 400 words
+    - Always include "Goal" and "Non-goals" sections
+  design:
+    - Include a Mermaid diagram if the change touches the architecture
+    - Note any PyObjC/AppKit calls and which thread they run on
+  tasks:
+    - Group tasks by file (watcher / window / passthrough / frontend / sprites)
+    - Each task should be a 15-60 min unit
