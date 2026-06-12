@@ -47,16 +47,23 @@ The `RoutineController` SHALL own the idle rhythm via a fixed
 tuples. The controller SHALL iterate the list circularly: each tick
 selects a uniform random duration within the band, dispatches the action
 via the wanderer service (or no-op for `rest`), sleeps the duration, then
-advances to the next index. The controller SHALL skip dispatch entirely
-when `is_busy()` or `is_drowsy()` returns True, polling once per second
-until the gate clears.
+advances to the next index.
+
+The controller SHALL skip dispatch entirely when `is_busy()` returns
+True, OR when the frontend mood is `drowsy`, `sleeping`, or `stretch`.
+While gated, the controller polls once per second until the gate clears.
+
+On resume from a `drowsy` pause, the controller SHALL continue at the
+saved index. On resume from a `sleeping` pause, the controller SHALL
+reset `_idx = 0` so that Squid begins a fresh cycle starting with
+`rest`. Distinguishing the two wake paths is implemented via a
+`_wake_from_sleeping_pending` flag set on `sleeping` mood entry and
+consumed on the first post-gate dispatch.
 
 The `IDLE_ROUTINE` SHALL contain a mix of `rest`, `look-around`, and
 `walk-<band>` actions in a sequence that produces one full cycle every
 approximately 110 to 130 seconds. The controller SHALL expose `start()`,
-`stop()`, `pause()`, and `resume()` lifecycle methods. Pause and resume
-SHALL preserve the current index so that resuming continues from where
-the routine paused.
+`stop()`, `pause()`, and `resume()` lifecycle methods.
 
 #### Scenario: Routine cycle plays in defined order
 - **WHEN** Squid starts with no user gestures and no TPA activity
@@ -79,3 +86,34 @@ the routine paused.
 - **AND** Squid stops at the current position
 - **WHEN** the user selects "Resume Squid"
 - **THEN** the routine continues at index 3 (not reset to 0)
+
+#### Scenario: Wake from drowsy preserves cycle position
+- **WHEN** TPA idle reaches 120 seconds while routine is at index 5
+- **THEN** frontend mood becomes `drowsy`
+- **AND** the routine observes mood gate and pauses
+- **AND** `_idx` stays at 5
+- **WHEN** the user wiggles the mouse before TPA idle reaches 300 seconds
+- **THEN** the stretch animation plays (mood = stretch transiently)
+- **AND** mood returns to `""` after ~1.6s
+- **AND** `_wake_from_sleeping_pending` is False (sleeping was never entered)
+- **AND** the routine resumes dispatch at index 5
+
+#### Scenario: Wake from sleeping resets to start of cycle
+- **WHEN** TPA idle crosses 300 seconds while routine is paused at index 7
+- **THEN** frontend mood transitions from `drowsy` to `sleeping`
+- **AND** the controller's `notify_mood_entered("sleeping")` hook sets
+  `_wake_from_sleeping_pending = True`
+- **WHEN** the user returns and wiggles the mouse after a long absence
+- **THEN** the stretch animation plays
+- **AND** mood returns to `""`
+- **AND** the routine's next poll sees the gate cleared
+- **AND** the routine resets `_idx = 0` and clears the flag
+- **AND** the first post-wake action is `rest` (index 0), not whatever
+  was queued before the sleep
+
+#### Scenario: No "stationary but awake" gap between 60s and 120s of TPA idle
+- **WHEN** TPA idle is between 60 and 119 seconds
+- **AND** mood is still `""` (drowsy entry is at 120s, sleeping at 300s)
+- **THEN** the routine continues dispatch normally
+- **AND** Squid walks/looks-around/rests per the routine
+- **AND** there is no implicit motion pause based on a backend timer

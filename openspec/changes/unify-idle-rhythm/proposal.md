@@ -50,9 +50,31 @@ No internal scheduling, no RNG. Routine calls in. Pulse goes away (its
 role is subsumed by routine).
 
 `is_busy()` gate semantics are preserved: when busy, the routine pauses
-and Squid stays still. Drowsy entry, sprint-perimeter, and stroll-modes
-remain unchanged in behavior (sprint-perimeter is a one-off invocation
-from the menu, not the routine; drowsy entry is in state-detection).
+and Squid stays still.
+
+**Mood gate (drowsy / sleeping / stretch):** the routine ALSO pauses
+when the frontend mood is anything other than plain idle. Specifically:
+- `drowsy` (agent_idle >= 120s) → routine pauses, saved index preserved
+- `sleeping` (agent_idle >= 300s) → routine pauses, saved index preserved
+- `stretch` (transient wake animation, ~1.6s) → routine pauses
+
+On resume from `drowsy`, the routine continues at the saved index
+(picking up where it left off). On resume from `sleeping`, the routine
+RESETS to index 0 so Squid begins a fresh cycle (mirrors waking from a
+real nap vs a deep sleep). The stretch transition is always a buffer
+that finishes before any routine action fires.
+
+Sprint-perimeter is a one-off invocation from the menu, not the routine,
+so it is unchanged. Drowsy and sleeping mood-state thresholds live in
+`state-detection` and remain unchanged in behavior.
+
+**Bug fix bundled into this change:** the current code has two
+inconsistent TPA-idle thresholds for pausing motion — `pulse.py` and
+`wanderer.py` both use `PAUSE_WHEN_CP_IDLE_SEC = 60.0`, but the frontend
+doesn't enter `drowsy` until 120s. This produces a 60-120s window where
+Squid is stationary but still looks awake. The new routine controller
+SHALL pause based on frontend mood (the source of truth) rather than a
+separate backend timer, eliminating the gap.
 
 ## Impact
 

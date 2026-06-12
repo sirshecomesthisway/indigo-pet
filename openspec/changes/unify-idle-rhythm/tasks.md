@@ -6,6 +6,7 @@
 - [ ] 1.4 Implement `start()`, `stop()`, `pause()`, `resume()` methods (daemon thread)
 - [ ] 1.5 Implement `_fire(action)` dispatcher (rest→noop, look→wanderer.request_look_around, walk-*→wanderer.request_walk(band))
 - [ ] 1.6 Implement `_sleep_interruptible(dur)` that wakes on stop event
+- [ ] 1.7 Implement mood gate: `_is_mood_active()` returns True for drowsy/sleeping/stretch; expose `notify_mood_entered(mood)` hook that sets `_wake_from_sleeping_pending = True` on sleeping; `_loop` consumes flag to reset `_idx = 0` on first dispatch after gate clears
 
 ## 2. Refactor wanderer.py to service mode
 
@@ -17,6 +18,7 @@
 - [ ] 2.6 Add `_duration_for_band(band)` mapping band → ms (short ~1500, medium ~3000, edge ~4500)
 - [ ] 2.7 Keep `sprint_perimeter` unchanged (still invoked by menu)
 - [ ] 2.8 Remove `get_stroll_mode`/`set_stroll_mode` (no callers after this change)
+- [ ] 2.9 Remove `PAUSE_WHEN_CP_IDLE_SEC = 60.0` from wanderer.py (no longer needed; routine uses frontend mood as gate). Also remove from pulse.py before deleting that file.
 
 ## 3. Delete pulse.py
 
@@ -29,6 +31,7 @@
 - [ ] 4.2 Construct `RoutineController(wanderer, is_busy=watcher.is_busy, is_drowsy=...)`
 - [ ] 4.3 Call `routine.start()` after window loads
 - [ ] 4.4 atexit: `routine.stop()` before window close
+- [ ] 4.5 Wire frontend mood → routine: add `PetApi.notify_mood_entered(mood)` to bridge; frontend's `enterDrowsy()` / `enterSleeping()` / stretch handler call it; `RoutineController` reads current mood via `watcher.get_frontend_mood()` (cached in watcher from same bridge)
 
 ## 5. Update menu
 
@@ -44,6 +47,9 @@
 - [ ] 6.5 Menu Pause → cycle frozen; Menu Resume → continues from same index
 - [ ] 6.6 No animation overlap: never see "look-around" fire while a walk is in-flight
 - [ ] 6.7 Sprint-perimeter menu still works (routine pauses, sprint runs, routine resumes)
+- [ ] 6.8 Drowsy nap test: let TPA idle 120s → mood=drowsy, routine pauses. Wiggle mouse → stretch plays → routine resumes at SAVED index (not 0).
+- [ ] 6.9 Full sleep test: let TPA idle 300s+ → mood=sleeping. Wiggle mouse → stretch → routine starts fresh at index 0 (rest action). Verify by watching the first post-wake action is `rest`, not whatever was mid-cycle.
+- [ ] 6.10 Threshold alignment: confirm no "stationary but awake" gap between 60-120s of TPA idle. Squid should keep moving normally through that window.
 
 ## 7. Spec sync
 

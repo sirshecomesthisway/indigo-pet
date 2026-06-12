@@ -31,23 +31,38 @@ BEFORE                              AFTER
 
 ```python
 class RoutineController:
+    MOODS_THAT_PAUSE = {"drowsy", "sleeping", "stretch"}
+
     def __init__(self, wanderer, is_busy: Callable[[], bool],
-                 is_drowsy: Callable[[], bool]):
+                 get_mood: Callable[[], str]):
         self.wanderer = wanderer
         self.is_busy = is_busy
-        self.is_drowsy = is_drowsy
+        self.get_mood = get_mood             # returns "" / "drowsy" / "sleeping" / "stretch"
         self._idx = 0
         self._stop = threading.Event()
+        self._wake_from_sleeping_pending = False
 
     def start(self): ...   # spawn daemon thread
 
     def stop(self): ...
 
+    def notify_mood_entered(self, mood: str):
+        '''Hook called by watcher when frontend mood transitions.'''
+        if mood == "sleeping":
+            self._wake_from_sleeping_pending = True
+
+    def _is_mood_active(self) -> bool:
+        return self.get_mood() in self.MOODS_THAT_PAUSE
+
     def _loop(self):
         while not self._stop.is_set():
-            if self.is_busy() or self.is_drowsy():
+            if self.is_busy() or self._is_mood_active():
                 time.sleep(1.0)
                 continue
+            # Just resumed — if we passed through sleeping, restart cycle
+            if self._wake_from_sleeping_pending:
+                self._idx = 0
+                self._wake_from_sleeping_pending = False
             action, lo, hi = IDLE_ROUTINE[self._idx]
             dur = random.uniform(lo, hi)
             self._fire(action)
@@ -137,6 +152,32 @@ menu, which is updated as part of this change.
 These behaviors remain in their current homes (wanderer.sprint_perimeter,
 state-detection drowsy logic, user-interactions wake override). They are
 orthogonal to the idle rhythm.
+
+### D6. Pause on drowsy AND sleeping AND stretch, not just drowsy
+**Choice:** Single `_is_mood_active()` predicate returns True for any
+non-empty mood. Routine pauses for all three.
+**Why:** Drowsy and sleeping share the "don't fidget" intent; stretch is
+a transition animation that must complete before any other action fires.
+Lumping them simplifies the gate and matches existing frontend behavior
+where mood layer takes over the sprite during all three.
+
+### D7. Reset index on wake-from-sleeping only (not wake-from-drowsy)
+**Choice:** `_wake_from_sleeping_pending` flag set when mood enters
+`sleeping`; consumed by next post-pause dispatch to reset `_idx = 0`.
+Wake-from-drowsy preserves the saved index.
+**Why:** Maps to natural pet behavior. Drowsy (2-5 min nap) feels like
+"she stirred and continued"; sleeping (5+ min) feels like "she just
+woke up and is reorienting". Starting at `rest` (action 0) after a long
+sleep gives a calm beat (rest → look-around → walk) that matches the
+visual cue of just having stretched.
+
+### D8. Use frontend mood as source of truth, not backend agent_idle timer
+**Choice:** Routine reads mood via `get_mood()` callback that observes
+the frontend's `_mood` value. No backend `PAUSE_WHEN_CP_IDLE_SEC` timer.
+**Why:** Fixes the existing 60-120s "stationary but awake" bug
+(`pulse.py:33` and `wanderer.py:51` use 60s; frontend uses 120s for
+drowsy). Frontend mood is already the authoritative state for visual
+behavior; making motion track it eliminates the inconsistency.
 
 ## Risks
 
