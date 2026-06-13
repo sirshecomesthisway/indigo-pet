@@ -20,6 +20,8 @@ import webview
 
 from . import watcher
 from .passthrough import PassthroughController
+from . import observer
+from . import config
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -441,6 +443,17 @@ class PetApi:
         # so `indigo start` / launchd can recover cleanly.
         self._loaded: threading.Event = threading.Event()
 
+        # Observer / speech-bubble layer (observer-mode change 2026-06-13)
+        # Bubbles are ephemeral chat-events, not persisted to state.json.
+        # _last_state_for_bubble tracks the previous PetState.state so we
+        # only fire observer.on_state_change on actual transitions, not
+        # every watcher tick. _last_mood_for_bubble does the same for the
+        # frontend mood layer (drowsy/sleeping/stretch).
+        self._pending_bubble: str | None = None
+        self._last_state_for_bubble: str = "idle"
+        self._last_mood_for_bubble: str = ""
+        self._observer = observer.Observer(get_muted=config.is_muted)
+
     def signal_ready(self) -> dict:
         """Called by JS on its first successful get_state poll. Provides a
         backup path to disarm the startup watchdog in case pywebview's
@@ -460,10 +473,30 @@ class PetApi:
 
     def update(self, state: watcher.PetState) -> None:
         with self._lock:
+            prev_state = self._last_state_for_bubble
             self._latest = state
+            self._last_state_for_bubble = state.state
             shown = self._forced_state or state.state
         if self._passthrough:
             self._passthrough.set_state(shown)
+        # Observer: fire on actual state transitions only
+        if prev_state != state.state:
+            # Enrich working bubble with shell cmdline if available
+            shell_cmd = None
+            if state.state == "working":
+                try:
+                    procs = watcher.find_tpa_processes()
+                    shell_cmd = watcher.latest_shell_child_cmdline(procs)
+                except Exception:
+                    shell_cmd = None
+            bubble = self._observer.on_state_change(
+                prev_state, state.state,
+                concern_reason=getattr(state, "concern_reason", "") or "",
+                shell_cmdline=shell_cmd,
+            )
+            if bubble is not None:
+                with self._lock:
+                    self._pending_bubble = bubble
 
     def get_state(self) -> dict:
         with self._lock:
@@ -485,7 +518,18 @@ class PetApi:
         # User-interaction wake override (poke/sprint take prime over TPA-idle counter)
         d["user_wake_remaining"] = max(0.0, self._user_wake_until - _time.time())
         d["sprint_fast_transition"] = self._sprint_fast_transition
+        # Observer-mode: surface the pending bubble for frontend.
+        # Frontend acks via clear_bubble() once fade-out completes.
+        with self._lock:
+            d["pending_bubble"] = self._pending_bubble
         return d
+
+    def clear_bubble(self) -> None:
+        """JS-exposed: frontend calls this after a bubble has finished
+        fading out. Acknowledges receipt so the next get_state() poll
+        sees pending_bubble=None instead of replaying the same line."""
+        with self._lock:
+            self._pending_bubble = None
 
     def set_wander_edge(self, edge: str) -> None:
         """Called by WanderController when she crosses an edge boundary.
@@ -514,6 +558,11 @@ class PetApi:
         if self._frontend_mood != prev:
             print(f"[indigo-pet] mood notify: {prev or '(awake)'} -> "
                   f"{self._frontend_mood or '(awake)'}", flush=True)
+            # Observer: fire mood-change bubble (drowsy/waking; sleeping is silent)
+            bubble = self._observer.on_mood_change(prev, self._frontend_mood)
+            if bubble is not None:
+                with self._lock:
+                    self._pending_bubble = bubble
         return {"ok": True}
 
     def get_frontend_mood(self) -> str:
@@ -630,11 +679,34 @@ class PetApi:
         cleared = self._forced_state is not None
         self._forced_state = None
         self._emit_hint("boop!")
+        # Observer bubble for poke (separate from hint -- hint is the OS-level
+        # status text, bubble is Squid's verbal reaction)
+        bubble = self._observer.on_interaction("poke")
+        if bubble is not None:
+            with self._lock:
+                self._pending_bubble = bubble
         msg = "poke -> 60s awake override + boop hint"
         if cleared:
             msg += " + cleared forced state"
         print(f"[indigo-pet] {msg}", flush=True)
         return "poked"
+
+
+    # ----- Observer / mute toggle (observer-mode 2026-06-13) -----
+    def _menu_toggle_mute(self) -> None:
+        """Right-click menu: Mute/Unmute Squid. Persists to config.json."""
+        new_val = config.toggle_muted()
+        msg = "muted (no bubbles)" if new_val else "unmuted"
+        self._emit_hint(msg)
+        # Clear any in-flight bubble so a stale muted line doesn't leak
+        if new_val:
+            with self._lock:
+                self._pending_bubble = None
+        print(f"[indigo-pet] mute toggled -> {new_val}", flush=True)
+
+    def is_muted(self) -> bool:
+        """Exposed so menu can show checkbox state."""
+        return config.is_muted()
 
     def _menu_sprint_perimeter(self) -> None:
         """Funny: sprint through all 4 corners CW. Background thread."""
@@ -648,6 +720,11 @@ class PetApi:
         self._user_wake_until = _time.time() + 60.0
         self._wake_trigger_seq += 1       # wake-from-drowsy stretch transition
         try:
+            # Observer bubble: sprint start
+            bubble = self._observer.on_interaction("sprint")
+            if bubble is not None:
+                with self._lock:
+                    self._pending_bubble = bubble
             self._wanderer.sprint_perimeter()
             self._emit_hint("🏃‍♀️ sprinting!")
         except Exception as e:

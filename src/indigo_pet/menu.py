@@ -52,6 +52,7 @@ class _MenuTarget(NSObject):
 
     # Funny easter eggs
     def sprintPerimeter_(self, s): self.api._menu_sprint_perimeter()
+    def toggleMute_(self, s): self.api._menu_toggle_mute()
 
     # Stroll path
 
@@ -159,6 +160,13 @@ def _build_menu(target, api) -> NSMenu:
 
     # ── Easter eggs ──
     _add(menu, "🏃‍♀️  Sprint the perimeter!", target, "sprintPerimeter:")
+    # ----- Observer mute toggle (observer-mode 2026-06-13) -----
+    try:
+        muted_now = api.is_muted()
+    except Exception:
+        muted_now = False
+    mute_label = "Unmute Squid" if muted_now else "Mute Squid"
+    _add(menu, mute_label, target, "toggleMute:", checked=muted_now)
     menu.addItem_(NSMenuItem.separatorItem())
 
     # ── Diagnostics ──

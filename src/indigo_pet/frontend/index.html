@@ -189,6 +189,66 @@
       animation: heart-blink 1200ms ease-out forwards;
       z-index: 25;  /* above sprite, below tooltip */
     }
+
+    /* ─────── OBSERVER speech bubble (observer-mode 2026-06-13) ─────── */
+    /* Ephemeral one-line reaction shown above the sprite. Pointer-events
+       off so user can drag/click through. Bubble does NOT participate in
+       click-passthrough alpha mask (only sprite pixels do).               */
+    #bubble {
+      position: fixed;
+      bottom: 80%;
+      left: 50%;
+      transform: translateX(-50%) scale(0.7);
+      background: #ffffff;
+      color: #2a2a2a;
+      border: 2px solid #1a1a1a;
+      border-radius: 12px;
+      padding: 6px 12px;
+      font: 14px/1.2 -apple-system, system-ui, sans-serif;
+      font-weight: 500;
+      max-width: 200px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      z-index: 100;
+      box-shadow: 1px 1px 0 #1a1a1a;
+      transition: none;  /* animations control visibility */
+    }
+    /* Comic-style tail pointing DOWN toward the sprite */
+    #bubble::after {
+      content: "";
+      position: absolute;
+      bottom: -8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 0; height: 0;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-top: 10px solid #1a1a1a;
+    }
+    #bubble::before {
+      content: "";
+      position: absolute;
+      bottom: -5px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 0; height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 7px solid #ffffff;
+      z-index: 1;
+    }
+    @keyframes bubble-pop-in {
+      0%   { opacity: 0; transform: translateX(-50%) scale(0.7); }
+      60%  { opacity: 1; transform: translateX(-50%) scale(1.08); }
+      100% { opacity: 1; transform: translateX(-50%) scale(1.0); }
+    }
+    @keyframes bubble-fade-out {
+      0%   { opacity: 1; transform: translateX(-50%) scale(1.0); }
+      100% { opacity: 0; transform: translateX(-50%) scale(0.85); }
+    }
+    #bubble.show-in  { animation: bubble-pop-in   150ms ease-out forwards; }
+    #bubble.show-out { animation: bubble-fade-out 400ms ease-in  forwards; }
   </style>
 </head>
 <body>
@@ -197,6 +257,7 @@
     </div>
   <div id="concern-tooltip"></div>
   <div id="hint"></div>
+  <div id="bubble"><span></span></div>
   <div id="debug">state: <span id="d-state">?</span></div>
 
   <script>
@@ -490,6 +551,83 @@
     }
 
     let _lastHintSeq = 0;
+
+    // ─────── OBSERVER bubble (observer-mode 2026-06-13) ───────
+    // State machine for the speech bubble:
+    //   _bubbleText      -- text currently being displayed (or null if none)
+    //   _bubbleHoldT     -- timeout id for the 2500ms "stay visible" phase
+    //   _bubbleFadeT     -- timeout id for the 400ms fade-out animation
+    //   _bubbleClearing  -- true while fade-out animation is playing
+    //
+    // Latest-wins: if a NEW non-null pending_bubble arrives while one is
+    // already showing AND the text differs, we swap text and restart the
+    // hold timer. If it MATCHES the current text, we no-op (backend hasn't
+    // yet seen our clear_bubble() ack).
+    let _bubbleText = null;
+    let _bubbleHoldT = null;
+    let _bubbleFadeT = null;
+    let _bubbleClearing = false;
+
+    function _ackBubbleToBackend() {
+      try {
+        if (window.pywebview?.api?.clear_bubble) {
+          window.pywebview.api.clear_bubble().catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    function _hideBubble(el) {
+      // Begin fade-out, then clear text + ack backend after animation
+      el.classList.remove("show-in");
+      void el.offsetWidth;  // restart animation
+      el.classList.add("show-out");
+      _bubbleClearing = true;
+      _bubbleFadeT = setTimeout(() => {
+        el.classList.remove("show-out");
+        el.style.opacity = "0";
+        const span = el.querySelector("span");
+        if (span) span.textContent = "";
+        _bubbleText = null;
+        _bubbleClearing = false;
+        _ackBubbleToBackend();
+      }, 410);  // matches CSS bubble-fade-out duration (400ms) + 10ms slack
+    }
+
+    function _showBubble(el, text) {
+      // Cancel any pending hide/fade
+      if (_bubbleHoldT) { clearTimeout(_bubbleHoldT); _bubbleHoldT = null; }
+      if (_bubbleFadeT) { clearTimeout(_bubbleFadeT); _bubbleFadeT = null; }
+      _bubbleClearing = false;
+
+      const span = el.querySelector("span");
+      if (span) span.textContent = text;
+      el.style.opacity = "";  // let animation control it
+      el.classList.remove("show-out");
+      el.classList.remove("show-in");
+      void el.offsetWidth;  // force reflow so animation re-fires
+      el.classList.add("show-in");
+      _bubbleText = text;
+
+      // Hold for 2500ms then begin fade
+      _bubbleHoldT = setTimeout(() => {
+        _bubbleHoldT = null;
+        _hideBubble(el);
+      }, 2500);
+    }
+
+    function maybeShowBubble(text) {
+      const el = document.getElementById("bubble");
+      if (!el) return;
+      if (!text) return;  // null/empty = no new bubble; existing one keeps its lifecycle
+
+      // Latest-wins: if NEW text differs from current, swap immediately
+      if (text !== _bubbleText) {
+        _showBubble(el, text);
+      }
+      // If text == _bubbleText, backend hasn't seen our ack yet -- no-op
+      // and let the in-flight ack land on next tick.
+    }
+
     function maybeShowApiHint(text, seq) {
       if (typeof seq !== "number" || seq === _lastHintSeq) return;
       _lastHintSeq = seq;
@@ -541,6 +679,7 @@
           checkDrowsyState(result);
           updateConcernTooltip(result?.state, result?.concern_reason, result?.concern_severity);
           maybeShowApiHint(result?.hint_text, result?.hint_seq);
+          maybeShowBubble(result?.pending_bubble);
         }
       } catch (e) { console.warn("poll failed", e); }
     }

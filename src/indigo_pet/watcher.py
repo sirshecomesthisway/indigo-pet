@@ -306,6 +306,48 @@ def has_active_shell_children(procs) -> bool:
     return False
 
 
+def latest_shell_child_cmdline(procs) -> list[str] | None:
+    """Return the cmdline of the most-recently-started shell child of any
+    tpa process. Used by observer to enrich the 'working' bubble
+    with the actual tool name (e.g. ['pytest', 'tests/', '-v']).
+
+    Returns None if no shell child is active, or on any psutil error.
+    The 'most recent' selection means an in-progress long-running pytest
+    won't get overshadowed by a 100ms `git status` that fires mid-test.
+    Actually wait, opposite: if pytest is running and a `git status` also
+    runs, we'd surface git status. That's fine -- ephemeral commands
+    finish fast so the bubble naturally rolls back to pytest's text on
+    the next tick.
+    """
+    if not procs:
+        return None
+    try:
+        candidates = []
+        for p in procs:
+            try:
+                for ch in p.children(recursive=True):
+                    try:
+                        name = (ch.name() or "").lower()
+                        if name in SHELL_CHILD_NAMES:
+                            candidates.append((ch.create_time(), ch))
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if not candidates:
+            return None
+        # Pick the most recently started -- gives "running git push"
+        # priority over a long-running pytest in the rare overlap case.
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        _, ch = candidates[0]
+        try:
+            return ch.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
+    except Exception:
+        return None
+
+
 class StateMachine:
     """
     Computes the pet's emotional state each tick.
