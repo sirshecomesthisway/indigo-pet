@@ -62,7 +62,7 @@
 ## 7. Documentation & ops
 
 - [x] 7.1 OpenSpec init + foundational spec (this change)
-- [ ] 7.2 README with install + run instructions
-- [ ] 7.3 LaunchAgent plist for auto-start on login
-- [ ] 7.4 `tools/remove_bg.py` checked into repo (currently lives at `/tmp/remove_bg.py`)
-- [ ] 7.5 Unit-test the state machine (mock psutil + filesystem signals)
+- [x] 7.2 README with install + run instructions (refreshed -- new architecture diagram with routine/wanderer/passthrough/menu, indigo CLI section, LaunchAgent section, tests section, sprite tooling section, OpenSpec footer)
+- [x] 7.3 LaunchAgent plist for auto-start on login (committed at launchagent/com.pink.indigo-pet.plist + idempotent install.sh with install/status/remove subcommands; plist already loaded and running pid 67206 since 2026-06-12)
+- [x] 7.4 tools/remove_bg.py recreated and checked in (was deleted from /tmp during cleanup; flood-fill from 4 corners with RGB tolerance; CLI supports --tolerance, --backup-to, --recursive, --verify; round-trip tested on backed-up original)
+- [x] 7.5 Unit tests at tests/test_state_machine.py -- 24 tests, ~0.1s; covers all 9 priority branches, busy_streak burst-suppression (3 tests), agent_idle_seconds tracking (3 tests), celebration window (2 tests), concerned hard-vs-transient (3 tests), PetState dataclass shape; pytest added as dev dependency in pyproject.toml [dependency-groups.dev]; [tool.pytest.ini_options] configured with pythonpath=[src]
