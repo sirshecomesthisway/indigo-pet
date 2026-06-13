@@ -347,6 +347,17 @@
     //   - look-around: already handled inline in applySubState
     // _mood tracks sticky overrides. Empty string = no override.
     let _mood = "";            // "" | "drowsy" | "sleeping" | "stretch"
+
+    // Notify Python backend of mood transitions so RoutineController
+    // can gate idle-rhythm ticks. Fire-and-forget; ignore errors.
+    function notifyMoodToBackend(mood) {
+      try {
+        if (window.pywebview && window.pywebview.api &&
+            window.pywebview.api.notify_mood) {
+          window.pywebview.api.notify_mood(mood || "");
+        }
+      } catch (e) { /* silent */ }
+    }
     let _lastWakeSeq = 0;     // tracks backend wake_trigger_seq
     let _blinkCooldownUntil = 0;
     const DROWSY_IDLE_SEC   = 60;     // 1 min idle -> drowsy mood
@@ -365,6 +376,7 @@
     function enterDrowsy() {
       if (_mood === "drowsy") return;
       _mood = "drowsy";
+      notifyMoodToBackend("drowsy");
       setSpriteSrcDirect("sprites/drowsy.png");
       console.log("[indigo] -> drowsy mood");
     }
@@ -372,6 +384,7 @@
     function enterSleeping() {
       if (_mood === "sleeping") return;
       _mood = "sleeping";
+      notifyMoodToBackend("sleeping");
       setSpriteSrcDirect("sprites/sleeping.png");
       console.log("[indigo] -> sleeping mood (5 min agent_idle)");
     }
@@ -381,10 +394,12 @@
       if (_mood !== "drowsy" && _mood !== "sleeping") return;
       const from = _mood;
       _mood = "stretch";
+      notifyMoodToBackend("stretch");
       setSpriteSrcDirect("sprites/stretch.png");
       console.log(`[indigo] -> stretch (waking from ${from})`);
       setTimeout(() => {
         _mood = "";
+        notifyMoodToBackend("");
         // Restore current state's base sprite (filter coerces to idle.png)
         setSpriteSrcDirect(spriteUrl(currentState));
         console.log("[indigo] stretch complete -> awake");

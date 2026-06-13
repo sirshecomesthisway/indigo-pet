@@ -427,16 +427,15 @@ class PetApi:
         self._wake_trigger_seq: int = 0    # increments on wake-fire; frontend tracks last seen
         self._user_wake_until: float = 0.0  # epoch sec; user-interaction wake override (poke, sprint)
         self._sprint_fast_transition: bool = False  # frontend uses 0.2s CSS transition when True
-        # Stroll mode: "anywhere" | "edges". Loaded from settings.json.
-        _s = load_settings()
-        self._stroll_mode: str = _s.get("stroll_mode", "edges")
-        if self._stroll_mode not in ("anywhere", "edges"):
-            self._stroll_mode = "edges"
+        # Stroll mode removed by unify-idle-rhythm (2026-06-13). The
+        # RoutineController now owns rhythm; band selection is per-action,
+        # not a sticky user mode.
         self._hint_text: str = ""              # one-shot hint shown via #hint
         self._hint_seq: int = 0                # increments per hint; JS dedupes
         self._menu = None                      # IndigoMenu instance (set in on_loaded)
         self._wanderer = None                  # WanderController (set in on_loaded)
-        self._pulse = None                     # PulseController (set in on_loaded)
+        self._routine = None                   # RoutineController (set in on_loaded)
+        self._frontend_mood: str = ""          # JS mood: ""/drowsy/sleeping/stretch
         # Set when on_loaded fires; the watchdog in main() uses this to
         # detect WKWebView startup hangs and self-terminate within 10s
         # so `indigo start` / launchd can recover cleanly.
@@ -503,6 +502,23 @@ class PetApi:
         stomping the wanderer's animation slot)."""
         with self._lock:
             return self._wander_sub_state
+
+    # -- Frontend mood bridge (unify-idle-rhythm 2026-06-13) --------
+    def notify_mood(self, mood: str) -> dict:
+        """JS calls this whenever _mood changes. Values:
+            "" (awake/active), "drowsy", "sleeping", "stretch".
+        RoutineController polls via get_frontend_mood() and pauses ticks
+        whenever mood is in MOODS_THAT_PAUSE."""
+        prev = self._frontend_mood
+        self._frontend_mood = (mood or "").strip()
+        if self._frontend_mood != prev:
+            print(f"[indigo-pet] mood notify: {prev or '(awake)'} -> "
+                  f"{self._frontend_mood or '(awake)'}", flush=True)
+        return {"ok": True}
+
+    def get_frontend_mood(self) -> str:
+        """Read latest mood. Empty string == awake/active."""
+        return self._frontend_mood
 
     def force_state(self, name: str) -> str:
         """Pin pet to a specific state (called from dbl-click)."""
@@ -641,33 +657,6 @@ class PetApi:
         corner = load_corner()
         if move_to_corner(corner):
             self._emit_hint(f"🎯 recentered → {corner}")
-
-    # ─── Stroll path ───
-    def _menu_set_stroll_mode(self, mode: str) -> None:
-        """Flip stroll mode (anywhere ↔ edges) and persist."""
-        if mode not in ("anywhere", "edges"):
-            return
-        self._stroll_mode = mode
-        # Push to live wanderer if available.
-        if self._wanderer is not None:
-            try:
-                self._wanderer.set_stroll_mode(mode)
-                # When flipping to edges, kick off an immediate walk to the
-                # nearest corner so she settles in right away.
-                if mode == "edges":
-                    self._wanderer.walk_to_nearest_corner()
-            except Exception as e:
-                print(f"[indigo-pet] wanderer.set_stroll_mode failed: {e}",
-                      flush=True)
-        # Persist.
-        try:
-            settings = load_settings()
-            settings["stroll_mode"] = mode
-            save_settings(settings)
-        except Exception as e:
-            print(f"[indigo-pet] save_settings failed: {e}", flush=True)
-        label = "🌐 anywhere" if mode == "anywhere" else "🪟 edges only"
-        self._emit_hint(f"🚶 stroll path → {label}")
 
     # ─── Mood ───
     def _menu_force(self, name: str) -> None:
@@ -861,60 +850,55 @@ def main() -> None:
         api.set_passthrough(pt)
         pt.start()
 
-        # Start wanderer — Indigo walks around when idle ✨
+        # Start wanderer in SERVICE MODE -- exposes request_walk /
+        # request_look_around primitives. No internal scheduler;
+        # RoutineController drives idle-time invocations.
         from indigo_pet.wanderer import WanderController
         wc = WanderController(
             get_state=lambda: api.get_state().get("state", "idle"),
             is_drag_active=is_drag_active,
-            is_pinned=lambda: api._pinned or _time.time() < api._wander_paused_until,
-            # is_busy gate removed 2026-06-08: Pink wants her to wander
-            # any time she's idle for 15s, regardless of TPA activity. The
-            # pulse thread (pulse.py) handles "she should feel alive even
-            # while Pink is working" -- it runs in-place micro-actions
-            # independent of busy state.
             get_window_origin=get_window_origin,
             set_window_origin=set_window_origin,
             get_visible_frame=get_visible_frame,
             set_sub_state=api.set_wander_sub_state,
             set_edge=api.set_wander_edge,
-            get_agent_idle_seconds=lambda: api.get_state().get("agent_idle_seconds", 0.0),
         )
         api._wanderer = wc  # keep reference so it isn't GC'd
-        # Apply persisted stroll mode (default "anywhere") before starting.
+        # Sprint callbacks (wrapper-deg + wake + fast-transition)
         try:
-            wc.set_stroll_mode(api._stroll_mode)
-            # Wire wrapper-deg override for sprint feature (snake-case for safety)
             def _set_wrap_deg(d):
                 api._wrapper_deg_override = float(d)
             def _clear_wrap_deg():
                 api._wrapper_deg_override = None
             wc.set_wrapper_deg_callbacks(_set_wrap_deg, _clear_wrap_deg)
-            # Wire wake + fast-transition callbacks for sprint
             def _wake():
                 api._wake_trigger_seq += 1
             def _fast_trans(on):
                 api._sprint_fast_transition = bool(on)
             wc.set_sprint_callbacks(_wake, _fast_trans)
         except Exception as e:
-            print(f"[indigo-pet] initial stroll mode push failed: {e}", flush=True)
-        wc.start()
+            print(f"[indigo-pet] sprint wiring failed: {e}", flush=True)
 
-        # Start the micro-pulse: tiny in-place idle motions (look-around, etc.)
-        # on a fixed cadence. Runs INDEPENDENT of wanderer gates so the pet
-        # feels alive even when pinned. Coexists with wanderer by skipping
-        # beats when the wanderer is already animating.
+        # Start unified idle rhythm -- replaces pulse.py + wanderer's RNG
+        # scheduler. Fires IDLE_ROUTINE actions when state==idle, mood
+        # awake, drag clear, not pinned/paused.
         try:
-            from indigo_pet.pulse import PulseController
-            pc = PulseController(
+            from indigo_pet.routine import RoutineController
+            rc = RoutineController(
+                wanderer=wc,
                 get_state=lambda: api.get_state().get("state", "idle"),
                 is_drag_active=is_drag_active,
-                get_wander_sub_state=api.get_wander_sub_state,
-                set_sub_state=api.set_wander_sub_state,
+                # is_busy gate disabled (2026-06-08 Pink decision): she
+                # roams even during active TPA work. State-gate handles
+                # non-idle pauses; mood-gate handles drowsy/sleeping.
+                is_busy=lambda: False,
+                get_mood=api.get_frontend_mood,
+                is_pinned=lambda: api._pinned or _time.time() < api._wander_paused_until,
             )
-            api._pulse = pc
-            pc.start()
+            api._routine = rc
+            rc.start()
         except Exception as e:
-            print(f"[indigo-pet] pulse startup failed: {e}", flush=True)
+            print(f"[indigo-pet] routine startup failed: {e}", flush=True)
 
         # Build the right-click context menu (needs an active NSApp).
         from indigo_pet.menu import IndigoMenu
@@ -927,6 +911,16 @@ def main() -> None:
 
     def on_closing() -> None:
         stop_event.set()
+        try:
+            if api._routine is not None:
+                api._routine.stop()
+        except Exception:
+            pass
+        try:
+            if api._wanderer is not None:
+                api._wanderer.stop()
+        except Exception:
+            pass
 
     window.events.loaded += on_loaded
     window.events.closing += on_closing

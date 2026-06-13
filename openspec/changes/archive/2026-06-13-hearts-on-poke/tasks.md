@@ -14,16 +14,16 @@
 
 ## 2. Validation
 
-- [ ] 2.1 Single poke → 3 hearts rise + fade over ~1 second
-- [ ] 2.2 Rapid 5x poke → hearts stack visibly without performance hit
-- [ ] 2.3 Spam-poke 20x → cap holds at 12 live hearts, no console errors
-- [ ] 2.4 Dblclick → zero hearts (poke timeout cancelled by dblclick handler)
-- [ ] 2.5 Hearts do NOT block clicks: drag still works while hearts visible
-- [ ] 2.6 Squid drag while hearts mid-animation: hearts ride along correctly
+- [x] 2.1 Single poke → 3 hearts rise + fade over ~1 second
+- [x] 2.2 Rapid 5x poke → hearts stack visibly without performance hit
+- [x] 2.3 Spam-poke 20x → cap holds at 12 live hearts, no console errors
+- [x] 2.4 Dblclick → zero hearts (poke timeout cancelled by dblclick handler)
+- [x] 2.5 Hearts do NOT block clicks: drag still works while hearts visible
+- [x] 2.6 Squid drag while hearts mid-animation: hearts ride along correctly
 
 ## 3. Documentation
 
 - [x] 3.1 Update `pink-pm/indigo-pet.md` memory with the new capability +
         the tunable knob locations
-- [ ] 3.2 Update `pet-reactions` spec in this change folder if validation
+- [x] 3.2 Update `pet-reactions` spec in this change folder if validation
         reveals deviations from the design
