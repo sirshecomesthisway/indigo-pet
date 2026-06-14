@@ -57,6 +57,7 @@ BUBBLE_LINES: dict[str, LineSpec] = {
 
     # interactions
     "poke":         ["boop?", "hi", "?", "hm?"],
+    "shake":        ["wheee", "whoa!", "whee~", "hey hey"],
     "sprint":       ["wheee!", "zoom", "*blurs*", "go!"],
     "sprint_end":   ["*pant pant*", "phew", "x_x"],
     "drowsy":       ["*yawn*", "sleepy...", "mmh"],

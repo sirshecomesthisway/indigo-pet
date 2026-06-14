@@ -612,8 +612,12 @@ class PetApi:
         def _on_swing():
             self._user_wake_until = _time.time() + 60.0
             self._wake_trigger_seq += 1
-            self._emit_hint("wheee!")
-            print("[indigo-pet] swing-to-wake -> 60s awake override", flush=True)
+            # Observer bubble (was: "wheee!" hint pill; deduped 2026-06-13)
+            bubble = self._observer.on_interaction("shake")
+            if bubble is not None:
+                with self._lock:
+                    self._pending_bubble = bubble
+            print("[indigo-pet] swing-to-wake -> 60s awake override + observer bubble", flush=True)
         started = start_native_drag(self._passthrough, _on_end, on_swing=_on_swing)
         return {"ok": started}
 
@@ -681,19 +685,18 @@ class PetApi:
           TPA-idle counter; without this, stretch transition completes and
           mood layer immediately re-enters drowsy)
         - Clears any forced state (poke = "go back to normal")
-        - Shows boop hint"""
+        - Fires observer bubble (was: dual "boop!" hint pill + bubble,
+          deduped 2026-06-13 per Pink's screenshot showing both stacked)"""
         self._wake_trigger_seq += 1
         self._user_wake_until = _time.time() + 60.0
         cleared = self._forced_state is not None
         self._forced_state = None
-        self._emit_hint("boop!")
-        # Observer bubble for poke (separate from hint -- hint is the OS-level
-        # status text, bubble is Squid's verbal reaction)
+        # Observer bubble owns the poke reaction now (no more "boop!" hint pill)
         bubble = self._observer.on_interaction("poke")
         if bubble is not None:
             with self._lock:
                 self._pending_bubble = bubble
-        msg = "poke -> 60s awake override + boop hint"
+        msg = "poke -> 60s awake override + observer bubble"
         if cleared:
             msg += " + cleared forced state"
         print(f"[indigo-pet] {msg}", flush=True)
