@@ -103,6 +103,12 @@ class WanderController:
         # Sprint state
         self._sprint_mode: bool = False
 
+        # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
+        # Restored 2026-06-13 after unify-idle-rhythm regression.
+        # Default matches pre-regression behavior. Flipped live via
+        # set_stroll_mode(); PetApi persists the choice to settings.json.
+        self._stroll_mode: str = "edges"
+
         # Shared stop event (mostly for sprint thread)
         self._stop = threading.Event()
 
@@ -110,6 +116,26 @@ class WanderController:
     def stop(self) -> None:
         """Signal in-flight walks / sprints to abort."""
         self._stop.set()
+
+    # ── stroll-path API (restored 2026-06-13) ─────────────────────────
+    VALID_STROLL_MODES = ("anywhere", "edges")
+
+    def set_stroll_mode(self, mode: str) -> None:
+        """Change stroll path live. Valid: 'anywhere' | 'edges'.
+
+        edges    -> walks always target the visible-frame border (hug edges)
+        anywhere -> walks pick polar destinations anywhere in the frame
+        """
+        if mode not in self.VALID_STROLL_MODES:
+            print(f"[indigo-pet] set_stroll_mode: invalid {mode!r}", flush=True)
+            return
+        if mode != self._stroll_mode:
+            print(f"[indigo-pet] stroll mode: {self._stroll_mode} -> {mode}",
+                  flush=True)
+            self._stroll_mode = mode
+
+    def get_stroll_mode(self) -> str:
+        return self._stroll_mode
 
     # ── public SERVICE methods (called by RoutineController) ───────────
     def request_walk(self, band: str) -> None:
@@ -161,7 +187,10 @@ class WanderController:
         self._walk_to(ox, oy, tx, ty, vx, vy, vw, vh)
 
     def _pick_target_for_band(self, band, ox, oy, min_x, max_x, min_y, max_y):
-        if band == "edge":
+        # Stroll mode override: when locked to "edges", every walk hugs
+        # the visible-frame border regardless of band (preserves the
+        # pre-unify-idle-rhythm behavior Pink relied on).
+        if self._stroll_mode == "edges" or band == "edge":
             return self._pick_edge_destination(ox, oy,
                                                min_x, max_x, min_y, max_y)
         dmin, dmax = BAND_DISTANCES[band]

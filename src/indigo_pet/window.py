@@ -429,9 +429,17 @@ class PetApi:
         self._wake_trigger_seq: int = 0    # increments on wake-fire; frontend tracks last seen
         self._user_wake_until: float = 0.0  # epoch sec; user-interaction wake override (poke, sprint)
         self._sprint_fast_transition: bool = False  # frontend uses 0.2s CSS transition when True
-        # Stroll mode removed by unify-idle-rhythm (2026-06-13). The
-        # RoutineController now owns rhythm; band selection is per-action,
-        # not a sticky user mode.
+        # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
+        # Removed by unify-idle-rhythm 2026-06-13 (regression), restored
+        # the same day. Persisted to settings.json so it survives restart.
+        # Defaults to "edges" to match pre-regression behavior.
+        try:
+            _s_stroll = load_settings()
+        except Exception:
+            _s_stroll = {}
+        self._stroll_mode: str = _s_stroll.get("stroll_mode", "edges")
+        if self._stroll_mode not in ("anywhere", "edges"):
+            self._stroll_mode = "edges"
         self._hint_text: str = ""              # one-shot hint shown via #hint
         self._hint_seq: int = 0                # increments per hint; JS dedupes
         self._menu = None                      # IndigoMenu instance (set in on_loaded)
@@ -693,6 +701,37 @@ class PetApi:
 
 
     # ----- Observer / mute toggle (observer-mode 2026-06-13) -----
+
+    # ── Stroll path (restored 2026-06-13) ─────────────────────────────
+    def _menu_set_stroll_mode(self, mode: str) -> None:
+        """Flip stroll mode (anywhere ↔ edges) and persist.
+
+        Updates self._stroll_mode, propagates to live wanderer if present,
+        writes to settings.json so restart preserves the choice, and
+        flashes a hint pill confirming the new mode.
+        """
+        if mode not in ("anywhere", "edges"):
+            print(f"[indigo-pet] _menu_set_stroll_mode: invalid {mode!r}",
+                  flush=True)
+            return
+        self._stroll_mode = mode
+        # Push to live wanderer (no-op if not yet constructed)
+        try:
+            if self._wanderer is not None:
+                self._wanderer.set_stroll_mode(mode)
+        except Exception as e:
+            print(f"[indigo-pet] wanderer.set_stroll_mode failed: {e}",
+                  flush=True)
+        # Persist
+        try:
+            settings = load_settings()
+            settings["stroll_mode"] = mode
+            save_settings(settings)
+        except Exception as e:
+            print(f"[indigo-pet] save settings failed: {e}", flush=True)
+        label = "edges only" if mode == "edges" else "anywhere"
+        self._emit_hint(f"stroll path -> {label}")
+
     def _menu_toggle_mute(self) -> None:
         """Right-click menu: Mute/Unmute Squid. Persists to config.json."""
         new_val = config.toggle_muted()
@@ -941,6 +980,14 @@ def main() -> None:
             set_edge=api.set_wander_edge,
         )
         api._wanderer = wc  # keep reference so it isn't GC'd
+        # Apply persisted stroll mode (restored 2026-06-13)
+        try:
+            wc.set_stroll_mode(api._stroll_mode)
+            print(f"[indigo-pet] initial stroll mode -> {api._stroll_mode}",
+                  flush=True)
+        except Exception as e:
+            print(f"[indigo-pet] initial stroll mode push failed: {e}",
+                  flush=True)
         # Sprint callbacks (wrapper-deg + wake + fast-transition)
         try:
             def _set_wrap_deg(d):

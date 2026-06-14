@@ -52,6 +52,9 @@ class _MenuTarget(NSObject):
 
     # Funny easter eggs
     def sprintPerimeter_(self, s): self.api._menu_sprint_perimeter()
+    # Stroll path (restored 2026-06-13)
+    def strollAnywhere_(self, s): self.api._menu_set_stroll_mode("anywhere")
+    def strollEdges_(self, s):    self.api._menu_set_stroll_mode("edges")
     def toggleMute_(self, s): self.api._menu_toggle_mute()
 
     # Stroll path
@@ -131,6 +134,21 @@ def _build_menu(target, api) -> NSMenu:
     )
     mood_root.setSubmenu_(mood)
     menu.addItem_(mood_root)
+
+    # ── Stroll path submenu (restored 2026-06-13) ──
+    stroll_mode = getattr(api, "_stroll_mode", "edges")
+    stroll = NSMenu.alloc().init()
+    stroll.setAutoenablesItems_(False)
+    _add(stroll, "Anywhere",   target, "strollAnywhere:",
+         checked=(stroll_mode == "anywhere"))
+    _add(stroll, "Edges only", target, "strollEdges:",
+         checked=(stroll_mode == "edges"))
+    stroll_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Stroll path", None, ""
+    )
+    stroll_root.setSubmenu_(stroll)
+    menu.addItem_(stroll_root)
+
 
     # ── Pause Squid submenu ──
     import time as _t
