@@ -46,6 +46,8 @@ LOOK_AROUND_PROBABILITY = 0.45         # chance of pause-to-look mid-walk
 WIN_W = 200                            # window width (must match window.py)
 WIN_H = 220                            # window height
 EDGE_BAND_PX = 60                      # within this distance of an edge counts as "on" it
+CORNER_BAND_PX = 120                   # within this distance of TWO edges counts as "at a corner"
+                                       # (more generous than EDGE_BAND_PX to absorb dock/menubar clamp drift)
 
 # Distance bands for request_walk(band)
 BAND_DISTANCES = {
@@ -301,7 +303,7 @@ class WanderController:
         edges.sort(key=lambda x: (x[1], x[2]))
         nearest_edge, nearest_dist, _ = edges[0]
 
-        # Off-edge → walk straight to nearest edge.
+        # Off-edge -> walk straight to nearest edge.
         if nearest_dist > EDGE_BAND_PX:
             if nearest_edge == "left":
                 return min_x, oy
@@ -311,13 +313,23 @@ class WanderController:
                 return ox, min_y
             return ox, max_y  # top
 
-        # On an edge: walk toward a corner of that edge.
+        # On an edge -- if within EDGE_BAND_PX of TWO edges (at a corner),
+        # randomly pick which adjacent edge to walk along next. This breaks
+        # the lock where the priority tiebreak (bottom>left>right>top) would
+        # otherwise trap Squid on whichever edge owns each corner. Without
+        # this, the right edge sticks (top-right <-> bottom-right ping-pong)
+        # because "right" always loses to "bottom"/"top" -- but at top-right
+        # there is no "bottom" in band so "right" wins and locks her in.
+        nearby = [e for e in edges if e[1] <= CORNER_BAND_PX]
+        chosen_edge = random.choice(nearby)[0] if nearby else nearest_edge
+
+        # Walk toward one of the two corners of the chosen edge.
         direction_to_corner = random.choice([-1, 1])
-        if nearest_edge == "left":
+        if chosen_edge == "left":
             return min_x, (min_y if direction_to_corner < 0 else max_y)
-        if nearest_edge == "right":
+        if chosen_edge == "right":
             return max_x, (min_y if direction_to_corner < 0 else max_y)
-        if nearest_edge == "bottom":
+        if chosen_edge == "bottom":
             return (min_x if direction_to_corner < 0 else max_x), min_y
         return (min_x if direction_to_corner < 0 else max_x), max_y  # top
 
