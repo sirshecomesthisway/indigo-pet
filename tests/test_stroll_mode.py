@@ -114,3 +114,67 @@ def test_picker_polar_target_stays_in_frame(wc):
 def test_valid_stroll_modes_class_constant():
     """Public API contract: VALID_STROLL_MODES is the source of truth."""
     assert WanderController.VALID_STROLL_MODES == ("anywhere", "edges")
+
+
+# ── corner-unlock regression (fix 2026-06-16, commit d0a704e) ──────────
+# Bug: Squid was trapped on the right edge ping-ponging top-right <->
+# bottom-right because _pick_edge_destination only considered the
+# priority-tiebreak winner. Window-clamp drift (dock/menubar) also kept
+# d_top=68px > EDGE_BAND_PX=60, so "top" was never in band at top-right.
+# Fix: random.choice over all edges within CORNER_BAND_PX=120.
+
+def test_corner_unlock_bottom_right_can_escape_to_bottom_edge(wc, monkeypatch):
+    """At bottom-right corner, picker MUST eventually choose the bottom
+    edge as destination (escape to bottom-left). Pre-fix this only
+    happened via the deprecated priority-tiebreak path."""
+    import random
+    # Bottom-right corner: ox close to max_x, oy close to min_y.
+    # Frame: 0..1000 x 0..800. Position (995, 5) — 5px from each edge.
+    destinations = set()
+    rng = random.Random(0)
+    monkeypatch.setattr("indigo_pet.wanderer.random.choice",
+                        lambda seq: rng.choice(seq))
+    for _ in range(40):
+        tx, ty = wc._pick_edge_destination(995, 5, 0, 1000, 0, 800)
+        destinations.add((tx, ty))
+    # We must see at least one destination on the bottom-LEFT corner
+    # (x near min, y near min). Pre-fix this was impossible.
+    bottom_left_hits = [(x, y) for (x, y) in destinations
+                        if x == 0 and y == 0]
+    assert bottom_left_hits, \
+        f"At bottom-right corner, picker never chose bottom-left: {destinations}"
+
+
+def test_corner_unlock_top_right_can_escape_to_top_edge(wc, monkeypatch):
+    """At top-right corner with 68px clamp drift on y (mimics dock),
+    picker MUST eventually choose the top edge. Pre-fix: EDGE_BAND_PX=60
+    excluded top entirely, so right won by default forever."""
+    import random
+    # Top-right with drift: max_x=1000, max_y=800, position (1000, 732)
+    # so d_top = 68 (> old EDGE_BAND_PX=60 but < CORNER_BAND_PX=120).
+    destinations = set()
+    rng = random.Random(0)
+    monkeypatch.setattr("indigo_pet.wanderer.random.choice",
+                        lambda seq: rng.choice(seq))
+    for _ in range(40):
+        tx, ty = wc._pick_edge_destination(1000, 732, 0, 1000, 0, 800)
+        destinations.add((tx, ty))
+    # Must see at least one destination on the top-LEFT corner
+    # (x near min, y == max_y).
+    top_left_hits = [(x, y) for (x, y) in destinations
+                     if x == 0 and y == 800]
+    assert top_left_hits, \
+        f"At top-right with 68px clamp drift, picker never chose top-left: {destinations}"
+
+
+def test_mid_edge_no_corner_lock_applies(wc):
+    """Sanity: when squarely mid-edge (far from both corners), picker
+    should walk along that edge only — corner-unlock must not produce
+    cross-frame jumps."""
+    # Right edge, mid-y: (1000, 400) in 0..1000 x 0..800 frame.
+    # Only "right" is within CORNER_BAND_PX=120 (d_left=1000, d_top=400,
+    # d_bottom=400 all >> 120).
+    for _ in range(20):
+        tx, ty = wc._pick_edge_destination(1000, 400, 0, 1000, 0, 800)
+        assert tx == 1000, f"mid-right edge: x should stay at max_x=1000, got {tx}"
+        assert ty in (0, 800), f"mid-right edge: y should be a corner, got {ty}"
