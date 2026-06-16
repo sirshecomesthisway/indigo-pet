@@ -1,5 +1,5 @@
 """
-Indigo Pet Watcher — observes TPA + macOS activity and emits state.
+Squid Pet Watcher — observes TPA + macOS activity and emits state.
 
 State model:
   - idle         : nothing happening
@@ -11,7 +11,7 @@ State model:
   - sleeping     : macOS idle > 5 min OR no tpa process
   - reviewing    : (V2 — needs permission prompt detection)
 
-State is written to ~/.indigo-pet/state.json every 1s, frontend polls it.
+State is written to ~/.squid-pet/state.json every 1s, frontend polls it.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ AUTOSAVES_DIR = CODE_PUPPY_HOME / "autosaves"       # live session .pkl (THE sig
 COMMAND_HISTORY = CODE_PUPPY_HOME / "command_history.txt"  # user-typed commands
 SUBAGENT_DIR = CODE_PUPPY_HOME / "subagent_sessions"
 
-STATE_DIR = Path.home() / ".indigo-pet"
+STATE_DIR = Path.home() / ".squid-pet"
 STATE_FILE = STATE_DIR / "state.json"
 
 POLL_INTERVAL_SEC = 1.0
@@ -526,7 +526,7 @@ def write_state(state: PetState) -> None:
 def run_watcher_loop() -> None:
     """Main watcher loop — runs forever, writes state.json every POLL_INTERVAL_SEC."""
     sm = StateMachine()
-    print(f"[indigo-pet] watcher started; state file: {STATE_FILE}")
+    print(f"[squid-pet] watcher started; state file: {STATE_FILE}")
     while True:
         try:
             state = sm.compute()
@@ -534,7 +534,7 @@ def run_watcher_loop() -> None:
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            print(f"[indigo-pet] watcher error: {e}")
+            print(f"[squid-pet] watcher error: {e}")
         time.sleep(POLL_INTERVAL_SEC)
 
 

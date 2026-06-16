@@ -1,5 +1,5 @@
 """
-config.py -- user-facing settings persisted to ~/.indigo-pet/config.json.
+config.py -- user-facing settings persisted to ~/.squid-pet/config.json.
 
 Currently tracks:
   - muted: bool -- suppresses all observer speech bubbles when True
@@ -15,7 +15,7 @@ import os
 import pathlib
 from typing import Any
 
-CONFIG_DIR = pathlib.Path.home() / ".indigo-pet"
+CONFIG_DIR = pathlib.Path.home() / ".squid-pet"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS: dict[str, Any] = {

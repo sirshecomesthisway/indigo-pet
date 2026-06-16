@@ -117,7 +117,7 @@ fit at default sprite width.
 - The mood-state pipeline is unaffected (Squid still walks, sleeps, etc.)
 
 Menu item is a checkbox-style toggle in the right-click menu. State persists
-across restarts via `~/.indigo-pet/config.json`.
+across restarts via `~/.squid-pet/config.json`.
 
 ## Test strategy
 
@@ -136,7 +136,7 @@ across restarts via `~/.indigo-pet/config.json`.
 
 ### D1: `pending_bubble` lives on PetApi, not in state.json
 **Decision:** It's an in-memory field on `PetApi`, not persisted to
-`~/.indigo-pet/state.json`.
+`~/.squid-pet/state.json`.
 **Rationale:** Bubbles are ephemeral chat-style events; persisting them
 means a restart could replay a stale bubble. State.json stays the
 durable mood snapshot.

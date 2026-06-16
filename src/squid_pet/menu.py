@@ -1,5 +1,5 @@
 """
-Native macOS right-click context menu for Indigo, built with NSMenu via
+Native macOS right-click context menu for Squid, built with NSMenu via
 PyObjC. Dispatches all actions to PetApi (via a _MenuTarget NSObject so
 Objective-C can call selectors on it).
 
@@ -191,12 +191,12 @@ def _build_menu(target, api) -> NSMenu:
     has_err = bool(api._menu_has_recent_error())
     _add(menu, "🩺  What's wrong?", target, "whatsWrong:", enabled=has_err)
     _add(menu, "📊  Show stats", target, "showStats:")
-    _add(menu, "📜  Open Indigo log", target, "openLog:")
+    _add(menu, "📜  Open Squid log", target, "openLog:")
     menu.addItem_(NSMenuItem.separatorItem())
 
     # ── Lifecycle ──
-    _add(menu, "↻  Restart Indigo", target, "restartApp:")
-    _add(menu, "❌  Quit Indigo", target, "quitApp:")
+    _add(menu, "↻  Restart Squid", target, "restartApp:")
+    _add(menu, "❌  Quit Squid", target, "quitApp:")
 
     return menu
 
@@ -204,7 +204,7 @@ def _build_menu(target, api) -> NSMenu:
 # ──────────────────────────────────────────────────────────────────
 # Public controller
 # ──────────────────────────────────────────────────────────────────
-class IndigoMenu:
+class SquidMenu:
     """Owns the menu target. Call .show_at_cursor() from any thread —
     dispatches the actual popUp to the AppKit main thread."""
 
@@ -213,7 +213,7 @@ class IndigoMenu:
         # Retain the target so PyObjC doesn't GC it between menu opens.
         self.target = _MenuTarget.alloc().initWithApi_(api)
         # Install a GLOBAL right-click monitor. This catches right-clicks
-        # anywhere on screen, lets us check if the cursor is over Indigo's
+        # anywhere on screen, lets us check if the cursor is over Squid's
         # window bounds (regardless of pixel alpha / passthrough), and
         # triggers the menu directly. Fixes the case where right-clicking
         # a transparent area near her sprite fails because passthrough
@@ -236,32 +236,32 @@ class IndigoMenu:
             self._local_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
                 mask, self._on_local_rightclick
             )
-            print("[indigo-pet] right-click global monitor installed", flush=True)
+            print("[squid-pet] right-click global monitor installed", flush=True)
         except Exception as e:
-            print(f"[indigo-pet] could not install right-click monitor: {e}",
+            print(f"[squid-pet] could not install right-click monitor: {e}",
                   flush=True)
 
     def _on_global_rightclick(self, event):
         """Called for right-clicks anywhere on screen. Show menu only if
-        the cursor is over Indigo's window bounds."""
+        the cursor is over Squid's window bounds."""
         try:
             from AppKit import NSApp, NSEvent
             loc = NSEvent.mouseLocation()  # screen coords, y from bottom
             for w in NSApp.windows():
                 try:
-                    if str(w.title()) != "Indigo":
+                    if str(w.title()) != "Squid":
                         continue
                     wf = w.frame()
                     if (wf.origin.x <= loc.x <= wf.origin.x + wf.size.width
                             and wf.origin.y <= loc.y <= wf.origin.y + wf.size.height):
-                        print(f"[indigo-pet] global right-click hit Indigo at "
+                        print(f"[squid-pet] global right-click hit Squid at "
                               f"({loc.x:.0f},{loc.y:.0f})", flush=True)
                         self.show_at_cursor()
                         return
                 except Exception:
                     continue
         except Exception as e:
-            print(f"[indigo-pet] right-click handler err: {e}", flush=True)
+            print(f"[squid-pet] right-click handler err: {e}", flush=True)
 
     def _on_local_rightclick(self, event):
         """Local monitor — return the event to let normal processing
@@ -277,15 +277,15 @@ class IndigoMenu:
                 win = None
                 for w in NSApp.windows():
                     try:
-                        if str(w.title()) == "Indigo":
+                        if str(w.title()) == "Squid":
                             win = w
                             break
                     except Exception:
                         continue
                 if win is None:
-                    print("[indigo-pet] menu: window not found", flush=True)
+                    print("[squid-pet] menu: window not found", flush=True)
                     return
-                # Bring Indigo forward so menu can claim focus.
+                # Bring Squid forward so menu can claim focus.
                 NSApp.activateIgnoringOtherApps_(True)
                 win.makeKeyAndOrderFront_(None)
 
@@ -295,13 +295,13 @@ class IndigoMenu:
                 # measured from BOTTOM (Cocoa convention) which is exactly
                 # what popUpMenuPositioningItem expects when view is None.
                 loc = NSEvent.mouseLocation()
-                print(f"[indigo-pet] menu: popUp at screen ({loc.x:.0f},{loc.y:.0f})",
+                print(f"[squid-pet] menu: popUp at screen ({loc.x:.0f},{loc.y:.0f})",
                       flush=True)
                 menu.popUpMenuPositioningItem_atLocation_inView_(
                     None, loc, None
                 )
-                print("[indigo-pet] menu: popUp returned", flush=True)
+                print("[squid-pet] menu: popUp returned", flush=True)
             except Exception as e:
-                print(f"[indigo-pet] menu show failed: {e}", flush=True)
+                print(f"[squid-pet] menu show failed: {e}", flush=True)
 
         AppHelper.callAfter(_on_main)

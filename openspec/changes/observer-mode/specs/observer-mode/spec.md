@@ -38,7 +38,7 @@ output.
 ### Requirement: BUBBLE_LINES dictionary is the canonical voice contract
 
 The Observer's vocabulary SHALL live in a single module-level constant
-`BUBBLE_LINES: dict[str, str | list[str]]` in `src/indigo_pet/observer.py`.
+`BUBBLE_LINES: dict[str, str | list[str]]` in `src/squid_pet/observer.py`.
 Each value MAY be a single string or a list of strings; when a list, the
 Observer SHALL pick uniformly at random per call. Editing this dictionary
 SHALL be the sole code change required to evolve Squid's voice for any
@@ -90,7 +90,7 @@ every observer-emitted bubble without affecting any other pet behavior
 (mood detection, wandering, animations, interactions).
 
 #### Scenario: Mute flag short-circuits emit paths
-- **WHEN** the mute flag is True in `~/.indigo-pet/config.json`
+- **WHEN** the mute flag is True in `~/.squid-pet/config.json`
 - **AND** any trigger (state transition or interaction) fires
 - **THEN** the Observer returns None
 - **AND** `_pending_bubble` is NOT modified
@@ -98,7 +98,7 @@ every observer-emitted bubble without affecting any other pet behavior
 
 #### Scenario: Mute toggle via right-click menu persists across restart
 - **WHEN** the user clicks "Mute Squid" in the right-click menu
-- **THEN** the flag flips and is persisted to `~/.indigo-pet/config.json`
+- **THEN** the flag flips and is persisted to `~/.squid-pet/config.json`
 - **AND** the menu item shows the new state (checkbox or label) on next open
 - **AND** the new state is honored on the next Squid restart
 

@@ -1,7 +1,7 @@
-# Indigo Pet — "Squid"
+# Squid Pet — "Squid"
 
 A tiny floating desktop companion that watches TPA and reacts to what's
-happening. Named **Indigo** (chosen by Pink Tan, June 2026), nicknamed **Squid**
+happening. Named **Squid** (chosen by Pink Tan, June 2026), nicknamed **Squid**
 because she looks like one.
 
 She lives in a transparent, frameless window pinned to a corner of the screen.
@@ -44,7 +44,7 @@ contract.
 │   ────────────────────────────────────────────────────                 │
 │   StateMachine.compute() — 9-branch priority cascade                   │
 │   ↓                                                                    │
-│   api.update(state)  +  write ~/.indigo-pet/state.json (atomic)        │
+│   api.update(state)  +  write ~/.squid-pet/state.json (atomic)        │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -88,31 +88,31 @@ contract.
 ## Install & first run
 
 ```bash
-cd ~/Projects/indigo-pet
+cd ~/Projects/squid-pet
 uv venv
 uv sync --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple --allow-insecure-host pypi.internal.example.com
 
 # Sanity-check the state machine without a window
-.venv/bin/python -m indigo_pet --check
+.venv/bin/python -m squid_pet --check
 
 # Watcher only — writes state.json, no GUI
-.venv/bin/python -m indigo_pet --watcher-only
+.venv/bin/python -m squid_pet --watcher-only
 
 # Full pet
-.venv/bin/python -m indigo_pet
+.venv/bin/python -m squid_pet
 ```
 
-### Daily commands (`indigo` CLI wrapper)
+### Daily commands (`squid` CLI wrapper)
 
-A shell wrapper at `~/.local/bin/indigo` (alias `squid`) gives you:
+A shell wrapper at `~/.local/bin/squid` (alias `squid`) gives you:
 
 ```bash
-indigo status     # is she running + healthy? + what tpa sessions are live
-indigo why        # explain current mood (which trigger fired, recent file mtimes)
-indigo restart    # force-kill + relaunch (auto-recovers from stuck WKWebView)
-indigo tail       # follow Indigo's stdout log
-indigo errors     # last 50 lines of tpa errors.log
-indigo stop       # shut her down
+squid status     # is she running + healthy? + what tpa sessions are live
+squid why        # explain current mood (which trigger fired, recent file mtimes)
+squid restart    # force-kill + relaunch (auto-recovers from stuck WKWebView)
+squid tail       # follow Squid's stdout log
+squid errors     # last 50 lines of tpa errors.log
+squid stop       # shut her down
 ```
 
 ---
@@ -128,15 +128,15 @@ launch automatically on every login + restart herself on crash.
 ./launchagent/install.sh remove  # unload + delete
 ```
 
-The plist lives at `~/Library/LaunchAgents/com.pink.indigo-pet.plist` after
-install. Logs are redirected to `/tmp/indigo-pet.{out,err}.log`.
+The plist lives at `~/Library/LaunchAgents/com.pink.squid-pet.plist` after
+install. Logs are redirected to `/tmp/squid-pet.{out,err}.log`.
 
 ---
 
 ## Project layout
 
 ```
-src/indigo_pet/
+src/squid_pet/
 ├── __init__.py
 ├── __main__.py              # CLI entry: --check, --watcher-only, default=full
 ├── watcher.py               # state detection + StateMachine (priority cascade)
@@ -154,7 +154,7 @@ tools/
 └── remove_bg.py             # flood-fill alpha removal for sprite art
 
 launchagent/
-├── com.pink.indigo-pet.plist
+├── com.pink.squid-pet.plist
 └── install.sh
 
 tests/
@@ -186,15 +186,15 @@ alpha to 0:
 
 ```bash
 # Strip background from one or many sprites (backs up originals first)
-python tools/remove_bg.py src/indigo_pet/frontend/sprites/idle.png \
-    --backup-to src/indigo_pet/frontend/sprites/_originals_with_bg
+python tools/remove_bg.py src/squid_pet/frontend/sprites/idle.png \
+    --backup-to src/squid_pet/frontend/sprites/_originals_with_bg
 
 # Bulk-process every PNG in a directory
-python tools/remove_bg.py src/indigo_pet/frontend/sprites/ --recursive \
-    --backup-to src/indigo_pet/frontend/sprites/_originals_with_bg
+python tools/remove_bg.py src/squid_pet/frontend/sprites/ --recursive \
+    --backup-to src/squid_pet/frontend/sprites/_originals_with_bg
 
 # Verify (non-destructive): check that all 4 corner pixels have alpha=0
-python tools/remove_bg.py --verify src/indigo_pet/frontend/sprites/*.png
+python tools/remove_bg.py --verify src/squid_pet/frontend/sprites/*.png
 ```
 
 Tolerance defaults to 30 (Euclidean RGB distance). Bump it up for noisier
@@ -204,7 +204,7 @@ backgrounds.
 
 ## State file
 
-`~/.indigo-pet/state.json` is rewritten atomically every second. Schema:
+`~/.squid-pet/state.json` is rewritten atomically every second. Schema:
 
 ```json
 {

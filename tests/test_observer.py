@@ -13,8 +13,8 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from indigo_pet import observer
-from indigo_pet.observer import (
+from squid_pet import observer
+from squid_pet.observer import (
     BUBBLE_LINES,
     MAX_BUBBLE_CHARS,
     Observer,
@@ -301,7 +301,7 @@ def test_oversized_line_logs_warning_and_returns_none(caplog, monkeypatch):
     should NOT crash -- it should log a warning and return None."""
     monkeypatch.setitem(BUBBLE_LINES, "broken_key", ["this string is intentionally far too long to fit in a bubble"])
     obs = Observer(get_muted=lambda: False)
-    with caplog.at_level("WARNING", logger="indigo_pet.observer"):
+    with caplog.at_level("WARNING", logger="squid_pet.observer"):
         result = obs._pick("broken_key")
     assert result is None
     assert any("exceeds" in r.message or "exceed" in r.message

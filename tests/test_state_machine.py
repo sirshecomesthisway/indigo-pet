@@ -1,5 +1,5 @@
 """
-Unit tests for indigo_pet.watcher.StateMachine.
+Unit tests for squid_pet.watcher.StateMachine.
 
 Strategy: monkeypatch every I/O function at the module level
 (psutil/filesystem/ioreg) and drive StateMachine.compute() through each
@@ -11,8 +11,8 @@ from __future__ import annotations
 import time
 import pytest
 
-from indigo_pet import watcher
-from indigo_pet.watcher import StateMachine
+from squid_pet import watcher
+from squid_pet.watcher import StateMachine
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -381,7 +381,7 @@ def test_agent_idle_resets_on_transition_to_active(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 def test_petstate_default_fields():
     """Make sure the dataclass shape doesn't drift without us noticing."""
-    from indigo_pet.watcher import PetState
+    from squid_pet.watcher import PetState
     st = PetState()
     assert st.state == "idle"
     assert st.sub_state == ""

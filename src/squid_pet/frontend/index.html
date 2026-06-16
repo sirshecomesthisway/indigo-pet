@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Indigo</title>
+  <title>Squid</title>
   <style>
     html, body {
       margin: 0; padding: 0;
@@ -194,50 +194,97 @@
     /* Ephemeral one-line reaction shown above the sprite. Pointer-events
        off so user can drag/click through. Bubble does NOT participate in
        click-passthrough alpha mask (only sprite pixels do).               */
+    /* ════════════════════════════════════════════════════════════════
+       PIXEL-ART SPEECH BUBBLE (rebuilt 2026-06-13 per Pink's reference)
+       Two render modes:
+       (A) CSS-built default (no asset required): cream fill, dark
+           maroon border, square corners, side notch shadows, staircase
+           tail. Approximates Pink's reference closely.
+       (B) PNG asset mode: drop a pixel-art bubble at
+           frontend/assets/bubble.png and uncomment the .pixel-png class
+           below + add class="pixel-png" to the #bubble div. Uses
+           border-image 9-slice so corners stay crisp at any text width.
+       ════════════════════════════════════════════════════════════════ */
     #bubble {
       position: fixed;
-      bottom: 80%;
+      /* Sprite head crown sits at ~60% from window bottom (sprite
+         centered at y=210 in 300px window -> top at y=120 -> 60%).
+         Bubble bottom at 62% leaves the tail tip ~6px above her head. */
+      bottom: 62%;
       left: 50%;
       transform: translateX(-50%) scale(0.7);
-      background: #ffffff;
-      color: #2a2a2a;
-      border: 2px solid #1a1a1a;
-      border-radius: 12px;
+      /* Cream fill matches reference; dark maroon border (warm near-black) */
+      background: #ecead9;
+      color: #1f1418;
+      border: 3px solid #1f1418;
+      border-radius: 0;                /* SQUARE corners = pixel art */
       padding: 6px 12px;
-      font: 14px/1.2 -apple-system, system-ui, sans-serif;
-      font-weight: 500;
+      /* Monospace gives the pixel/retro feel; system fonts so no
+         external load and no corporate font policy concerns */
+      font: 12px/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
+      font-weight: 600;
       max-width: 200px;
       white-space: nowrap;
       pointer-events: none;
       opacity: 0;
       z-index: 100;
-      box-shadow: 1px 1px 0 #1a1a1a;
+      /* Side notch shadows = the maroon outer-frame look from the
+         reference (dark bars sticking out left/right of the cream). */
+      box-shadow:
+        4px 0 0 #1f1418,
+        -4px 0 0 #1f1418,
+        0 0 0 1px #1f1418;
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
       transition: none;  /* animations control visibility */
     }
-    /* Comic-style tail pointing DOWN toward the sprite */
+    /* Staircase tail pointing DOWN-CENTER toward sprite.
+       Built from a single ::after with stepped box-shadow stacks so it
+       reads as 2 pixel "steps" merging into a point. */
     #bubble::after {
       content: "";
       position: absolute;
-      bottom: -8px;
+      bottom: -6px;
       left: 50%;
+      width: 6px;
+      height: 6px;
       transform: translateX(-50%);
-      width: 0; height: 0;
-      border-left: 8px solid transparent;
-      border-right: 8px solid transparent;
-      border-top: 10px solid #1a1a1a;
+      background: #ecead9;
+      border-left: 3px solid #1f1418;
+      border-right: 3px solid #1f1418;
+      border-bottom: 3px solid #1f1418;
+      box-sizing: content-box;
     }
+    /* Second smaller step under the first = staircase tip */
     #bubble::before {
       content: "";
       position: absolute;
-      bottom: -5px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 0; height: 0;
-      border-left: 6px solid transparent;
-      border-right: 6px solid transparent;
-      border-top: 7px solid #ffffff;
-      z-index: 1;
+      bottom: -12px;
+      left: calc(50% - 3px);
+      width: 0;
+      height: 0;
+      border-left: 3px solid #1f1418;
+      border-right: 3px solid #1f1418;
+      border-bottom: 3px solid #1f1418;
+      border-top: 3px solid #ecead9;
+      box-sizing: content-box;
     }
+
+    /* ────────────────────────────────────────────────────────────────
+       PNG asset mode -- uncomment when assets/bubble.png exists.
+       Replace inner content rendering with the 9-slice border-image.
+       --------------------------------------------------------------
+    #bubble.pixel-png {
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 14px 20px 22px 20px;
+      border-image: url("assets/bubble.png") 32 24 48 24 fill / 16px 12px 24px 12px stretch;
+    }
+    #bubble.pixel-png::after,
+    #bubble.pixel-png::before { display: none; }
+       ──────────────────────────────────────────────────────────────── */
+
     @keyframes bubble-pop-in {
       0%   { opacity: 0; transform: translateX(-50%) scale(0.7); }
       60%  { opacity: 1; transform: translateX(-50%) scale(1.08); }
@@ -253,7 +300,7 @@
 </head>
 <body>
   <div class="pet-wrapper" id="pet-wrapper">
-      <img id="pet" class="pet" data-state="" src="" alt="Indigo"/>
+      <img id="pet" class="pet" data-state="" src="" alt="Squid"/>
     </div>
   <div id="concern-tooltip"></div>
   <div id="hint"></div>
@@ -272,7 +319,7 @@
       try {
         if (document.querySelectorAll('.heart').length >= HEART_MAX_LIVE) return;
         const container = document.body;
-        const msg = `[indigo] spawnHearts at (${centerX.toFixed(0)}, ${centerY.toFixed(0)})  viewport=${window.innerWidth}x${window.innerHeight}`;
+        const msg = `[squid] spawnHearts at (${centerX.toFixed(0)}, ${centerY.toFixed(0)})  viewport=${window.innerWidth}x${window.innerHeight}`;
         console.log(msg);
         try { window.pywebview?.api?.debug_log?.(msg); } catch(_){}
         for (let i = 0; i < HEART_COUNT; i++) {
@@ -291,7 +338,7 @@
           container.appendChild(h);
         }
       } catch (err) {
-        const emsg = `[indigo] spawnHearts ERROR: ${err.message}`;
+        const emsg = `[squid] spawnHearts ERROR: ${err.message}`;
         console.error(emsg, err);
         try { window.pywebview?.api?.debug_log?.(emsg); } catch(_){}
       }
@@ -396,7 +443,7 @@
         wrapperEl.style.transform = `rotate(${deg}deg)`;
       }
       pet.dataset.edge = edge;
-      console.log(`[indigo] edge -> ${edge || "(none)"} rotate ${deg}deg (wrapper)`);
+      console.log(`[squid] edge -> ${edge || "(none)"} rotate ${deg}deg (wrapper)`);
     }
 
     // ─────── EXPRESSION LAYER: mood-driven sprite overrides ───────
@@ -439,7 +486,7 @@
       _mood = "drowsy";
       notifyMoodToBackend("drowsy");
       setSpriteSrcDirect("sprites/drowsy.png");
-      console.log("[indigo] -> drowsy mood");
+      console.log("[squid] -> drowsy mood");
     }
 
     function enterSleeping() {
@@ -447,7 +494,7 @@
       _mood = "sleeping";
       notifyMoodToBackend("sleeping");
       setSpriteSrcDirect("sprites/sleeping.png");
-      console.log("[indigo] -> sleeping mood (5 min agent_idle)");
+      console.log("[squid] -> sleeping mood (5 min agent_idle)");
     }
 
     function wakeUpWithStretch() {
@@ -457,13 +504,13 @@
       _mood = "stretch";
       notifyMoodToBackend("stretch");
       setSpriteSrcDirect("sprites/stretch.png");
-      console.log(`[indigo] -> stretch (waking from ${from})`);
+      console.log(`[squid] -> stretch (waking from ${from})`);
       setTimeout(() => {
         _mood = "";
         notifyMoodToBackend("");
         // Restore current state's base sprite (filter coerces to idle.png)
         setSpriteSrcDirect(spriteUrl(currentState));
-        console.log("[indigo] stretch complete -> awake");
+        console.log("[squid] stretch complete -> awake");
       }, STRETCH_DURATION_MS);
     }
 
@@ -664,7 +711,7 @@
         if (wakeSeq > _lastWakeSeq) {
           _lastWakeSeq = wakeSeq;
           if (_mood === "drowsy" || _mood === "sleeping") {
-            console.log("[indigo] wake trigger fired -> stretch");
+            console.log("[squid] wake trigger fired -> stretch");
             wakeFromDrowsy();
           }
         }
@@ -751,7 +798,7 @@ window._pokePending = setTimeout(() => {
           window._pokePending = null;
           // Single click = wake only (no heart). Heart is the dblclick reward.
           try { window.pywebview?.api?.poke?.(); } catch(_){}
-          console.log(`[indigo] poke (single click - wake only)! dt=${dt}ms dist=${dist.toFixed(1)}px`);
+          console.log(`[squid] poke (single click - wake only)! dt=${dt}ms dist=${dist.toFixed(1)}px`);
         }, 260);  // > typical dblclick threshold but feels instant
       }
     });
@@ -787,7 +834,7 @@ document.addEventListener("dblclick", async (e) => {
       if (window._pokePending) {
         clearTimeout(window._pokePending);
         window._pokePending = null;
-        console.log("[indigo] cancelled pending poke (dblclick won)");
+        console.log("[squid] cancelled pending poke (dblclick won)");
       }
 
       // Dblclick = LIKE gesture: spawn heart + wake (via poke)
@@ -802,9 +849,9 @@ document.addEventListener("dblclick", async (e) => {
           const r = sprite.getBoundingClientRect();
           spawnHearts(r.left + r.width / 2, r.top);
         }
-        console.log("[indigo] dblclick LIKE (heart + wake)");
+        console.log("[squid] dblclick LIKE (heart + wake)");
       } catch (err) {
-        const emsg = `[indigo] dblclick handler ERROR: ${err.message}`;
+        const emsg = `[squid] dblclick handler ERROR: ${err.message}`;
         console.warn(emsg, err);
         try { window.pywebview?.api?.debug_log?.(emsg); } catch(_){}
       }

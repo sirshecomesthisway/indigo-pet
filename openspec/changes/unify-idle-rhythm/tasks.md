@@ -1,6 +1,6 @@
 ## 1. Add RoutineController
 
-- [x] 1.1 Create `indigo_pet/routine.py` with `RoutineController` class
+- [x] 1.1 Create `squid_pet/routine.py` with `RoutineController` class
 - [x] 1.2 Define `IDLE_ROUTINE` constant (8 entries: rest, look, walk-short, rest, walk-medium, look, rest, walk-edge)
 - [x] 1.3 Implement `_loop` with circular index, jittered duration per action
 - [x] 1.4 Implement `start()`, `stop()`, `pause()`, `resume()` methods (daemon thread)
@@ -22,7 +22,7 @@
 
 ## 3. Delete pulse.py
 
-- [x] 3.1 Remove `indigo_pet/pulse.py`
+- [x] 3.1 Remove `squid_pet/pulse.py`
 - [x] 3.2 Remove pulse import + bootstrap from `__main__.py` (no pulse refs remain in `__main__.py`)
 
 ## 4. Wire RoutineController into __main__

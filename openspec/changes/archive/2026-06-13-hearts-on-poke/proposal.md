@@ -50,7 +50,7 @@ _None._
 
 ## Impact
 
-- **Code**: `src/indigo_pet/frontend/index.html` only (CSS keyframes + ~25 lines JS).
+- **Code**: `src/squid_pet/frontend/index.html` only (CSS keyframes + ~25 lines JS).
 - **Dependencies**: None.
 - **State files**: None.
 - **Performance**: Each poke creates 3 DOM nodes that auto-remove after 900 ms.

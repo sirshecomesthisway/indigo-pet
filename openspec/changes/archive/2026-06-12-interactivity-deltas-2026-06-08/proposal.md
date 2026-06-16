@@ -54,11 +54,11 @@ future contributors (and future-Pink) can see what the system actually does.
 
 ## Impact
 
-- **Code**: `src/indigo_pet/window.py`, `src/indigo_pet/wanderer.py`,
-  `src/indigo_pet/menu.py`, `src/indigo_pet/__main__.py`,
-  `src/indigo_pet/frontend/index.html`, `~/.local/bin/squid`.
+- **Code**: `src/squid_pet/window.py`, `src/squid_pet/wanderer.py`,
+  `src/squid_pet/menu.py`, `src/squid_pet/__main__.py`,
+  `src/squid_pet/frontend/index.html`, `~/.local/bin/squid`.
 - **Dependencies**: No new deps. Uses already-imported `fcntl`, `AppKit`,
   `threading`, `random`.
-- **State files**: New `~/.indigo-pet/lock` (fcntl flock file).
-  Existing `~/.indigo-pet/pid`, `position.json`, `state.json` unchanged.
+- **State files**: New `~/.squid-pet/lock` (fcntl flock file).
+  Existing `~/.squid-pet/pid`, `position.json`, `state.json` unchanged.
 - **OS**: Adds `NSWindow.setCollectionBehavior_` call (multi-Space).

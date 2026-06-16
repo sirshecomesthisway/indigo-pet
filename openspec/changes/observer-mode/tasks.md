@@ -2,7 +2,7 @@
 
 ## 1. observer.py module
 
-- [x] 1.1 Create `src/indigo_pet/observer.py` with `BUBBLE_LINES` dict
+- [x] 1.1 Create `src/squid_pet/observer.py` with `BUBBLE_LINES` dict
       (state-transition + interaction keys per design.md)
 - [x] 1.2 `Observer` class with `__init__(self, get_muted: Callable[[], bool])`
 - [x] 1.3 `on_state_change(self, old: str, new: str) -> Optional[str]`:
@@ -45,7 +45,7 @@
 
 ## 4. Mute toggle
 
-- [x] 4.1 Read/write `~/.indigo-pet/config.json` with `muted: bool` field
+- [x] 4.1 Read/write `~/.squid-pet/config.json` with `muted: bool` field
       (extend `passthrough.py`'s config-load pattern OR new `config.py` module)
 - [x] 4.2 `Observer.get_muted()` reads the config flag (refreshed on each call)
 - [x] 4.3 Add "Mute Squid" menu item in `menu.py` (checkbox-style with current
@@ -71,7 +71,7 @@
 ## 6. Manual UI validation (Pink validates after restart)
 
 - [x] 6.1 Squid restarts cleanly with observer wired (no startup errors in
-      `/tmp/indigo-pet.{out,err}.log`)
+      `/tmp/squid-pet.{out,err}.log`)
 - [x] 6.2 Start TPA in another terminal — observe bubble appears on
       first sustained CPU spike: "ooh, thinking..." or similar
 - [x] 6.3 Run a shell command in TPA — bubble flips to one of the

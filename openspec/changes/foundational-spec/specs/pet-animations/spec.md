@@ -3,7 +3,7 @@
 ### Requirement: One sprite per state, transparent background
 
 The project SHALL provide exactly seven sprite PNGs under
-`src/indigo_pet/frontend/sprites/`, named `<state>.png` for each state in
+`src/squid_pet/frontend/sprites/`, named `<state>.png` for each state in
 `{idle, thinking, working, grooving, celebrating, sleeping, concerned}`.
 Each sprite SHALL have a fully transparent background (alpha=0 on the
 background pixels) so the sprite appears to float on the desktop.
@@ -19,7 +19,7 @@ background pixels) so the sprite appears to float on the desktop.
 
 ### Requirement: Display via a single `<img>` element with state attribute
 
-The frontend SHALL render Indigo using one `<img id="pet" class="pet">`
+The frontend SHALL render Squid using one `<img id="pet" class="pet">`
 element. The currently displayed state SHALL be communicated by setting
 `data-state` on the element. Sprite swaps SHALL include a 150 ms opacity
 cross-fade.
@@ -74,7 +74,7 @@ explaining the controls ("drag • R-click=corner • dbl-click=state"). Pressin
 `Ctrl+D` SHALL toggle a debug overlay showing the current state name in the
 top-left corner.
 
-#### Scenario: User starts Indigo
+#### Scenario: User starts Squid
 - **WHEN** the window first appears
 - **THEN** a small dark hint toast fades in for ~3.5 s with the controls reminder, then fades out
 

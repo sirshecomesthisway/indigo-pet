@@ -1,5 +1,5 @@
 """
-Indigo Pet Window — uses NSWindow directly for accurate positioning + dragging.
+Squid Pet Window — uses NSWindow directly for accurate positioning + dragging.
 
 Why NSWindow direct: pywebview's window.move() can have origin issues on
 multi-display setups. NSWindow's setFrameOrigin_ uses Cocoa's native bottom-left
@@ -32,8 +32,8 @@ WINDOW_WIDTH  = 200
 WINDOW_HEIGHT = 300  # was 220; bumped to give hearts headroom above sprite
 EDGE_MARGIN   = 20
 
-POSITION_FILE = Path.home() / ".indigo-pet" / "position.json"
-SETTINGS_FILE = Path.home() / ".indigo-pet" / "settings.json"
+POSITION_FILE = Path.home() / ".squid-pet" / "position.json"
+SETTINGS_FILE = Path.home() / ".squid-pet" / "settings.json"
 CORNERS = ["top-right", "bottom-right", "bottom-left", "top-left"]
 
 
@@ -55,7 +55,7 @@ def _get_ns_window():
             except Exception:
                 continue
     except Exception as e:
-        print(f"[indigo-pet] NSWindow fetch failed: {e}", flush=True)
+        print(f"[squid-pet] NSWindow fetch failed: {e}", flush=True)
     return None
 
 
@@ -141,7 +141,7 @@ def move_to_corner(corner: str) -> bool:
         nw.setFrameOrigin_(NSPoint(x, y))
         return True
     except Exception as e:
-        print(f"[indigo-pet] move_to_corner failed: {e}", flush=True)
+        print(f"[squid-pet] move_to_corner failed: {e}", flush=True)
         return False
 
 
@@ -162,7 +162,7 @@ def move_window_by_delta(dx: float, dy: float) -> tuple[float, float] | None:
         nw.setFrameOrigin_(NSPoint(new_x, new_y))
         return (new_x, new_y)
     except Exception as e:
-        print(f"[indigo-pet] move_window_by_delta failed: {e}", flush=True)
+        print(f"[squid-pet] move_window_by_delta failed: {e}", flush=True)
         return None
 
 
@@ -225,7 +225,7 @@ def _native_drag_loop(start_cursor, start_origin, passthrough, on_end, on_swing=
     try:
         from AppKit import NSEvent
     except Exception as e:
-        print(f"[indigo-pet] drag loop import failed: {e}", flush=True)
+        print(f"[squid-pet] drag loop import failed: {e}", flush=True)
         return
 
     nw = _get_ns_window()
@@ -255,7 +255,7 @@ def _native_drag_loop(start_cursor, start_origin, passthrough, on_end, on_swing=
             # Bit 0 = primary (left) button. If 0, user released.
             buttons = NSEvent.pressedMouseButtons()
             if (buttons & 1) == 0:
-                print("[indigo-pet] drag: OS reports button released → auto-end", flush=True)
+                print("[squid-pet] drag: OS reports button released → auto-end", flush=True)
                 break
 
             loc = NSEvent.mouseLocation()
@@ -276,11 +276,11 @@ def _native_drag_loop(start_cursor, start_origin, passthrough, on_end, on_swing=
                             # Drop old entries outside the window
                             swing_history = [t for t in swing_history if now - t < swing_window]
                             if len(swing_history) >= swing_threshold:
-                                print(f"[indigo-pet] SWING detected ({len(swing_history)} "
+                                print(f"[squid-pet] SWING detected ({len(swing_history)} "
                                       f"reversals in {swing_window}s) → wake!", flush=True)
                                 try: on_swing()
                                 except Exception as e:
-                                    print(f"[indigo-pet] swing callback err: {e}", flush=True)
+                                    print(f"[squid-pet] swing callback err: {e}", flush=True)
                                 swing_fired = True
                         last_direction = new_direction
                 last_cy = cy
@@ -299,17 +299,17 @@ def _native_drag_loop(start_cursor, start_origin, passthrough, on_end, on_swing=
             # Throttled debug print
             now = _time.time()
             if now - last_print > 0.5:
-                print(f"[indigo-pet] drag tick: cursor=({cx:.0f},{cy:.0f}) "
+                print(f"[squid-pet] drag tick: cursor=({cx:.0f},{cy:.0f}) "
                       f"origin=({new_x:.0f},{new_y:.0f})", flush=True)
                 last_print = now
 
             if _time.time() > deadline:
-                print("[indigo-pet] drag: 30s watchdog hit → auto-end", flush=True)
+                print("[squid-pet] drag: 30s watchdog hit → auto-end", flush=True)
                 break
 
             _time.sleep(1.0 / 60.0)
         except Exception as e:
-            print(f"[indigo-pet] drag loop error: {e}", flush=True)
+            print(f"[squid-pet] drag loop error: {e}", flush=True)
             break
 
     # Post-drag snap-back guard (in case cursor raced off-screen
@@ -322,27 +322,27 @@ def _native_drag_loop(start_cursor, start_origin, passthrough, on_end, on_swing=
             from Foundation import NSPoint
             from PyObjCTools import AppHelper
             AppHelper.callAfter(nw.setFrameOrigin_, NSPoint(cx, cy))
-            print(f"[indigo-pet] drag end: snap-back ({ox:.0f},{oy:.0f}) -> ({cx:.0f},{cy:.0f}) (was out of visibleFrame)", flush=True)
+            print(f"[squid-pet] drag end: snap-back ({ox:.0f},{oy:.0f}) -> ({cx:.0f},{cy:.0f}) (was out of visibleFrame)", flush=True)
     except Exception as e:
-        print(f"[indigo-pet] drag end snap-back error: {e}", flush=True)
+        print(f"[squid-pet] drag end snap-back error: {e}", flush=True)
 
     # Cleanup
     try:
         on_end()
     except Exception as e:
-        print(f"[indigo-pet] drag end-callback failed: {e}", flush=True)
+        print(f"[squid-pet] drag end-callback failed: {e}", flush=True)
 
 
 def start_native_drag(passthrough, on_end, on_swing=None) -> bool:
     """Begin a Python-driven drag. Returns True if started."""
     global _drag_thread
     if _drag_thread is not None and _drag_thread.is_alive():
-        print("[indigo-pet] drag already in progress; ignoring start", flush=True)
+        print("[squid-pet] drag already in progress; ignoring start", flush=True)
         return False
     try:
         from AppKit import NSEvent
     except Exception as e:
-        print(f"[indigo-pet] start_native_drag import failed: {e}", flush=True)
+        print(f"[squid-pet] start_native_drag import failed: {e}", flush=True)
         return False
     nw = _get_ns_window()
     if nw is None:
@@ -356,10 +356,10 @@ def start_native_drag(passthrough, on_end, on_swing=None) -> bool:
         target=_native_drag_loop,
         args=((loc.x, loc.y), (frame.origin.x, frame.origin.y), passthrough, on_end, on_swing),
         daemon=True,
-        name="indigo-drag",
+        name="squid-drag",
     )
     _drag_thread.start()
-    print(f"[indigo-pet] drag started: cursor=({loc.x:.0f},{loc.y:.0f}) "
+    print(f"[squid-pet] drag started: cursor=({loc.x:.0f},{loc.y:.0f}) "
           f"origin=({frame.origin.x:.0f},{frame.origin.y:.0f})", flush=True)
     return True
 
@@ -403,7 +403,7 @@ def set_window_origin(x: float, y: float) -> None:
         pt = NSPoint(cx, cy)
         AppHelper.callAfter(nw.setFrameOrigin_, pt)
     except Exception as e:
-        print(f"[indigo-pet] set_window_origin failed: {e}", flush=True)
+        print(f"[squid-pet] set_window_origin failed: {e}", flush=True)
 
 
 def get_visible_frame() -> tuple[float, float, float, float] | None:
@@ -442,13 +442,13 @@ class PetApi:
             self._stroll_mode = "edges"
         self._hint_text: str = ""              # one-shot hint shown via #hint
         self._hint_seq: int = 0                # increments per hint; JS dedupes
-        self._menu = None                      # IndigoMenu instance (set in on_loaded)
+        self._menu = None                      # SquidMenu instance (set in on_loaded)
         self._wanderer = None                  # WanderController (set in on_loaded)
         self._routine = None                   # RoutineController (set in on_loaded)
         self._frontend_mood: str = ""          # JS mood: ""/drowsy/sleeping/stretch
         # Set when on_loaded fires; the watchdog in main() uses this to
         # detect WKWebView startup hangs and self-terminate within 10s
-        # so `indigo start` / launchd can recover cleanly.
+        # so `squid start` / launchd can recover cleanly.
         self._loaded: threading.Event = threading.Event()
 
         # Observer / speech-bubble layer (observer-mode change 2026-06-13)
@@ -466,11 +466,11 @@ class PetApi:
         """Called by JS on its first successful get_state poll. Provides a
         backup path to disarm the startup watchdog in case pywebview's
         native `loaded` event swizzle misses (a cocoa-backend race that
-        produced ~40% hang rate empirically; see indigo-pet.md gotchas)."""
+        produced ~40% hang rate empirically; see squid-pet.md gotchas)."""
         if not self._loaded.is_set():
             self._loaded.set()
             print(
-                "[indigo-pet] watchdog disarmed via JS signal_ready() "
+                "[squid-pet] watchdog disarmed via JS signal_ready() "
                 "(native loaded event missed)",
                 flush=True,
             )
@@ -564,7 +564,7 @@ class PetApi:
         prev = self._frontend_mood
         self._frontend_mood = (mood or "").strip()
         if self._frontend_mood != prev:
-            print(f"[indigo-pet] mood notify: {prev or '(awake)'} -> "
+            print(f"[squid-pet] mood notify: {prev or '(awake)'} -> "
                   f"{self._frontend_mood or '(awake)'}", flush=True)
             # Observer: fire mood-change bubble (drowsy/waking; sleeping is silent)
             bubble = self._observer.on_mood_change(prev, self._frontend_mood)
@@ -598,8 +598,8 @@ class PetApi:
             if self._wanderer is not None:
                 self._wanderer.refresh_edge()
         except Exception as e:
-            print(f"[indigo-pet] corner snap edge-refresh err: {e}", flush=True)
-        print(f"[indigo-pet] corner snap -> {self._corner} (ok={ok})", flush=True)
+            print(f"[squid-pet] corner snap edge-refresh err: {e}", flush=True)
+        print(f"[squid-pet] corner snap -> {self._corner} (ok={ok})", flush=True)
         return self._corner
 
     def drag_start(self) -> dict:
@@ -615,10 +615,10 @@ class PetApi:
             try:
                 if self._wanderer is not None:
                     new_edge = self._wanderer.refresh_edge()
-                    print(f"[indigo-pet] drag end: edge refreshed -> {new_edge or '(none)'}", flush=True)
+                    print(f"[squid-pet] drag end: edge refreshed -> {new_edge or '(none)'}", flush=True)
             except Exception as e:
-                print(f"[indigo-pet] drag end edge-refresh err: {e}", flush=True)
-            print("[indigo-pet] drag ended cleanly", flush=True)
+                print(f"[squid-pet] drag end edge-refresh err: {e}", flush=True)
+            print("[squid-pet] drag ended cleanly", flush=True)
         # on_swing handler: shake-to-wake gesture during drag triggers same
         # 60s user_wake override as poke. Pink can either single-click OR
         # shake her up-down to wake her up.
@@ -630,7 +630,7 @@ class PetApi:
             if bubble is not None:
                 with self._lock:
                     self._pending_bubble = bubble
-            print("[indigo-pet] swing-to-wake -> 60s awake override + observer bubble", flush=True)
+            print("[squid-pet] swing-to-wake -> 60s awake override + observer bubble", flush=True)
         started = start_native_drag(self._passthrough, _on_end, on_swing=_on_swing)
         return {"ok": started}
 
@@ -678,17 +678,17 @@ class PetApi:
         import time as _t
         self._wander_paused_until = _t.time() + minutes * 60
         self._emit_hint(f"⏸ wandering paused for {minutes} min")
-        print(f"[indigo-pet] wander paused for {minutes} min", flush=True)
+        print(f"[squid-pet] wander paused for {minutes} min", flush=True)
 
     def _menu_resume_wander(self) -> None:
         """Cancel any active pause."""
         self._wander_paused_until = 0.0
         self._emit_hint("▶ wandering resumed")
-        print("[indigo-pet] wander resumed", flush=True)
+        print("[squid-pet] wander resumed", flush=True)
 
     def debug_log(self, msg: str) -> str:
-        """JS-exposed: print arbitrary debug message from frontend to /tmp/indigo-pet.log."""
-        print(f"[indigo-pet][js] {msg}", flush=True)
+        """JS-exposed: print arbitrary debug message from frontend to /tmp/squid-pet.log."""
+        print(f"[squid-pet][js] {msg}", flush=True)
         return "logged"
 
     def poke(self) -> str:
@@ -712,7 +712,7 @@ class PetApi:
         msg = "poke -> 60s awake override + observer bubble"
         if cleared:
             msg += " + cleared forced state"
-        print(f"[indigo-pet] {msg}", flush=True)
+        print(f"[squid-pet] {msg}", flush=True)
         return "poked"
 
 
@@ -727,7 +727,7 @@ class PetApi:
         flashes a hint pill confirming the new mode.
         """
         if mode not in ("anywhere", "edges"):
-            print(f"[indigo-pet] _menu_set_stroll_mode: invalid {mode!r}",
+            print(f"[squid-pet] _menu_set_stroll_mode: invalid {mode!r}",
                   flush=True)
             return
         self._stroll_mode = mode
@@ -736,7 +736,7 @@ class PetApi:
             if self._wanderer is not None:
                 self._wanderer.set_stroll_mode(mode)
         except Exception as e:
-            print(f"[indigo-pet] wanderer.set_stroll_mode failed: {e}",
+            print(f"[squid-pet] wanderer.set_stroll_mode failed: {e}",
                   flush=True)
         # Persist
         try:
@@ -744,7 +744,7 @@ class PetApi:
             settings["stroll_mode"] = mode
             save_settings(settings)
         except Exception as e:
-            print(f"[indigo-pet] save settings failed: {e}", flush=True)
+            print(f"[squid-pet] save settings failed: {e}", flush=True)
         label = "edges only" if mode == "edges" else "anywhere"
         self._emit_hint(f"stroll path -> {label}")
 
@@ -757,7 +757,7 @@ class PetApi:
         if new_val:
             with self._lock:
                 self._pending_bubble = None
-        print(f"[indigo-pet] mute toggled -> {new_val}", flush=True)
+        print(f"[squid-pet] mute toggled -> {new_val}", flush=True)
 
     def is_muted(self) -> bool:
         """Exposed so menu can show checkbox state."""
@@ -805,7 +805,7 @@ class PetApi:
     def _menu_has_recent_error(self) -> bool:
         """True if errors.log was touched in the last 10 min."""
         try:
-            from indigo_pet.watcher import ERRORS_LOG
+            from squid_pet.watcher import ERRORS_LOG
             import time as _t
             if not ERRORS_LOG.exists():
                 return False
@@ -816,7 +816,7 @@ class PetApi:
     def _menu_whats_wrong(self) -> None:
         """Open the last error log in Console.app."""
         try:
-            from indigo_pet.watcher import ERRORS_LOG
+            from squid_pet.watcher import ERRORS_LOG
             import subprocess
             subprocess.Popen(["open", "-a", "Console", str(ERRORS_LOG)])
             self._emit_hint("🩺 opened errors.log")
@@ -828,7 +828,7 @@ class PetApi:
         try:
             with self._lock:
                 st = self._latest
-            from indigo_pet.watcher import (
+            from squid_pet.watcher import (
                 find_tpa_processes, most_recent_tool_activity_age,
             )
             procs = find_tpa_processes()
@@ -844,20 +844,20 @@ class PetApi:
             self._emit_hint(f"📊 stats err: {e}")
 
     def _menu_open_log(self) -> None:
-        """Open /tmp/indigo-pet.log in Console.app."""
+        """Open /tmp/squid-pet.log in Console.app."""
         try:
             import subprocess
-            subprocess.Popen(["open", "-a", "Console", "/tmp/indigo-pet.log"])
-            self._emit_hint("📜 opened indigo-pet.log")
+            subprocess.Popen(["open", "-a", "Console", "/tmp/squid-pet.log"])
+            self._emit_hint("📜 opened squid-pet.log")
         except Exception as e:
             self._emit_hint(f"📜 failed: {e}")
 
     # ─── Lifecycle ───
     def _menu_restart(self) -> None:
-        """Re-exec indigo via the launcher script — clean restart."""
+        """Re-exec squid via the launcher script — clean restart."""
         try:
             import subprocess, os
-            launcher = os.path.expanduser("~/.local/bin/indigo")
+            launcher = os.path.expanduser("~/.local/bin/squid")
             subprocess.Popen(
                 [launcher, "restart"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -883,14 +883,14 @@ class PetApi:
 # ──────────────────────────────────────────────────────────────────
 def watcher_thread(api: PetApi, stop_event: threading.Event) -> None:
     sm = watcher.StateMachine()
-    print(f"[indigo-pet] watcher thread started", flush=True)
+    print(f"[squid-pet] watcher thread started", flush=True)
     while not stop_event.is_set():
         try:
             state = sm.compute()
             api.update(state)
             watcher.write_state(state)
         except Exception as e:
-            print(f"[indigo-pet] watcher error: {e}", flush=True)
+            print(f"[squid-pet] watcher error: {e}", flush=True)
         stop_event.wait(watcher.POLL_INTERVAL_SEC)
 
 
@@ -908,7 +908,7 @@ def main() -> None:
     corner = load_corner()
     # use ANY initial coords — we'll snap once NSWindow is available
     window = webview.create_window(
-        title="Indigo",
+        title="Squid",
         url=str(FRONTEND_HTML),
         width=WINDOW_WIDTH,
         height=WINDOW_HEIGHT,
@@ -925,7 +925,7 @@ def main() -> None:
     stop_event = threading.Event()
     t = threading.Thread(
         target=watcher_thread, args=(api, stop_event),
-        daemon=True, name="indigo-watcher",
+        daemon=True, name="squid-watcher",
     )
     t.start()
 
@@ -937,14 +937,14 @@ def main() -> None:
             try:
                 from AppKit import NSApp
                 NSApp.setActivationPolicy_(1)  # 1 = accessory
-                print("[indigo-pet] activation policy → accessory (no Dock icon)", flush=True)
+                print("[squid-pet] activation policy → accessory (no Dock icon)", flush=True)
             except Exception as e:
-                print(f"[indigo-pet] accessory policy failed: {e}", flush=True)
+                print(f"[squid-pet] accessory policy failed: {e}", flush=True)
         try:
             from PyObjCTools import AppHelper
             AppHelper.callAfter(_set_accessory)
         except Exception as e:
-            print(f"[indigo-pet] couldn't dispatch accessory: {e}", flush=True)
+            print(f"[squid-pet] couldn't dispatch accessory: {e}", flush=True)
 
         # Multi-Space: make Squid appear on EVERY virtual desktop (Space) and
         # over fullscreen apps too. Set NSWindow collectionBehavior bits:
@@ -958,23 +958,23 @@ def main() -> None:
                 if w is not None:
                     ALL_SPACES_BEHAVIOR = (1 << 0) | (1 << 4) | (1 << 8)  # 273
                     w.setCollectionBehavior_(ALL_SPACES_BEHAVIOR)
-                    print(f"[indigo-pet] collectionBehavior set to {ALL_SPACES_BEHAVIOR} "
+                    print(f"[squid-pet] collectionBehavior set to {ALL_SPACES_BEHAVIOR} "
                           "(all Spaces + stationary + fullscreen-aux)", flush=True)
                 else:
-                    print("[indigo-pet] all-spaces: no NSWindow yet", flush=True)
+                    print("[squid-pet] all-spaces: no NSWindow yet", flush=True)
             except Exception as e:
-                print(f"[indigo-pet] all-spaces failed: {e}", flush=True)
+                print(f"[squid-pet] all-spaces failed: {e}", flush=True)
         try:
             from PyObjCTools import AppHelper
             AppHelper.callAfter(_set_all_spaces)
         except Exception as e:
-            print(f"[indigo-pet] couldn't dispatch all-spaces: {e}", flush=True)
+            print(f"[squid-pet] couldn't dispatch all-spaces: {e}", flush=True)
 
         # Snap to saved corner via NSWindow (accurate, no origin issues)
         ok = move_to_corner(corner)
         vf = _visible_frame()
-        print(f"[indigo-pet] visibleFrame = {vf}", flush=True)
-        print(f"[indigo-pet] snapped to '{corner}' (ok={ok})", flush=True)
+        print(f"[squid-pet] visibleFrame = {vf}", flush=True)
+        print(f"[squid-pet] snapped to '{corner}' (ok={ok})", flush=True)
 
         # Start pixel-perfect click passthrough
         pt = PassthroughController(_get_ns_window)
@@ -985,7 +985,7 @@ def main() -> None:
         # Start wanderer in SERVICE MODE -- exposes request_walk /
         # request_look_around primitives. No internal scheduler;
         # RoutineController drives idle-time invocations.
-        from indigo_pet.wanderer import WanderController
+        from squid_pet.wanderer import WanderController
         wc = WanderController(
             get_state=lambda: api.get_state().get("state", "idle"),
             is_drag_active=is_drag_active,
@@ -999,10 +999,10 @@ def main() -> None:
         # Apply persisted stroll mode (restored 2026-06-13)
         try:
             wc.set_stroll_mode(api._stroll_mode)
-            print(f"[indigo-pet] initial stroll mode -> {api._stroll_mode}",
+            print(f"[squid-pet] initial stroll mode -> {api._stroll_mode}",
                   flush=True)
         except Exception as e:
-            print(f"[indigo-pet] initial stroll mode push failed: {e}",
+            print(f"[squid-pet] initial stroll mode push failed: {e}",
                   flush=True)
         # Sprint callbacks (wrapper-deg + wake + fast-transition)
         try:
@@ -1017,13 +1017,13 @@ def main() -> None:
                 api._sprint_fast_transition = bool(on)
             wc.set_sprint_callbacks(_wake, _fast_trans)
         except Exception as e:
-            print(f"[indigo-pet] sprint wiring failed: {e}", flush=True)
+            print(f"[squid-pet] sprint wiring failed: {e}", flush=True)
 
         # Start unified idle rhythm -- replaces pulse.py + wanderer's RNG
         # scheduler. Fires IDLE_ROUTINE actions when state==idle, mood
         # awake, drag clear, not pinned/paused.
         try:
-            from indigo_pet.routine import RoutineController
+            from squid_pet.routine import RoutineController
             rc = RoutineController(
                 wanderer=wc,
                 get_state=lambda: api.get_state().get("state", "idle"),
@@ -1038,16 +1038,16 @@ def main() -> None:
             api._routine = rc
             rc.start()
         except Exception as e:
-            print(f"[indigo-pet] routine startup failed: {e}", flush=True)
+            print(f"[squid-pet] routine startup failed: {e}", flush=True)
 
         # Build the right-click context menu (needs an active NSApp).
-        from indigo_pet.menu import IndigoMenu
-        api._menu = IndigoMenu(api)
-        print("[indigo-pet] context menu ready")
+        from squid_pet.menu import SquidMenu
+        api._menu = SquidMenu(api)
+        print("[squid-pet] context menu ready")
 
         # Signal the startup watchdog: webview loaded + all subsystems up.
         api._loaded.set()
-        print("[indigo-pet] startup complete -- watchdog disarmed", flush=True)
+        print("[squid-pet] startup complete -- watchdog disarmed", flush=True)
 
     def on_closing() -> None:
         stop_event.set()
@@ -1070,14 +1070,14 @@ def main() -> None:
     # process is wedged (most common: a stale WebKit content process or
     # a kill-mid-load race). The Python process otherwise stays alive
     # forever with no visible window. Self-terminate so the user / CLI
-    # can recover with a fresh `indigo start`.
+    # can recover with a fresh `squid start`.
     STARTUP_TIMEOUT_SEC = 10.0
     def _watchdog():
         if api._loaded.wait(timeout=STARTUP_TIMEOUT_SEC):
             return  # healthy startup
         import os as _os, signal as _signal
         print(
-            f"[indigo-pet] FATAL: webview did not finish loading within "
+            f"[squid-pet] FATAL: webview did not finish loading within "
             f"{STARTUP_TIMEOUT_SEC:.0f}s -- self-terminating so CLI can recover",
             flush=True,
         )
@@ -1086,7 +1086,7 @@ def main() -> None:
         # tears it all down without waiting for atexit handlers.
         _os._exit(2)
     threading.Thread(
-        target=_watchdog, daemon=True, name="indigo-startup-watchdog",
+        target=_watchdog, daemon=True, name="squid-startup-watchdog",
     ).start()
 
     webview.start(debug=False)

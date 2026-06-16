@@ -29,12 +29,12 @@ A background daemon thread SHALL poll the global cursor location via
 #### Scenario: Cursor over opaque sprite pixel
 - **WHEN** the cursor is over a pixel of the sprite with alpha > 30
 - **THEN** the NSWindow's `ignoresMouseEvents` is `False`
-- **AND** clicks land on Indigo (drag / right-click / dbl-click all work)
+- **AND** clicks land on Squid (drag / right-click / dbl-click all work)
 
 #### Scenario: Cursor over transparent area of the window
 - **WHEN** the cursor is inside the window's bounding box but over a transparent pixel (alpha < 30)
 - **THEN** the NSWindow's `ignoresMouseEvents` is `True`
-- **AND** clicks pass through to whatever app is behind Indigo
+- **AND** clicks pass through to whatever app is behind Squid
 
 #### Scenario: Cursor outside the window
 - **WHEN** the cursor is outside the window's bounding box
@@ -57,7 +57,7 @@ Before the JS drag starts (on `mousedown`), the bridge SHALL call
 `ignoresMouseEvents = False`. On `mouseup`, `api.drag_end()` SHALL resume
 the loop.
 
-#### Scenario: User drags Indigo across opaque and transparent regions
+#### Scenario: User drags Squid across opaque and transparent regions
 - **WHEN** the user is mid-drag and the cursor briefly leaves the opaque sprite area
 - **THEN** the drag is NOT dropped (because passthrough remains paused until `drag_end`)
 
@@ -69,7 +69,7 @@ the loop.
 
 The controller SHALL default to `ignoresMouseEvents = True` (passthrough on)
 whenever alpha lookup fails (missing mask, coords out of range, exception),
-so Indigo never accidentally blocks a click.
+so Squid never accidentally blocks a click.
 
 #### Scenario: Mask for current state is missing
 - **WHEN** `_masks[current_state]` raises `KeyError`

@@ -38,14 +38,14 @@
 - [x] 4.1 Multi-Space: `NSWindow.setCollectionBehavior_(273)` via
        AppHelper.callAfter from on_loaded
 - [x] 4.2 Atomic singleton: `fcntl.flock(fd, LOCK_EX | LOCK_NB)`
-       on `~/.indigo-pet/lock` in `__main__.py`
+       on `~/.squid-pet/lock` in `__main__.py`
 - [x] 4.3 atexit handler releases lock; SIGKILL also releases via kernel cleanup
-- [x] 4.4 CLI: `~/.local/bin/squid` (with `indigo` symlink for backwards compat)
+- [x] 4.4 CLI: `~/.local/bin/squid` (with `squid` symlink for backwards compat)
 - [x] 4.5 CLI subcommands: start, stop, restart, status, why, logs
 - [x] 4.6 CLI `_launch_with_retry` retries up to 3x for WKWebView flakiness
 - [x] 4.7 CLI `_force_kill` loops up to 6x until process truly dead
 - [x] 4.8 CLI status: parent-child-aware dup detection
-       (walks ppid chain, only counts root indigo_pet processes)
+       (walks ppid chain, only counts root squid_pet processes)
 
 ## 5. state-detection capability (drowsy + wake override)
 
@@ -60,7 +60,7 @@
 
 ## 6. Documentation
 
-- [x] 6.1 Memory file `pink-pm/indigo-pet.md` updated with all behavioral
+- [x] 6.1 Memory file `pink-pm/squid-pet.md` updated with all behavioral
        decisions and lessons learned
 - [x] 6.2 Kennel `repo:decisions` drawer for is_busy gate semantics + WKWebView quirk
 - [x] 6.3 This OpenSpec change authored as canonical record

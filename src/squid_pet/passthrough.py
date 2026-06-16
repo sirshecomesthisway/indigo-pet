@@ -1,18 +1,18 @@
 """
-Pixel-perfect click passthrough for Indigo.
+Pixel-perfect click passthrough for Squid.
 
 Runs a background thread that:
   1. Polls global cursor position via NSEvent.mouseLocation()
   2. Maps cursor → window-local → sprite-local coords
   3. Reads alpha channel of currently-displayed sprite at that pixel
   4. Toggles NSWindow.setIgnoresMouseEvents_:
-     - over opaque pixel (alpha > THRESHOLD) → ignore_mouse=False (clicks land on Indigo)
+     - over opaque pixel (alpha > THRESHOLD) → ignore_mouse=False (clicks land on Squid)
      - over transparent pixel               → ignore_mouse=True  (clicks pass through)
 
 Uses NSEvent.mouseLocation() which works regardless of window's ignore state,
 so we can poll continuously and always know where the cursor is.
 
-While the user is actively dragging Indigo, passthrough is paused so dragging
+While the user is actively dragging Squid, passthrough is paused so dragging
 doesn't accidentally toggle off mid-drag.
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def load_alpha_masks() -> dict[str, "Image.Image"]:
             alpha = alpha.filter(ImageFilter.MaxFilter(25))   # 12px halo (was 6px - too tight, Pink missed too often)
             masks[png.stem] = alpha
         except Exception as e:
-            print(f"[indigo-pet] failed loading alpha for {png.name}: {e}", flush=True)
+            print(f"[squid-pet] failed loading alpha for {png.name}: {e}", flush=True)
     return masks
 
 
@@ -105,7 +105,7 @@ class PassthroughController:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._last_ignore: bool | None = None
-        print(f"[indigo-pet] passthrough: loaded {len(self._masks)} alpha masks", flush=True)
+        print(f"[squid-pet] passthrough: loaded {len(self._masks)} alpha masks", flush=True)
 
     # ── Public API ──
     def set_state(self, state: str) -> None:
@@ -125,7 +125,7 @@ class PassthroughController:
             self._paused = False
 
     def start(self) -> None:
-        t = threading.Thread(target=self._loop, daemon=True, name="indigo-passthrough")
+        t = threading.Thread(target=self._loop, daemon=True, name="squid-passthrough")
         t.start()
 
     def stop(self) -> None:
@@ -170,22 +170,22 @@ class PassthroughController:
                     if cv is not None:
                         _propagate_ignore(cv, ig)
                 except Exception as e:
-                    print(f"[indigo-pet] _apply_on_main failed: {e}", flush=True)
+                    print(f"[squid-pet] _apply_on_main failed: {e}", flush=True)
 
             AppHelper.callAfter(_apply_on_main)
             self._last_ignore = ignore
-            print(f"[indigo-pet] passthrough → ignore={ignore}", flush=True)
+            print(f"[squid-pet] passthrough → ignore={ignore}", flush=True)
         except Exception as e:
-            print(f"[indigo-pet] setIgnoresMouseEvents failed: {e}", flush=True)
+            print(f"[squid-pet] setIgnoresMouseEvents failed: {e}", flush=True)
 
     def _loop(self) -> None:
         try:
             from AppKit import NSEvent
         except ImportError:
-            print("[indigo-pet] AppKit unavailable; passthrough disabled", flush=True)
+            print("[squid-pet] AppKit unavailable; passthrough disabled", flush=True)
             return
 
-        print("[indigo-pet] passthrough loop started", flush=True)
+        print("[squid-pet] passthrough loop started", flush=True)
         tick = 0
 
         while not self._stop.is_set():
@@ -222,7 +222,7 @@ class PassthroughController:
                     self._apply_ignore(True)
                     tick += 1
                     if tick % 100 == 0:
-                        print(f"[indigo-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
+                        print(f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
                               f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
                               f"OUTSIDE state={state} ignore={self._last_ignore}",
                               flush=True)
@@ -270,13 +270,13 @@ class PassthroughController:
 
                 tick += 1
                 if tick % 100 == 0:  # ~3 seconds
-                    print(f"[indigo-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
+                    print(f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
                           f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
                           f"inside={inside} sprite=({sprite_x},{sprite_y}) "
                           f"state={state} opaque={opaque} ignore={self._last_ignore}",
                           flush=True)
 
             except Exception as e:
-                print(f"[indigo-pet] passthrough error: {e}", flush=True)
+                print(f"[squid-pet] passthrough error: {e}", flush=True)
 
             time.sleep(POLL_INTERVAL)

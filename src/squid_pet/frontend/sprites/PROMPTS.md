@@ -1,4 +1,4 @@
-# Indigo Pet — Image Generation Prompts (v2)
+# Squid Pet — Image Generation Prompts (v2)
 
 **Locked design:** bright pink chibi pixel octopus, round bulbous head, large
 googly eyes (cream sclera + big black pupil, no shine), 6-8 visible tentacles

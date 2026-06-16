@@ -3,7 +3,7 @@
 TPA (Pink's AI coding agent) runs in a TUI for long sessions. Pink wanted
 an ambient, glanceable indicator of what the agent is doing — thinking, hitting
 tools, running subagents, erroring out, or idle — without needing to flip back
-to the terminal. "Indigo" is a pink chibi-octopus desktop pet that lives in a
+to the terminal. "Squid" is a pink chibi-octopus desktop pet that lives in a
 corner of the screen and changes pose/animation in real time to reflect agent
 state.
 
@@ -32,8 +32,8 @@ _None — this is the initial baseline._
 
 ## Impact
 
-- **Code**: All files under `src/indigo_pet/` and `src/indigo_pet/frontend/`.
+- **Code**: All files under `src/squid_pet/` and `src/squid_pet/frontend/`.
 - **Dependencies**: `pywebview`, `psutil`, `Pillow`, `PyObjC` (transitively via pywebview).
-- **State files**: `~/.indigo-pet/state.json`, `~/.indigo-pet/position.json`.
+- **State files**: `~/.squid-pet/state.json`, `~/.squid-pet/position.json`.
 - **Other systems**: Reads (does not write) `~/.tpa/logs/*` and `~/.tpa/subagent_sessions/*.pkl`.
 - **OS**: macOS only (uses Cocoa APIs).

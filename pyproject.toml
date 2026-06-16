@@ -1,5 +1,5 @@
 [project]
-name = "indigo-pet"
+name = "squid-pet"
 version = "0.1.0"
 description = "A desktop companion pet that watches TPA + VS Code and reacts to activity"
 readme = "README.md"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-indigo-pet = "indigo_pet.__main__:main"
+squid-pet = "squid_pet.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -23,7 +23,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/indigo_pet"]
+packages = ["src/squid_pet"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

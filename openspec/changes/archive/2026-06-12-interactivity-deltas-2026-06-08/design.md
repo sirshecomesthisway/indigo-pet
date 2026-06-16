@@ -21,8 +21,8 @@ graph TD
     end
 
     subgraph State
-        Lock[~/.indigo-pet/lock<br/>flock fd]
-        Pid[~/.indigo-pet/pid]
+        Lock[~/.squid-pet/lock<br/>flock fd]
+        Pid[~/.squid-pet/pid]
         Pos[position.json]
         StJ[state.json]
     end
@@ -81,7 +81,7 @@ in the background.
 ### Pet-window: atomic singleton via fcntl.flock
 
 Earlier "check pid alive then write pid" was a race: two concurrent launches both saw "no live pid" and both wrote. Replaced with `fcntl.flock(fd, LOCK_EX | LOCK_NB)`
-on `~/.indigo-pet/lock`. The kernel guarantees atomicity. The fd is kept
+on `~/.squid-pet/lock`. The kernel guarantees atomicity. The fd is kept
 alive in module globals; atexit cleans up but SIGKILL also releases the lock
 via kernel fd cleanup.
 

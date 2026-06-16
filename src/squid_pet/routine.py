@@ -100,9 +100,9 @@ class RoutineController:
     # ── lifecycle ──────────────────────────────────────────────────────
     def start(self) -> None:
         t = threading.Thread(target=self._loop, daemon=True,
-                             name="indigo-routine")
+                             name="squid-routine")
         t.start()
-        print("[indigo-pet] routine thread started", flush=True)
+        print("[squid-pet] routine thread started", flush=True)
 
     def stop(self) -> None:
         self._stop.set()
@@ -153,7 +153,7 @@ class RoutineController:
             try:
                 self._tick()
             except Exception as e:
-                print(f"[indigo-pet] routine error: {e}", flush=True)
+                print(f"[squid-pet] routine error: {e}", flush=True)
             # Outer cadence: short sleep, then check whether to dispatch.
             self._stop.wait(MOOD_POLL_INTERVAL_SEC)
 
@@ -163,7 +163,7 @@ class RoutineController:
         mood = self._get_mood()
         if mood == "sleeping" and self._prev_mood != "sleeping":
             self._wake_from_sleeping_pending = True
-            print("[indigo-pet] routine: noted sleeping entry, "
+            print("[squid-pet] routine: noted sleeping entry, "
                   "will reset on wake", flush=True)
         self._prev_mood = mood
 
@@ -197,13 +197,13 @@ class RoutineController:
         if self._wake_from_sleeping_pending:
             self._idx = 0
             self._wake_from_sleeping_pending = False
-            print("[indigo-pet] routine: woke from sleeping → reset _idx=0",
+            print("[squid-pet] routine: woke from sleeping → reset _idx=0",
                   flush=True)
 
         # Fire current action.
         action, lo, hi = IDLE_ROUTINE[self._idx]
         dur = random.uniform(lo, hi)
-        print(f"[indigo-pet] routine[{self._idx}]: {action} ({dur:.1f}s)",
+        print(f"[squid-pet] routine[{self._idx}]: {action} ({dur:.1f}s)",
               flush=True)
         self._fire(action)
         self._action_done_at = time.time() + dur
@@ -219,5 +219,5 @@ class RoutineController:
             band = action.split("-", 1)[1]  # "short" / "medium" / "edge"
             self.wanderer.request_walk(band)
             return
-        print(f"[indigo-pet] routine: unknown action '{action}' (skipped)",
+        print(f"[squid-pet] routine: unknown action '{action}' (skipped)",
               flush=True)

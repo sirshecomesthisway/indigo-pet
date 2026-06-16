@@ -14,13 +14,13 @@ The pet window SHALL be created via pywebview with `frameless=True`,
 200×220 pixels. It SHALL load `frontend/index.html` as a `file://` URL.
 
 #### Scenario: Window is created
-- **WHEN** `python -m indigo_pet` starts
+- **WHEN** `python -m squid_pet` starts
 - **THEN** a 200×220 frameless, transparent, always-on-top window appears on the main display
 - **AND** no title bar, traffic-light buttons, or window chrome are visible
 
 #### Scenario: Other windows come to the foreground
 - **WHEN** the user activates another application
-- **THEN** Indigo remains visible above that application
+- **THEN** Squid remains visible above that application
 
 ### Requirement: Position via direct NSWindow control
 
@@ -36,12 +36,12 @@ position on multi-display setups.
 - **AND** the menu bar and dock are not overlapped
 
 #### Scenario: Right-click cycles corners
-- **WHEN** the user right-clicks Indigo
+- **WHEN** the user right-clicks Squid
 - **THEN** the window snaps to the next corner in the order top-right → bottom-right → bottom-left → top-left → top-right
-- **AND** the new corner is persisted to `~/.indigo-pet/position.json`
+- **AND** the new corner is persisted to `~/.squid-pet/position.json`
 
 #### Scenario: App restarts after a corner snap
-- **WHEN** Indigo is restarted
+- **WHEN** Squid is restarted
 - **THEN** she appears at the last-saved corner
 
 ### Requirement: Drag the window without macOS Accessibility permission
@@ -55,7 +55,7 @@ the delta via `NSWindow.setFrameOrigin_`.
 Neither `pywebview.easy_drag` nor `-webkit-app-region: drag` SHALL be used,
 and no macOS Accessibility permission prompt SHALL be triggered.
 
-#### Scenario: User drags Indigo across the screen
+#### Scenario: User drags Squid across the screen
 - **WHEN** the user presses left mouse, moves 100 px right and 50 px down, and releases
 - **THEN** the window's screen position shifts by (+100, +50)
 - **AND** no permission prompt appears
@@ -73,7 +73,7 @@ release the forced state and resume the auto-detected state from the
 watcher.
 
 #### Scenario: Double-click cycles through states
-- **WHEN** the user double-clicks Indigo
+- **WHEN** the user double-clicks Squid
 - **THEN** the displayed state advances to the next in the order: idle → thinking → working → grooving → celebrating → sleeping → concerned → idle
 - **AND** the watcher's emitted state is overridden until Esc
 
@@ -122,19 +122,19 @@ on the main thread via `AppHelper.callAfter`.
 
 ### Requirement: Refuse to launch a second instance (atomic singleton)
 
-A second invocation of `python -m indigo_pet` SHALL detect that an existing
+A second invocation of `python -m squid_pet` SHALL detect that an existing
 instance is running and refuse to start, printing a clear message identifying
 the running instance. The detection mechanism SHALL be atomic and race-free
 under concurrent launches.
 
 The implementation SHALL acquire an exclusive non-blocking flock on
-`~/.indigo-pet/lock` (`fcntl.LOCK_EX | fcntl.LOCK_NB`) at startup. The lock
+`~/.squid-pet/lock` (`fcntl.LOCK_EX | fcntl.LOCK_NB`) at startup. The lock
 file descriptor SHALL be kept alive in module globals for the duration of
 the process. The lock SHALL be released by an atexit handler on clean
 shutdown, OR by the kernel's automatic fd cleanup on SIGKILL.
 
 #### Scenario: Two launches race to start
-- **WHEN** two `python -m indigo_pet` invocations start within milliseconds of each other
+- **WHEN** two `python -m squid_pet` invocations start within milliseconds of each other
 - **THEN** exactly one acquires the flock and continues to startup
 - **AND** the other prints a clear "already running" message and exits cleanly
 - **AND** no two windows ever appear on screen
@@ -162,9 +162,9 @@ or process details. The CLI SHALL support at minimum:
 The `squid status` command SHALL distinguish between true duplicate processes
 (multiple roots) and benign parent-child pairs (pywebview spawns a WebKit
 content child sharing the parent's cmdline). It SHALL count only ROOT
-processes whose parent is NOT also an indigo_pet process.
+processes whose parent is NOT also an squid_pet process.
 
-For backward compatibility, the binary `~/.local/bin/indigo` SHALL exist
+For backward compatibility, the binary `~/.local/bin/squid` SHALL exist
 as a symlink to `squid`.
 
 #### Scenario: Status command after normal launch
@@ -181,7 +181,7 @@ as a symlink to `squid`.
 - **AND** the final status reports running + healthy
 
 #### Scenario: Backward-compatible binary name
-- **WHEN** the user runs `indigo status` (old muscle memory)
+- **WHEN** the user runs `squid status` (old muscle memory)
 - **THEN** the symlink resolves to `squid status`
 - **AND** the output identifies the pet as "Squid"
 

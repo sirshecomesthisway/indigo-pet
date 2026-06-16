@@ -129,10 +129,10 @@ class WanderController:
         anywhere -> walks pick polar destinations anywhere in the frame
         """
         if mode not in self.VALID_STROLL_MODES:
-            print(f"[indigo-pet] set_stroll_mode: invalid {mode!r}", flush=True)
+            print(f"[squid-pet] set_stroll_mode: invalid {mode!r}", flush=True)
             return
         if mode != self._stroll_mode:
-            print(f"[indigo-pet] stroll mode: {self._stroll_mode} -> {mode}",
+            print(f"[squid-pet] stroll mode: {self._stroll_mode} -> {mode}",
                   flush=True)
             self._stroll_mode = mode
 
@@ -153,12 +153,12 @@ class WanderController:
         (no-op via internal lock to avoid origin-fight).
         """
         if band not in ("short", "medium", "edge"):
-            print(f"[indigo-pet] request_walk: unknown band '{band}'", flush=True)
+            print(f"[squid-pet] request_walk: unknown band '{band}'", flush=True)
             return
         if self._sprint_mode:
             return
         t = threading.Thread(target=self._do_request_walk, args=(band,),
-                             daemon=True, name=f"indigo-walk-{band}")
+                             daemon=True, name=f"squid-walk-{band}")
         t.start()
 
     def request_look_around(self) -> None:
@@ -167,7 +167,7 @@ class WanderController:
         if self._sprint_mode:
             return
         t = threading.Thread(target=self._do_look_around, daemon=True,
-                             name="indigo-look")
+                             name="squid-look")
         t.start()
 
     # ── walk implementation ────────────────────────────────────────────
@@ -216,7 +216,7 @@ class WanderController:
         duration = max(0.8, min(WANDER_MAX_DURATION_SEC, dist / speed))
         facing = "left" if tx < ox else "right"
         print(
-            f"[indigo-pet] walk: ({ox:.0f},{oy:.0f}) → ({tx:.0f},{ty:.0f}) "
+            f"[squid-pet] walk: ({ox:.0f},{oy:.0f}) → ({tx:.0f},{ty:.0f}) "
             f"dist={dist:.0f}px dur={duration:.2f}s facing={facing}",
             flush=True,
         )
@@ -244,12 +244,12 @@ class WanderController:
             if cur != "idle" and not self._sprint_mode:
                 non_idle_streak += 1
                 if non_idle_streak >= ABORT_STREAK:
-                    print(f"[indigo-pet] walk aborted: state={cur}", flush=True)
+                    print(f"[squid-pet] walk aborted: state={cur}", flush=True)
                     break
             else:
                 non_idle_streak = 0
             if self._is_drag_active():
-                print("[indigo-pet] walk aborted: user dragging", flush=True)
+                print("[squid-pet] walk aborted: user dragging", flush=True)
                 break
 
             t = i / steps
@@ -278,7 +278,7 @@ class WanderController:
     def _do_look_around(self) -> None:
         """Set looking-around sub_state for ~1.4s, then clear."""
         facing = random.choice(["left", "right"])
-        print(f"[indigo-pet] look-around-{facing}", flush=True)
+        print(f"[squid-pet] look-around-{facing}", flush=True)
         self._set_sub_state(f"looking-around-{facing}")
         end_at = time.time() + LOOK_AROUND_DURATION_SEC
         while time.time() < end_at and not self._stop.is_set():
@@ -361,9 +361,9 @@ class WanderController:
             if edge != self._last_edge:
                 self._last_edge = edge
                 self._set_edge(edge)
-                print(f"[indigo-pet] edge -> {edge or '(none)'}", flush=True)
+                print(f"[squid-pet] edge -> {edge or '(none)'}", flush=True)
         except Exception as e:
-            print(f"[indigo-pet] _update_edge error: {e}", flush=True)
+            print(f"[squid-pet] _update_edge error: {e}", flush=True)
 
     def refresh_edge(self) -> str:
         """Public: re-compute current edge from live window origin and notify
@@ -378,7 +378,7 @@ class WanderController:
             self._update_edge(ox, oy)
             return self._last_edge
         except Exception as e:
-            print(f"[indigo-pet] refresh_edge error: {e}", flush=True)
+            print(f"[squid-pet] refresh_edge error: {e}", flush=True)
             return self._last_edge
 
     def _rotate_first_preamble(self, tx: float, ty: float) -> None:
@@ -393,12 +393,12 @@ class WanderController:
             if target_edge and target_edge != current_edge:
                 self._last_edge = target_edge
                 self._set_edge(target_edge)
-                print(f"[indigo-pet]   rotate-first: "
+                print(f"[squid-pet]   rotate-first: "
                       f"{current_edge or '(none)'} -> {target_edge}",
                       flush=True)
                 time.sleep(ROTATION_PREAMBLE_SEC)
         except Exception as e:
-            print(f"[indigo-pet] rotate-first error: {e}", flush=True)
+            print(f"[squid-pet] rotate-first error: {e}", flush=True)
 
     # ── sprint (unchanged easter egg) ──────────────────────────────────
     def set_sprint_callbacks(self, wake_cb, fast_transition_cb) -> None:
@@ -412,33 +412,33 @@ class WanderController:
     def _trigger_wake(self) -> None:
         try: self._trigger_wake_cb()
         except Exception as e:
-            print(f"[indigo-pet] trigger_wake err: {e}", flush=True)
+            print(f"[squid-pet] trigger_wake err: {e}", flush=True)
 
     def _set_sprint_fast_transition(self, on: bool) -> None:
         try: self._set_sprint_fast_transition_cb(bool(on))
         except Exception as e:
-            print(f"[indigo-pet] sprint_fast_transition err: {e}", flush=True)
+            print(f"[squid-pet] sprint_fast_transition err: {e}", flush=True)
 
     def _set_wrapper_deg(self, deg: float) -> None:
         try: self._set_wrapper_deg_cb(float(deg))
         except Exception as e:
-            print(f"[indigo-pet] set_wrapper_deg err: {e}", flush=True)
+            print(f"[squid-pet] set_wrapper_deg err: {e}", flush=True)
 
     def _clear_wrapper_deg(self) -> None:
         try: self._clear_wrapper_deg_cb()
         except Exception as e:
-            print(f"[indigo-pet] clear_wrapper_deg err: {e}", flush=True)
+            print(f"[squid-pet] clear_wrapper_deg err: {e}", flush=True)
 
     def sprint_perimeter(self) -> None:
         """Funny one-shot: sprint through all 4 corners CW from nearest."""
         threading.Thread(target=self._do_sprint_perimeter,
-                         daemon=True, name="indigo-sprint").start()
+                         daemon=True, name="squid-sprint").start()
 
     def _do_sprint_perimeter(self) -> None:
         try:
             # Wake from drowsy/sleeping first
             self._trigger_wake()
-            print(f"[indigo-pet] SPRINT: wake-up wait ({SPRINT_WAKE_WAIT_SEC}s)",
+            print(f"[squid-pet] SPRINT: wake-up wait ({SPRINT_WAKE_WAIT_SEC}s)",
                   flush=True)
             time.sleep(SPRINT_WAKE_WAIT_SEC)
 
@@ -460,7 +460,7 @@ class WanderController:
             ox, oy = origin
             dists = [((c[0]-ox)**2 + (c[1]-oy)**2) ** 0.5 for c in corners]
             start_idx = dists.index(min(dists))
-            print(f"[indigo-pet] SPRINT v3: corner #{start_idx} "
+            print(f"[squid-pet] SPRINT v3: corner #{start_idx} "
                   f"from ({ox:.0f},{oy:.0f})", flush=True)
 
             self._sprint_mode = True
@@ -484,10 +484,10 @@ class WanderController:
                     facing = "right" if tx > prev[0] else ("left" if tx < prev[0] else "right")
                     self._set_sub_state(f"walking-{facing}")
                     self._set_wrapper_deg(target_deg)
-                    print(f"[indigo-pet]   leg {leg_i+1}/4 turn -> deg {target_deg}",
+                    print(f"[squid-pet]   leg {leg_i+1}/4 turn -> deg {target_deg}",
                           flush=True)
                     time.sleep(SPRINT_ROTATION_TRANSITION_SEC + 0.10)
-                    print(f"[indigo-pet]   leg {leg_i+1}/4 walk -> "
+                    print(f"[squid-pet]   leg {leg_i+1}/4 walk -> "
                           f"({tx:.0f},{ty:.0f}) facing={facing}", flush=True)
                     self._sprint_walk_leg(prev[0], prev[1], tx, ty, facing)
                     prev = (tx, ty)
@@ -498,9 +498,9 @@ class WanderController:
                 self._set_sprint_fast_transition(False)
             finally:
                 self._sprint_mode = False
-            print("[indigo-pet] SPRINT complete", flush=True)
+            print("[squid-pet] SPRINT complete", flush=True)
         except Exception as e:
-            print(f"[indigo-pet] sprint error: {e}", flush=True)
+            print(f"[squid-pet] sprint error: {e}", flush=True)
             self._set_sub_state("")
             try: self._clear_wrapper_deg()
             except Exception: pass

@@ -77,11 +77,11 @@ ones. The order is:
 
 The watcher SHALL atomically write the current `PetState` (state, sub_state,
 cpu_percent, idle_seconds, tpa_running, timestamp, message) to
-`~/.indigo-pet/state.json` once per tick using a `.tmp` + rename pattern.
+`~/.squid-pet/state.json` once per tick using a `.tmp` + rename pattern.
 
 #### Scenario: State changes
 - **WHEN** a new state is computed
-- **THEN** the file `~/.indigo-pet/state.json` reflects the new state within one poll interval (1 second)
+- **THEN** the file `~/.squid-pet/state.json` reflects the new state within one poll interval (1 second)
 
 #### Scenario: File is being read by another process
 - **WHEN** the writer flushes a new state while a reader is open
@@ -89,7 +89,7 @@ cpu_percent, idle_seconds, tpa_running, timestamp, message) to
 
 ### Requirement: Run as a daemon thread alongside the window
 
-The watcher SHALL run as a daemon thread inside the main `indigo_pet` process
+The watcher SHALL run as a daemon thread inside the main `squid_pet` process
 with a configurable poll interval (default 1.0 second), and SHALL stop cleanly
 when the window's `closing` event fires.
 

@@ -23,7 +23,7 @@
 
 ## 3. Documentation
 
-- [x] 3.1 Update `pink-pm/indigo-pet.md` memory with the new capability +
+- [x] 3.1 Update `pink-pm/squid-pet.md` memory with the new capability +
         the tunable knob locations
 - [x] 3.2 Update `pet-reactions` spec in this change folder if validation
         reveals deviations from the design

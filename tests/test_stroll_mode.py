@@ -12,7 +12,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 import pytest
 
-from indigo_pet.wanderer import WanderController
+from squid_pet.wanderer import WanderController
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def test_corner_unlock_bottom_right_can_escape_to_bottom_edge(wc, monkeypatch):
     # Frame: 0..1000 x 0..800. Position (995, 5) — 5px from each edge.
     destinations = set()
     rng = random.Random(0)
-    monkeypatch.setattr("indigo_pet.wanderer.random.choice",
+    monkeypatch.setattr("squid_pet.wanderer.random.choice",
                         lambda seq: rng.choice(seq))
     for _ in range(40):
         tx, ty = wc._pick_edge_destination(995, 5, 0, 1000, 0, 800)
@@ -154,7 +154,7 @@ def test_corner_unlock_top_right_can_escape_to_top_edge(wc, monkeypatch):
     # so d_top = 68 (> old EDGE_BAND_PX=60 but < CORNER_BAND_PX=120).
     destinations = set()
     rng = random.Random(0)
-    monkeypatch.setattr("indigo_pet.wanderer.random.choice",
+    monkeypatch.setattr("squid_pet.wanderer.random.choice",
                         lambda seq: rng.choice(seq))
     for _ in range(40):
         tx, ty = wc._pick_edge_destination(1000, 732, 0, 1000, 0, 800)

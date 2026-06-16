@@ -1,10 +1,10 @@
 """
-Indigo Pet entry point.
+Squid Pet entry point.
 
 Usage:
-    python -m indigo_pet                # runs full pet (window + watcher)
-    python -m indigo_pet --watcher-only # just the watcher daemon, no window
-    python -m indigo_pet --check        # one-shot state print, then exit
+    python -m squid_pet                # runs full pet (window + watcher)
+    python -m squid_pet --watcher-only # just the watcher daemon, no window
+    python -m squid_pet --check        # one-shot state print, then exit
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="indigo-pet", description="Desktop pet for TPA")
+    parser = argparse.ArgumentParser(prog="squid-pet", description="Desktop pet for TPA")
     parser.add_argument(
         "--watcher-only", action="store_true",
         help="Run only the watcher daemon (no window). Useful for LaunchAgents."
@@ -50,8 +50,8 @@ def main() -> None:
     # flock() in non-blocking mode is the canonical fix.
     import os as _os
     import fcntl as _fcntl
-    lock_path = Path.home() / ".indigo-pet" / "lock"
-    pid_path  = Path.home() / ".indigo-pet" / "pid"
+    lock_path = Path.home() / ".squid-pet" / "lock"
+    pid_path  = Path.home() / ".squid-pet" / "pid"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     # Keep file handle alive for process lifetime (lock released on close/exit)
     _lock_fd = _os.open(str(lock_path), _os.O_RDWR | _os.O_CREAT, 0o644)
@@ -63,15 +63,15 @@ def main() -> None:
             existing_pid = pid_path.read_text().strip()
         except Exception:
             pass
-        print(f"[indigo-pet] REFUSING TO START: another Squid is alive "
+        print(f"[squid-pet] REFUSING TO START: another Squid is alive "
               f"(pid {existing_pid}, holds lock at {lock_path}). "
-              f"Run 'indigo stop' or 'indigo restart' to replace her.",
+              f"Run 'squid stop' or 'squid restart' to replace her.",
               file=sys.stderr)
         sys.exit(3)
     # We hold the lock — write our pid for diagnostics
     pid_path.write_text(str(_os.getpid()))
     # Keep _lock_fd alive in module globals so lock survives main()
-    globals()["_indigo_singleton_lock"] = _lock_fd
+    globals()["_squid_singleton_lock"] = _lock_fd
     # Cleanup on exit
     import atexit as _atexit
     def _cleanup_singleton():
@@ -84,8 +84,8 @@ def main() -> None:
     try:
         from . import window
     except ImportError as e:
-        print(f"[indigo-pet] pywebview not available ({e})", file=sys.stderr)
-        print(f"[indigo-pet] falling back to watcher-only mode", file=sys.stderr)
+        print(f"[squid-pet] pywebview not available ({e})", file=sys.stderr)
+        print(f"[squid-pet] falling back to watcher-only mode", file=sys.stderr)
         from . import watcher
         watcher.run_watcher_loop()
         return

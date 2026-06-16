@@ -7,13 +7,13 @@ The pet window SHALL be created via pywebview with `frameless=True`,
 200×220 pixels. It SHALL load `frontend/index.html` as a `file://` URL.
 
 #### Scenario: Window is created
-- **WHEN** `python -m indigo_pet` starts
+- **WHEN** `python -m squid_pet` starts
 - **THEN** a 200×220 frameless, transparent, always-on-top window appears on the main display
 - **AND** no title bar, traffic-light buttons, or window chrome are visible
 
 #### Scenario: Other windows come to the foreground
 - **WHEN** the user activates another application
-- **THEN** Indigo remains visible above that application
+- **THEN** Squid remains visible above that application
 
 ### Requirement: Position via direct NSWindow control
 
@@ -29,12 +29,12 @@ position on multi-display setups.
 - **AND** the menu bar and dock are not overlapped
 
 #### Scenario: Right-click cycles corners
-- **WHEN** the user right-clicks Indigo
+- **WHEN** the user right-clicks Squid
 - **THEN** the window snaps to the next corner in the order top-right → bottom-right → bottom-left → top-left → top-right
-- **AND** the new corner is persisted to `~/.indigo-pet/position.json`
+- **AND** the new corner is persisted to `~/.squid-pet/position.json`
 
 #### Scenario: App restarts after a corner snap
-- **WHEN** Indigo is restarted
+- **WHEN** Squid is restarted
 - **THEN** she appears at the last-saved corner
 
 ### Requirement: Drag the window without macOS Accessibility permission
@@ -48,7 +48,7 @@ the delta via `NSWindow.setFrameOrigin_`.
 Neither `pywebview.easy_drag` nor `-webkit-app-region: drag` SHALL be used,
 and no macOS Accessibility permission prompt SHALL be triggered.
 
-#### Scenario: User drags Indigo across the screen
+#### Scenario: User drags Squid across the screen
 - **WHEN** the user presses left mouse, moves 100 px right and 50 px down, and releases
 - **THEN** the window's screen position shifts by (+100, +50)
 - **AND** no permission prompt appears
@@ -66,7 +66,7 @@ release the forced state and resume the auto-detected state from the
 watcher.
 
 #### Scenario: Double-click cycles through states
-- **WHEN** the user double-clicks Indigo
+- **WHEN** the user double-clicks Squid
 - **THEN** the displayed state advances to the next in the order: idle → thinking → working → grooving → celebrating → sleeping → concerned → idle
 - **AND** the watcher's emitted state is overridden until Esc
 
