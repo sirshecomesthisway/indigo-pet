@@ -44,7 +44,13 @@ BOTTOM_MARGIN_PX = -40                 # feet AT visible-frame bottom (auto-hide
 LOOK_AROUND_DURATION_SEC = 1.4         # how long mid-walk look-around lasts
 LOOK_AROUND_PROBABILITY = 0.45         # chance of pause-to-look mid-walk
 WIN_W = 200                            # window width (must match window.py)
-WIN_H = 220                            # window height
+WIN_H = 300                            # window height (MUST match window.WINDOW_HEIGHT and passthrough.WINDOW_HEIGHT)
+                                       # Was 220 originally; bumped to 300 for hearts headroom (window.py).
+                                       # passthrough.py was synced; wanderer.py was missed -> top-edge strobe
+                                       # bug 2026-06-16 (rhythm walk targeted ty=max_y+80 which clamped to
+                                       # actual max_y, causing edge classifier to flap in/out of the band).
+                                       # See kennel drawer (constant-duplication anti-pattern). Future:
+                                       # consolidate into squid_pet.geometry module.
 EDGE_BAND_PX = 60                      # within this distance of an edge counts as "on" it
 CORNER_BAND_PX = 120                   # within this distance of TWO edges counts as "at a corner"
                                        # (more generous than EDGE_BAND_PX to absorb dock/menubar clamp drift)
