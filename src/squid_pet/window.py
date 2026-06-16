@@ -970,11 +970,30 @@ def main() -> None:
         except Exception as e:
             print(f"[squid-pet] couldn't dispatch all-spaces: {e}", flush=True)
 
-        # Snap to saved corner via NSWindow (accurate, no origin issues)
-        ok = move_to_corner(corner)
-        vf = _visible_frame()
-        print(f"[squid-pet] visibleFrame = {vf}", flush=True)
-        print(f"[squid-pet] snapped to '{corner}' (ok={ok})", flush=True)
+        # Snap to saved corner via NSWindow (accurate, no origin issues).
+        # MUST run on the main thread — on macOS 14+ NSWindow operations
+        # called from a WebKit callback thread silently fail (no exception
+        # raised, NSPoint just doesn't take effect). Squid stays at
+        # pywebview's default (100,100) and the user thinks she "didn't
+        # show up". Confirmed via CGWindowListCopyWindowInfo 2026-06-16.
+        # The two NSApp/NSWindow calls above (_set_accessory, _set_all_spaces)
+        # already use callAfter for the same reason; this one was missing.
+        def _snap_corner():
+            try:
+                ok = move_to_corner(corner)
+                vf = _visible_frame()
+                print(f"[squid-pet] visibleFrame = {vf}", flush=True)
+                print(f"[squid-pet] snapped to '{corner}' (ok={ok})", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] corner snap failed: {e}", flush=True)
+        try:
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(_snap_corner)
+        except Exception as e:
+            print(f"[squid-pet] couldn't dispatch corner snap: {e}", flush=True)
+            # Best-effort fallback: try inline anyway (may silent-fail on 14+)
+            ok = move_to_corner(corner)
+            print(f"[squid-pet] inline snap fallback (ok={ok})", flush=True)
 
         # Start pixel-perfect click passthrough
         pt = PassthroughController(_get_ns_window)
