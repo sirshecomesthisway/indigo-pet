@@ -593,7 +593,13 @@ class PetApi:
         self._corner = CORNERS[(idx + 1) % len(CORNERS)]
         save_corner(self._corner)
         ok = move_to_corner(self._corner)
-        print(f"[indigo-pet] corner snap → {self._corner} (ok={ok})", flush=True)
+        # Refresh edge so sprite rotates to match new corner position.
+        try:
+            if self._wanderer is not None:
+                self._wanderer.refresh_edge()
+        except Exception as e:
+            print(f"[indigo-pet] corner snap edge-refresh err: {e}", flush=True)
+        print(f"[indigo-pet] corner snap -> {self._corner} (ok={ok})", flush=True)
         return self._corner
 
     def drag_start(self) -> dict:
@@ -604,7 +610,14 @@ class PetApi:
             # Called from the drag-thread when it exits (button up, watchdog, or stop_native_drag)
             if self._passthrough:
                 self._passthrough.resume()
-            # Persist current window position by snapping nothing; just log
+            # Refresh edge tracker from live position so sprite rotates to
+            # match new edge (drag bypasses wanderer's wrapped origin setter).
+            try:
+                if self._wanderer is not None:
+                    new_edge = self._wanderer.refresh_edge()
+                    print(f"[indigo-pet] drag end: edge refreshed -> {new_edge or '(none)'}", flush=True)
+            except Exception as e:
+                print(f"[indigo-pet] drag end edge-refresh err: {e}", flush=True)
             print("[indigo-pet] drag ended cleanly", flush=True)
         # on_swing handler: shake-to-wake gesture during drag triggers same
         # 60s user_wake override as poke. Pink can either single-click OR

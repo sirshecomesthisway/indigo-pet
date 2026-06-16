@@ -178,3 +178,62 @@ def test_mid_edge_no_corner_lock_applies(wc):
         tx, ty = wc._pick_edge_destination(1000, 400, 0, 1000, 0, 800)
         assert tx == 1000, f"mid-right edge: x should stay at max_x=1000, got {tx}"
         assert ty in (0, 800), f"mid-right edge: y should be a corner, got {ty}"
+
+
+# ── refresh_edge after manual move (fix 2026-06-16) ───────────────────
+# Bug: drag and corner-snap bypass the wanderer's wrapped origin setter
+# (they call NSWindow.setFrameOrigin_ directly), so _update_edge never
+# fires and the sprite stays rotated for the old edge until next walk.
+# Fix: public refresh_edge() polls live origin and triggers _update_edge.
+
+def test_refresh_edge_picks_up_new_position(monkeypatch):
+    """After a 'drag' (origin changes externally), refresh_edge should
+    re-read origin and update the edge tracker without needing a walk."""
+    edge_calls = []
+    # Frame (0,0,1000,800) with WIN_W=200, WIN_H=220, EDGE_MARGIN=12, BOTTOM_MARGIN=-40
+    # -> valid origin range: x in [12, 788], y in [-40, 568]
+    current_origin = [788.0, -40.0]  # start: bottom-right corner (both d=0)
+    wc = WanderController(
+        get_state=lambda: "idle",
+        is_drag_active=lambda: False,
+        get_window_origin=lambda: (current_origin[0], current_origin[1]),
+        set_window_origin=lambda x, y: None,
+        get_visible_frame=lambda: (0.0, 0.0, 1000.0, 800.0),
+        set_sub_state=lambda s: None,
+        set_edge=lambda e: edge_calls.append(e),
+    )
+    # First refresh: at (788,-40), d_bottom=0 and d_right=0 — priority bottom wins
+    e1 = wc.refresh_edge()
+    assert e1 == "bottom", f"expected bottom at (788,-40), got {e1!r}"
+    assert edge_calls[-1] == "bottom"
+
+    # Simulate user dragging Squid to mid LEFT edge: (12, 250)
+    current_origin[0] = 12.0
+    current_origin[1] = 250.0
+    e2 = wc.refresh_edge()
+    assert e2 == "left", f"after drag to (12,250), expected left, got {e2!r}"
+    assert edge_calls[-1] == "left"
+
+    # Drag her to mid TOP edge: (400, 568)
+    current_origin[0] = 400.0
+    current_origin[1] = 568.0
+    e3 = wc.refresh_edge()
+    assert e3 == "top", f"after drag to (400,568), expected top, got {e3!r}"
+    assert edge_calls[-1] == "top"
+
+
+def test_refresh_edge_handles_missing_origin_gracefully():
+    """If get_window_origin returns None (e.g. window not ready),
+    refresh_edge must not crash; returns last known edge."""
+    wc = WanderController(
+        get_state=lambda: "idle",
+        is_drag_active=lambda: False,
+        get_window_origin=lambda: None,
+        set_window_origin=lambda x, y: None,
+        get_visible_frame=lambda: (0.0, 0.0, 1000.0, 800.0),
+        set_sub_state=lambda s: None,
+        set_edge=lambda e: None,
+    )
+    # Should not raise
+    result = wc.refresh_edge()
+    assert isinstance(result, str)

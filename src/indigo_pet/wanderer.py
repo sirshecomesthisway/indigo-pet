@@ -365,6 +365,22 @@ class WanderController:
         except Exception as e:
             print(f"[indigo-pet] _update_edge error: {e}", flush=True)
 
+    def refresh_edge(self) -> str:
+        """Public: re-compute current edge from live window origin and notify
+        frontend. Used after drag-end / corner-snap / any external move that
+        bypasses the wrapped origin setter (e.g. NSWindow.setFrameOrigin_).
+        Returns the computed edge string."""
+        try:
+            origin = self._get_origin()
+            if origin is None:
+                return self._last_edge
+            ox, oy = origin
+            self._update_edge(ox, oy)
+            return self._last_edge
+        except Exception as e:
+            print(f"[indigo-pet] refresh_edge error: {e}", flush=True)
+            return self._last_edge
+
     def _rotate_first_preamble(self, tx: float, ty: float) -> None:
         """Pre-rotate wrapper if destination is on a different edge, then sleep
         for the rotation transition. Prevents the 'rotating mid-walk' look."""
