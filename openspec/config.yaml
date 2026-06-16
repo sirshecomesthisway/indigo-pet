@@ -1,8 +1,8 @@
 schema: spec-driven
 
 context: |
-  ## Project: Indigo Pet
-  An always-on-top, transparent, pixel-art desktop pet (a pink chibi octopus named Indigo)
+  ## Project: Squid Pet
+  An always-on-top, transparent, pixel-art desktop pet (a pink chibi octopus named Squid)
   that visually reflects the state of the TPA AI agent running on the user's Mac.
 
   ## Owner
@@ -26,7 +26,7 @@ context: |
 
   ## Architecture (high level)
   - watcher.py    — pure-Python state machine that polls process/CPU/log signals
-                    and writes ~/.indigo-pet/state.json every 1s.
+                    and writes ~/.squid-pet/state.json every 1s.
   - window.py     — pywebview window + JS↔Python bridge (PetApi class).
                     Owns the NSWindow directly via PyObjC for accurate positioning,
                     dragging, and click-passthrough.
@@ -54,7 +54,7 @@ context: |
   - No admin / accessibility permissions required (uses native NSWindow APIs only)
   - Single-user, single-window app — assumes Pink's Mac
   - Sprites must have a transparent background (alpha=0 on bg) — flood-filled from corners
-  - All Python files use absolute imports within the indigo_pet package
+  - All Python files use absolute imports within the squid_pet package
   - Frontend HTML is loaded as file:// URL; no HTTP server
 
 rules:
