@@ -87,8 +87,8 @@
 
 ## 7. Spec + ship
 
-- [ ] 7.1 `openspec validate observer-mode` passes
+- [x] 7.1 `openspec validate observer-mode` passes (2026-06-23)
 - [ ] 7.2 Commit + push to both remotes
-- [ ] 7.3 Bubble line voice review with Pink (edit `BUBBLE_LINES` dict in
+- [x] 7.3 Bubble line voice review with Pink (2026-06-23): celebrating *claps* -> *wiggles*; back_to_idle 'okay' -> *sigh*. Rest of dict approved as-is. (edit `BUBBLE_LINES` dict in
       one sitting; this is the product surface)
 - [ ] 7.4 Once 6.x and 7.3 are done → `openspec archive observer-mode`

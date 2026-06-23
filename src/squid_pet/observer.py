@@ -50,9 +50,9 @@ BUBBLE_LINES: dict[str, LineSpec] = {
     "thinking":     ["hmm", "mmm...", "hrm", "thinky"],
     "working":      ["tap tap", "*types*", "mm-hm", "work work"],
     "grooving":     ["psst!", "who?", "*peeks*", "eee?"],
-    "celebrating":  ["yay!!", "woo!", "!!", "*claps*"],
+    "celebrating":  ["yay!!", "woo!", "!!", "*wiggles*"],
     "concerned":    ["eep", "hmmnn", "urk", "!?"],
-    "back_to_idle": ["pheww", "hhh", "*flops*", "okay"],
+    "back_to_idle": ["pheww", "hhh", "*flops*", "*sigh*"],
     "waking":       ["mmf...", "nhg", "wh-", "*stretches*"],
 
     # interactions
