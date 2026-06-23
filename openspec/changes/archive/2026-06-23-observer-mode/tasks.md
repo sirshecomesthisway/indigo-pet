@@ -91,4 +91,4 @@
 - [x] 7.2 Commit + push: internal GHE pushed (cb5a915); origin github.com blocked by VPN, push when off-VPN
 - [x] 7.3 Bubble line voice review with Pink (2026-06-23): celebrating *claps* -> *wiggles*; back_to_idle 'okay' -> *sigh*. Rest of dict approved as-is. (edit `BUBBLE_LINES` dict in
       one sitting; this is the product surface)
-- [ ] 7.4 Once 6.x and 7.3 are done → `openspec archive observer-mode`
+- [x] 7.4 `openspec archive observer-mode` -> archived 2026-06-23 as 2026-06-23-observer-mode; 4 requirements added to canonical observer-mode capability
