@@ -58,10 +58,25 @@ def install_world(monkeypatch, **overrides):
 
 
 def make_machine_primed() -> StateMachine:
-    """StateMachine with _cpu_primed=True so we skip the prime/sleep."""
-    sm = StateMachine()
-    sm._cpu_primed = True
-    return sm
+    """StateMachine with ONLY a TPADetector wired to the monkeypatched
+    module-level scan fns. No Git/Terminal/IDE detectors -- they would scan
+    the real filesystem / process table and contaminate the test fixture.
+
+    The TPA detector's scan fns are wired as lambdas that resolve via the
+    ``watcher`` module each call, so monkeypatch.setattr(watcher, ...)
+    installed BEFORE this helper still takes effect.
+    """
+    from squid_pet.detectors import TPADetector
+    cp = TPADetector(
+        find_processes_fn=lambda: watcher.find_tpa_processes(),
+        aggregate_cpu_fn=lambda p: watcher.aggregate_cpu(p),
+        most_recent_tool_activity_age_fn=lambda: watcher.most_recent_tool_activity_age(),
+        has_active_shell_children_fn=lambda p: watcher.has_active_shell_children(p),
+        newest_subagent_age_fn=lambda: watcher.newest_file_age_in_dir(
+            watcher.SUBAGENT_DIR, "*.pkl"
+        ),
+    )
+    return StateMachine(detectors=[cp])
 
 
 # ──────────────────────────────────────────────────────────────────────

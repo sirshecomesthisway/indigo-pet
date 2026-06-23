@@ -355,91 +355,155 @@ def latest_shell_child_cmdline(procs) -> list[str] | None:
 
 class StateMachine:
     """
-    Computes the pet's emotional state each tick.
+    Computes the pet's emotional state each tick by querying a list of
+    pluggable detectors (TPA, Git, Terminal, IDE -- see detectors.py).
 
-    Maintains a small amount of memory:
-      - was_busy: whether CPU was recently busy (enables celebration detection)
-      - celebrate_until: timestamp until which we should keep celebrating
+    The 9-state priority cascade is preserved: sleeping > celebrating >
+    no-TPA-idle > grooving > concerned > working > thinking > post-busy
+    celebrate > idle. TPA-specific richer states (working/thinking/concerned)
+    are still gated on the TPA detector's signals; non-TPA detectors can
+    fire celebrating/grooving/thinking via the generic OR fallback at
+    the bottom of the cascade.
+
+    State.json schema is preserved -- cpu_percent and tpa_running
+    are populated from the TPADetector's public attrs.
     """
 
-    def __init__(self) -> None:
-        self.was_busy = False
+    def __init__(self, detectors: list | None = None) -> None:
+        # Lazy import to keep test-isolated detectors testing-friendly
+        if detectors is None:
+            try:
+                settings = json.loads((STATE_DIR / "settings.json").read_text())
+            except (OSError, ValueError):
+                settings = {}
+            from .detectors import build_detectors as _bd
+            detectors = _bd(settings)
+        self.detectors = list(detectors)
+        # Pull out the TPA detector for richer-state queries (or use a
+        # no-op shim if disabled / absent).
+        self._tpa_detector = next(
+            (d for d in self.detectors if d.name == "tpa"), None
+        )
+        # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
-        # TPA-state-idle tracking: clock starts whenever state enters "idle"
-        # (i.e. TPA has nothing to do). Resets whenever state leaves idle.
-        # Independent of macOS HID activity — Pink can keep typing in Slack
+        # TPA-state-idle tracking: clock starts whenever state enters "idle".
+        # Independent of macOS HID activity -- Pink can keep typing in Slack
         # and TPA-idle clock still ticks up.
         self._agent_idle_since: float = 0.0
         self._last_state: str = ""
-        self.busy_streak = 0   # consecutive ticks with CPU >= threshold (burst suppression)
-        # Auto-wake bookkeeping: track when sleeping started + the force-awake
-        # window. When idle >= IDLE_THRESHOLD_SEC for AUTO_WAKE_AFTER_SLEEPING_SEC
-        # consecutive seconds, we suppress sleeping for AUTO_WAKE_DURATION_SEC so
-        # routine.py can run one cycle. Then sleeping returns (if still idle).
+        # Auto-wake bookkeeping
         self._sleeping_since: float = 0.0
         self._force_awake_until: float = 0.0
-        # Prime cpu_percent so first real call returns meaningful number
-        self._cpu_primed = False
 
-    # States where TPA is actively chewing on work. Any of these should
-    # reset the agent_idle counter. Everything else (idle, sleeping, etc.)
-    # is "TPA is not doing anything" → agent_idle keeps ticking.
+
+    # --- Back-compat proxies to the TPADetector state. -----------
+    # External callers (tests, the upcoming `squid why` CLI) can query
+    # "is the TPA detector currently busy" without poking into the
+    # detector list themselves.
+    @property
+    def was_busy(self) -> bool:
+        return self._tpa_detector._was_busy if self._tpa_detector else False
+
+    @was_busy.setter
+    def was_busy(self, value: bool) -> None:
+        if self._tpa_detector is not None:
+            self._tpa_detector._was_busy = bool(value)
+
+    @property
+    def busy_streak(self) -> int:
+        return self._tpa_detector._busy_streak if self._tpa_detector else 0
+
+    @busy_streak.setter
+    def busy_streak(self, value: int) -> None:
+        if self._tpa_detector is not None:
+            self._tpa_detector._busy_streak = int(value)
+
     _AGENT_ACTIVE_STATES = frozenset({
         "thinking", "working", "grooving", "celebrating", "concerned"
     })
 
     def compute(self) -> PetState:
-        """Compute state, then layer in agent_idle_seconds tracking.
-        agent_idle_seconds counts how long TPA has been continuously NOT doing
-        any work — independent of whether Pink is typing in other apps OR
-        whether mac HID went to sleep. Only TPA-active states reset it."""
+        """Run the cascade, then layer in agent_idle_seconds tracking."""
         st = self._compute_inner()
         now = time.time()
         agent_active_now = st.state in self._AGENT_ACTIVE_STATES
         agent_active_prev = self._last_state in self._AGENT_ACTIVE_STATES
         if not agent_active_now:
-            # TPA is doing nothing → agent_idle should tick.
             if agent_active_prev or self._agent_idle_since == 0.0:
-                # Either just transitioned from active → idle, or first time.
                 self._agent_idle_since = now
             st.agent_idle_seconds = round(now - self._agent_idle_since, 1)
         else:
-            # TPA is busy → reset.
             st.agent_idle_seconds = 0.0
             self._agent_idle_since = 0.0
         self._last_state = st.state
         return st
 
+    def _other_detectors(self):
+        """Iterator over detectors excluding TPA (and excluding disabled)."""
+        return (d for d in self.detectors
+                if d.name != "tpa" and d.enabled)
+
     def _compute_inner(self) -> PetState:
         now = time.time()
-        procs = find_tpa_processes()
-        running = len(procs) > 0
+        cp = self._tpa_detector
 
-        # Prime CPU on first call
-        if not self._cpu_primed:
-            aggregate_cpu(procs)
-            self._cpu_primed = True
-            time.sleep(0.1)
-
-        cpu = aggregate_cpu(procs) if running else 0.0
-        idle = macos_idle_seconds()
-
-        # NEW: real tool-activity signals.
-        # These replace the legacy session_log_age which referenced a stale
-        # log dir that hasn't been written since the old tpa version.
-        tool_activity_age = most_recent_tool_activity_age() if running else float("inf")
-        shell_active = has_active_shell_children(procs) if running else False
-
-        # Burst-suppress: typing in TUI causes brief CPU spikes. Only treat
-        # CPU as "busy" if it stays >= threshold for 2+ ticks in a row.
-        if cpu >= CPU_BUSY_THRESHOLD:
-            self.busy_streak += 1
+        # Trigger one scan if we have a TPA detector (populates cpu_percent +
+        # tpa_running for the state.json schema).
+        if cp is not None and tpa.enabled:
+            _ = tpa.is_busy(now)
+            # If TPA isn't running, any leftover was_busy edge from a prior
+            # session is stale -- clear it so we don't celebrate spuriously
+            # next time TPA starts.
+            if not tpa.tpa_running:
+                tpa._was_busy = False
+                tpa._celebrate_until = 0.0
+            cpu = tpa.cpu_percent
+            running = tpa.tpa_running
+            shell_active = tpa.shell_active
+            tool_activity_age = tpa.tool_activity_age
+            subagent_age = tpa.subagent_age
+            sustained_busy = tpa.sustained_busy
+            tpa_celebrating = tpa.is_celebrating(now)
+            tpa_grooving = tpa.is_grooving(now)
         else:
-            self.busy_streak = 0
-        sustained_busy = self.busy_streak >= 2
-        session_log_age = newest_session_log_age()
-        subagent_age = newest_file_age_in_dir(SUBAGENT_DIR, "*.pkl")
+            cpu = 0.0
+            running = False
+            shell_active = False
+            tool_activity_age = float("inf")
+            subagent_age = float("inf")
+            sustained_busy = False
+            tpa_celebrating = False
+            tpa_grooving = False
+
+        idle = macos_idle_seconds()
         error_age = file_age_sec(ERRORS_LOG)
+
+        # Other-detector signals (computed lazily to avoid wasted scans
+        # when we exit the cascade early).
+        other_busy_cache = [None]
+        other_celebrating_cache = [None]
+        other_grooving_cache = [None]
+
+        def other_busy() -> bool:
+            if other_busy_cache[0] is None:
+                other_busy_cache[0] = any(
+                    d.is_busy(now) for d in self._other_detectors()
+                )
+            return other_busy_cache[0]
+
+        def other_celebrating() -> bool:
+            if other_celebrating_cache[0] is None:
+                other_celebrating_cache[0] = any(
+                    d.is_celebrating(now) for d in self._other_detectors()
+                )
+            return other_celebrating_cache[0]
+
+        def other_grooving() -> bool:
+            if other_grooving_cache[0] is None:
+                other_grooving_cache[0] = any(
+                    d.is_grooving(now) for d in self._other_detectors()
+                )
+            return other_grooving_cache[0]
 
         st = PetState(
             cpu_percent=round(cpu, 1),
@@ -448,101 +512,90 @@ class StateMachine:
             timestamp=now,
         )
 
-        # ── State priority order (highest priority wins) ──
-
-        # 1. SLEEPING -- user is away.
-        #    Auto-wake: if we have been sleeping for AUTO_WAKE_AFTER_SLEEPING_SEC
-        #    consecutive seconds, suppress sleeping for AUTO_WAKE_DURATION_SEC so
-        #    Squid does one rhythm cycle ("power nap" then a little movement)
-        #    instead of looking dead on the desk for hours.
+        # ── 1. SLEEPING ── user is away.
         if idle >= IDLE_THRESHOLD_SEC:
             if self._sleeping_since == 0.0:
                 self._sleeping_since = now
             sleeping_for = now - self._sleeping_since
             if sleeping_for >= AUTO_WAKE_AFTER_SLEEPING_SEC and now >= self._force_awake_until:
-                # Open a wake window. Reset _sleeping_since so the cycle can
-                # re-arm after the window expires.
                 self._force_awake_until = now + AUTO_WAKE_DURATION_SEC
                 self._sleeping_since = 0.0
                 print("[squid-pet] auto-wake: opening 3-min wake window after 10 min asleep",
                       flush=True)
             if now >= self._force_awake_until:
-                # Normal sleeping -- no wake window active.
                 st.state = "sleeping"
                 st.message = f"💤 idle {int(idle // 60)}m"
-                self.was_busy = False
+                # Stale: user is away, clear any leftover busy edge so we
+                # don't fire a celebrate as soon as they come back.
+                if cp is not None:
+                    tpa._was_busy = False
                 return st
-            # Else: inside wake window -- fall through to evaluate other states.
-            # Most likely lands at idle (default branch 9) and routine fires.
+            # else: inside wake window -- fall through to evaluate other states
         else:
-            # User came back. Clear both flags.
             self._sleeping_since = 0.0
             self._force_awake_until = 0.0
 
-        # 2. CELEBRATING — sustained, then released
-        if now < self.celebrate_until:
+        # Edge: TPA detector just newly armed its own celebrate window this
+        # tick -- propagate to the StateMachine's celebrate_until (so the
+        # sticky window survives even if the detector's value gets reset)
+        # and use the distinctive "done!" message for this single tick.
+        tpa_edge_fired = False
+        if cp is not None and tpa._celebrate_until > self.celebrate_until:
+            self.celebrate_until = tpa._celebrate_until
+            tpa_edge_fired = True
+
+        # ── 2. CELEBRATING ── sticky post-CPU-drop, or any detector says so
+        if now < self.celebrate_until or tpa_celebrating or other_celebrating():
             st.state = "celebrating"
-            st.message = "🎉 nice!"
+            st.message = "🎉 done!" if tpa_edge_fired else "🎉 nice!"
             return st
 
-        # 3. NO CODE PUPPY → idle (just chillin')
-        if not running:
-            st.state = "idle"
-            st.message = "👀 watching"
-            self.was_busy = False
-            return st
-
-        # 4. GROOVING — subagent active
-        if subagent_age < SUBAGENT_ACTIVE_WINDOW_SEC:
+        # ── 3. GROOVING ── TPA subagent active, or any detector says so
+        if tpa_grooving or other_grooving():
             st.state = "grooving"
-            st.message = "🤹 subagent"
-            self.was_busy = True
+            st.message = "🤸 subagent" if tpa_grooving else "🤸 creative burst"
             return st
 
-        # 5. CONCERNED — recent error
-        if error_age != float("inf") and cpu < CPU_BUSY_THRESHOLD:
-            # Parse + classify the most recent error.
-            reason, severity = parse_last_error(ERRORS_LOG)
-            window = (CONCERN_TRANSIENT_LOOKBACK_SEC
-                      if severity == "transient" else CONCERN_LOOKBACK_SEC)
-            if error_age < window:
-                st.state = "concerned"
-                st.concern_reason = reason or "⚠ recent error"
-                st.concern_severity = severity or "hard"
-                st.message = st.concern_reason
+        # ── 4. TPA RUNNING -- richer TPA-specific cascade ──
+        if running:
+            # 4a. CONCERNED -- recent error in TPA log
+            if error_age != float("inf") and cpu < CPU_BUSY_THRESHOLD:
+                reason, severity = parse_last_error(ERRORS_LOG)
+                window = (CONCERN_TRANSIENT_LOOKBACK_SEC
+                          if severity == "transient" else CONCERN_LOOKBACK_SEC)
+                if error_age < window:
+                    st.state = "concerned"
+                    st.concern_reason = reason or " recent error"
+                    st.concern_severity = severity or "hard"
+                    st.message = st.concern_reason
+                    return st
+            # 4b. WORKING -- actively running tool / shell command
+            if shell_active:
+                st.state = "working"
+                st.message = "🛠️ running shell"
                 return st
+            if sustained_busy and tool_activity_age < TOOL_ACTIVE_WINDOW_SEC:
+                st.state = "working"
+                st.message = f"⌨️ writing ({int(cpu)}% cpu)"
+                return st
+            # 4c. THINKING -- CPU busy but no recent tool writes
+            if sustained_busy:
+                st.state = "thinking"
+                st.message = "🤔 thinking"
+                return st
+            # 4d. Post-busy celebrate -- TPADetector handles
+            #     this via its own celebrate_until; surfaced via
+            #     tpa_celebrating above. Nothing to do here.
 
-        # 6. WORKING — actively running a tool: shell command in flight, or
-        #    CPU busy with very recent autosave/subagent/command_history write.
-        if shell_active:
-            st.state = "working"
-            st.message = "🛠 running shell"
-            self.was_busy = True
-            return st
-        if sustained_busy and tool_activity_age < TOOL_ACTIVE_WINDOW_SEC:
-            st.state = "working"
-            st.message = f"⌨️ writing ({int(cpu)}% cpu)"
-            self.was_busy = True
-            return st
-
-        # 7. THINKING — busy but no recent log writes (LLM call)
-        if sustained_busy:
+        # ── 5. NON-TPA DETECTORS -- generic busy fallback ──
+        if other_busy():
             st.state = "thinking"
-            st.message = "💭 thinking"
-            self.was_busy = True
+            st.message = "🤔 working"
             return st
 
-        # 8. CPU dropped from busy → celebrate (task likely complete)
-        if self.was_busy and cpu < 1.0:
-            st.state = "celebrating"
-            st.message = "🎉 done!"
-            self.celebrate_until = now + CELEBRATE_DURATION_SEC
-            self.was_busy = False
-            return st
-
-        # 9. Default — idle/watching
+        # ── 6. Default -- idle/watching ──
         st.state = "idle"
-        st.message = "👀 listening"
+        st.message = "👂 listening" if running else "👀 watching"
         return st
 
 
