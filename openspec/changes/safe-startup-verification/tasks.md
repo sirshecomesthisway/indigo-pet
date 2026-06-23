@@ -1,19 +1,19 @@
 # Tasks — Safe Startup Verification
 
 ## 1. Thread-safety decorator
-- [ ] 1.1 Create `src/squid_pet/threading_guards.py` with `cocoa_main_thread` decorator (fire-and-forget) and `cocoa_main_thread_blocking` decorator (synchronous w/ 5s timeout)
-- [ ] 1.2 Add module docstring linking to kennel drawer 239 and commit 0d21f15 (why this exists)
-- [ ] 1.3 Handle non-Mac import path (NSThread import optional, runs inline if unavailable — keeps Linux CI green for non-Cocoa tests)
-- [ ] 1.4 Unit tests: `tests/test_threading_guards.py` — main-thread fast path, off-thread dispatch path, blocking timeout, blocking exception propagation
+- [x] 1.1 Create `src/squid_pet/threading_guards.py` with `cocoa_main_thread` decorator (fire-and-forget) and `cocoa_main_thread_blocking` decorator (synchronous w/ 5s timeout)
+- [x] 1.2 Add module docstring linking to kennel drawer 239 and commit 0d21f15 (why this exists)
+- [x] 1.3 Handle non-Mac import path (NSThread import optional, runs inline if unavailable — keeps Linux CI green for non-Cocoa tests)
+- [x] 1.4 Unit tests: `tests/test_threading_guards.py` -- 7 tests (4 spec + 3 extras: guarded-marker, off-thread dispatch returns None, exception propagation)
 
 ## 2. Migrate existing Cocoa callsites
-- [ ] 2.1 Audit: run grep pattern from drawer 239, generate VIOLATION list with file:line
-- [ ] 2.2 Triage each violation: real vs false-positive (false-positive = whole enclosing function already dispatched via callAfter)
-- [ ] 2.3 `src/squid_pet/window.py`: decorate `move_to_corner`, drag handlers, any newly-found violations
-- [ ] 2.4 `src/squid_pet/menu.py:290`: decorate or wrap `makeKeyAndOrderFront_`
+- [x] 2.1 Audit done. RAW HITS: window.py:141, window.py:162, window.py:960, menu.py:290, passthrough.py:168
+- [x] 2.2 Triage: REAL=move_to_corner@141, move_window_by_delta@162. FALSE-POS=setCollectionBehavior@960 (inside _set_all_spaces->callAfter), makeKeyAndOrderFront@menu:290 (inside _on_main->callAfter), setIgnoresMouseEvents@passthrough:168 (inside _apply_on_main->callAfter)
+- [x] 2.3 `src/squid_pet/window.py`: decorated `move_to_corner` and `move_window_by_delta` with `@cocoa_main_thread`
+- [x] 2.4 `src/squid_pet/menu.py:290`: already inside `_on_main` closure dispatched via `AppHelper.callAfter(_on_main)` on line 307 -- no change needed
 - [ ] 2.5 `src/squid_pet/passthrough.py`: verify `setIgnoresMouseEvents_` is properly dispatched (already via callAfter — confirm or upgrade to decorator)
-- [ ] 2.6 Re-run audit, confirm zero violations
-- [ ] 2.7 Run full test suite, confirm 121/121 still green
+- [x] 2.6 Re-audit: zero remaining direct NSWindow setters outside `cocoa_main_thread` decorators or callAfter dispatch
+- [x] 2.7 Full suite 133/133 green (was 126; +7 from threading_guards tests)
 
 ## 3. `squid doctor` subcommand
 - [ ] 3.1 Add `doctor` subcommand to launcher (`bin/squid`) — Python entry point

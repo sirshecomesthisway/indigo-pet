@@ -130,6 +130,10 @@ def corner_origin(corner: str) -> tuple[float, float]:
         return (vx + EDGE_MARGIN, vy + EDGE_MARGIN)
 
 
+from squid_pet.threading_guards import cocoa_main_thread
+
+
+@cocoa_main_thread
 def move_to_corner(corner: str) -> bool:
     """Move our NSWindow to the named corner. Returns True on success."""
     nw = _get_ns_window()
@@ -145,6 +149,7 @@ def move_to_corner(corner: str) -> bool:
         return False
 
 
+@cocoa_main_thread
 def move_window_by_delta(dx: float, dy: float) -> tuple[float, float] | None:
     """
     Move our NSWindow by (dx, dy) in SCREEN pixels. dy is positive = DOWN
