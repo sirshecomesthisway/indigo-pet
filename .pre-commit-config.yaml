@@ -1,0 +1,16 @@
+# Pre-commit hooks for squid-pet.
+# Install: pip install pre-commit && pre-commit install
+# Bypass once: git commit --no-verify
+repos:
+  - repo: local
+    hooks:
+      - id: cocoa-main-thread-audit
+        name: Cocoa main thread audit (drawer 239)
+        description: |
+          Refuse direct NSWindow/NSApp setters that aren't guarded by
+          @cocoa_main_thread or an AppHelper.callAfter wrap. Bypass a
+          specific line with `# noqa: cocoa-main-thread`.
+        language: system
+        entry: python scripts/check_cocoa_main_thread.py
+        files: ^src/squid_pet/.*\.py$
+        pass_filenames: true

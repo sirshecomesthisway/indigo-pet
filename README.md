@@ -260,3 +260,18 @@ Current canonical specs:
 - `pet-window` — frameless transparent window, corner snap, persistence
 - `pet-animations` — sprite + CSS keyframe contract
 - `click-passthrough` — transparent-pixel click-through mechanism
+
+## Troubleshooting
+
+If Squid seems missing, run the doctor:
+
+```bash
+python -m squid_pet --doctor
+```
+
+This runs 6 checks (process, state.json freshness, launchd, window
+visibility, window-not-wedged, startup log markers). Exit code 0 =
+healthy; otherwise the failing check number tells you what's broken.
+
+See [docs/STARTUP_SAFETY.md](docs/STARTUP_SAFETY.md) for the full
+four-layer defense documentation.

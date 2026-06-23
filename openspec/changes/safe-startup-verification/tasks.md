@@ -30,13 +30,13 @@
 - [x] 3.12 Live test against PID 2375 reported 6/6 PASS, exit 0. CAUGHT TWO REAL DESIGN BUGS IN INITIAL DRAFT: check 5 was comparing to saved corner (wanderer breaks this); check 6 was reading log tail (startup markers were at head).
 
 ## 4. Improved launcher healthcheck
-- [ ] 4.1 Refactor `bin/squid start` healthcheck to invoke doctor checks 1, 2, 4 (the fast subset)
-- [ ] 4.2 On unhealthy detection: `launchctl bootout` FIRST, then `kill`, then verify gone, then `launchctl bootstrap`
-- [ ] 4.3 Remove the "3 startup attempts" loop — replaced by single attempt + clear failure with doctor output
-- [ ] 4.4 Manual repro test: revert commit 0d21f15 locally, run `squid start`, confirm clear failure (not 8x REFUSING TO START)
+- [x] 4.1 RE-SCOPED: project has no bin/squid launcher (entry is `python -m squid_pet`). Equivalent fast-subset healthcheck is `--doctor` itself which runs all 6 checks in ~0.4s. No separate launcher healthcheck needed.
+- [x] 4.2 RE-SCOPED: no `squid start` command exists. The kill-respawn-fight only happens via launchd KeepAlive; users restart by killing the pid then launchd auto-relaunches. If users want to script a clean restart, they can use the launchctl bootout/kill/bootstrap sequence directly -- it's a 3-line shell command not worth wrapping in a custom launcher right now.
+- [x] 4.3 RE-SCOPED: no startup-attempt loop exists in __main__.py to remove. Singleton via fcntl.flock is atomic; no retry needed.
+- [x] 4.4 PARTIAL: doctor's check 5 (`window not wedged`) directly reproduces the bug detection. Test `test_window_wedged_at_pywebview_default` verifies this synthetically. Manual repro of reverting 0d21f15 deferred (would require destabilizing live Squid for a regression test that the unit test already covers).
 
 ## 5. CI smoke test
-- [ ] 5.1 Create `.github/workflows/smoke-test.yml`
+- [ ] 5.1 DEFERRED: blocked on github.com VPN. internal GHE may not have macOS runners; needs decision.
 - [ ] 5.2 Job: macos-latest runner, install uv, `uv pip install -e .`
 - [ ] 5.3 Background-launch Squid, sleep 10s, run `squid doctor --json`, parse exit code
 - [ ] 5.4 On failure: upload `/tmp/squid-pet.out.log` + `/tmp/squid-pet.err.log` as artifacts
@@ -44,20 +44,20 @@
 - [ ] 5.6 Verify CI catches the bug class: open a PR that synthetically reverts commit 0d21f15, confirm CI fails with diagnostic
 
 ## 6. Pre-commit grep audit
-- [ ] 6.1 Add `.pre-commit-config.yaml` if not present
-- [ ] 6.2 Local hook: shell script that runs the drawer-239 grep against staged files
-- [ ] 6.3 Fail if a new direct NSWindow/NSApp/NSScreen setter appears without `@cocoa_main_thread` or `callAfter` within 5 lines
-- [ ] 6.4 Documented bypass: `# noqa: cocoa-main-thread` comment with justification required
-- [ ] 6.5 Document in `docs/CONTRIBUTING.md` (new file or section)
+- [x] 6.1 Created `.pre-commit-config.yaml` with local hook entry
+- [x] 6.2 Created `scripts/check_cocoa_main_thread.py` -- AST-based (not grep) for far fewer false positives. Tested against live codebase: zero violations.
+- [x] 6.3 Implemented via AST: walks outward through enclosing functions, accepts ANY guarded decorator OR ANY enclosing fn-name appearing as first arg to `AppHelper.callAfter(name)` in the file. Handles nested closures (e.g. `_inner` defined in `outer`, then `callAfter(_inner)`).
+- [x] 6.4 `# noqa: cocoa-main-thread` per-line bypass implemented
+- [x] 6.5 Documented in `docs/STARTUP_SAFETY.md` Layer 3 section (CONTRIBUTING.md not yet present; STARTUP_SAFETY is the natural home since it's the cross-reference target)
 
 ## 7. Documentation
-- [ ] 7.1 `docs/STARTUP_SAFETY.md` — explain the three layers (decorator, doctor, CI), why they exist, what to do when a check fails
-- [ ] 7.2 Update `README.md` — add "if Squid seems missing, run `squid doctor`"
-- [ ] 7.3 Cross-link from `distribution-installer` proposal — installer's post-install step invokes `squid doctor`
+- [x] 7.1 `docs/STARTUP_SAFETY.md` written -- covers all 4 layers, has When-A-Check-Fails decision table
+- [x] 7.2 README troubleshooting section added pointing at --doctor + docs/STARTUP_SAFETY.md
+- [ ] 7.3 DEFERRED: distribution-installer proposal is still at 0/52. Cross-link will land when that proposal is implemented.
 
 ## 8. Commit + memory
-- [ ] 8.1 Commit logical batches (decorator, migration, doctor, healthcheck, CI, pre-commit, docs as 6-7 separate commits)
-- [ ] 8.2 Push both remotes
+- [x] 8.1 3 commits this session: 626d524 (decorator + migration), 7ae4032 (doctor + tests), THIS COMMIT (pre-commit hook + docs). Healthcheck/CI re-scoped/deferred per Groups 4-5.
+- [ ] 8.2 internal pushed each commit. github.com origin still VPN-blocked -- pending.
 - [ ] 8.3 File kennel drawer (decisions room) — the four-layer defense pattern, applicable to future cross-platform UI projects
 - [ ] 8.4 Update `~/.tpa/agent_memory/pink-pm/squid-pet.md` — mark this change archived, link decorator pattern as repo standard
-- [ ] 8.5 `openspec archive safe-startup-verification` once all checks green
+- [ ] 8.5 PENDING: archive when Group 5 (CI) is decided and 7.3 cross-link lands (after distribution-installer implementation)
