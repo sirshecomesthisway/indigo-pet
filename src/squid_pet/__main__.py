@@ -24,7 +24,22 @@ def main() -> None:
         "--check", action="store_true",
         help="Compute one state snapshot and print it as JSON, then exit."
     )
+    parser.add_argument(
+        "--doctor", action="store_true",
+        help="Run 6-check end-to-end self-test (process, state, launchd, "
+             "window visible, not-wedged, startup log). Exit 0 = healthy, "
+             "exit N = check N failed."
+    )
+    parser.add_argument(
+        "--doctor-json", action="store_true",
+        help="Like --doctor but output machine-readable JSON."
+    )
     args = parser.parse_args()
+
+    if args.doctor or args.doctor_json:
+        from . import doctor as _doctor
+        sys.exit(_doctor.run_doctor(json_output=args.doctor_json))
+
 
     if args.check:
         from . import watcher

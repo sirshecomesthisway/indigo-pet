@@ -16,18 +16,18 @@
 - [x] 2.7 Full suite 133/133 green (was 126; +7 from threading_guards tests)
 
 ## 3. `squid doctor` subcommand
-- [ ] 3.1 Add `doctor` subcommand to launcher (`bin/squid`) — Python entry point
-- [ ] 3.2 Implement check 1 — process running (`pgrep -f "python -m squid_pet"`)
-- [ ] 3.3 Implement check 2 — `~/.squid-pet/state.json` mtime < 5s ago
-- [ ] 3.4 Implement check 3 — launchd job `com.pink.squid-pet` in `launchctl list`
-- [ ] 3.5 Implement check 4 — CGWindowList shows window for PID with alpha>0 and on_screen=True
-- [ ] 3.6 Implement check 5 — window bounds within tolerance of saved corner position
-- [ ] 3.7 Implement check 6 — last N lines of `/tmp/squid-pet.out.log` contain all expected startup markers
-- [ ] 3.8 Pretty-print output: `[N/6] <name> ... PASS|FAIL  (diagnostic)`
-- [ ] 3.9 Each failure: diagnostic message + suggested fix + drawer link
-- [ ] 3.10 Exit codes: 0 = all pass, N = first failing check number
-- [ ] 3.11 `--json` flag for machine-readable output (CI consumes this)
-- [ ] 3.12 Integration test against running instance
+- [x] 3.1 Wired `--doctor` and `--doctor-json` flags into `python -m squid_pet` (project does not have bin/squid; uses module entry instead)
+- [x] 3.2 check_process_running: reads ~/.squid-pet/pid, signals 0 to verify alive
+- [x] 3.3 check_state_json_fresh: mtime within STATE_FRESHNESS_MAX_SEC=5.0s, injectable now_fn
+- [x] 3.4 check_launchd_loaded: `launchctl list com.pink.squid-pet`, returncode==0 = loaded
+- [x] 3.5 check_window_visible: via Quartz.CGWindowListCopyWindowInfo filtered by pid, requires alpha>0 and kCGWindowIsOnscreen=True
+- [x] 3.6 check_window_in_expected_corner: REDESIGNED as `window not wedged` -- the wanderer legitimately moves squid all over the screen so corner-match would false-positive constantly. Instead checks window is NOT within 10px of pywebview default (100,100) which is the actual bug signature from drawer 239.
+- [x] 3.7 check_startup_log_complete: reads HEAD of log (16KB), not tail -- startup markers only fire once at boot and would be evicted from tail in long-running instances. Verifies all 5 markers: watcher thread started, passthrough loop started, routine thread started, context menu ready, startup complete.
+- [x] 3.8 CheckResult.as_line() format matches: `[N/6] <name> ... PASS|FAIL  diagnostic`
+- [x] 3.9 CheckResult has diagnostic + suggested_fix + drawer_ref; printed on failure
+- [x] 3.10 run_doctor returns 0 if all pass, else 1-based index of first failing check
+- [x] 3.11 `--doctor-json` flag emits {healthy: bool, checks: [...]}
+- [x] 3.12 Live test against PID 2375 reported 6/6 PASS, exit 0. CAUGHT TWO REAL DESIGN BUGS IN INITIAL DRAFT: check 5 was comparing to saved corner (wanderer breaks this); check 6 was reading log tail (startup markers were at head).
 
 ## 4. Improved launcher healthcheck
 - [ ] 4.1 Refactor `bin/squid start` healthcheck to invoke doctor checks 1, 2, 4 (the fast subset)
