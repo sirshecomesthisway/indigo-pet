@@ -86,3 +86,24 @@ Affects the canonical `autonomous-motion` capability:
 - Existing requirements for stroll modes, sprint-perimeter, busy-gate,
   drowsy entry stay AS-IS (semantics preserved, implementation moves
   into the wanderer-as-service or routine).
+
+## Auto-wake from sleeping (added 2026-06-23)
+
+Pink's request: Squid should never look permanently dead. After 10
+minutes asleep, the watcher SHALL force one wake cycle (~3 minutes) so
+the routine fires and Squid moves a little. Then she naturally returns
+to sleeping for another 10 minutes if the user is still away. Net: a
+roughly 13-minute sleep-wake cycle instead of an hours-long static
+sleeping sprite.
+
+This is the "dumb" version: the wake fires regardless of whether the
+user is actually at the Mac. Trade-off accepted: occasional wasted
+animation during true AFK, in exchange for guaranteed liveliness during
+long focus sessions where Pink is working but not generating HID events
+the watcher can see.
+
+Implementation lives in `state-detection` capability (watcher.py); the
+routine controller's existing wake-from-sleeping reset logic (sets
+`_idx = 0` on transition) handles the rhythm restart automatically when
+mood flips from `sleeping` back to `""`.
+

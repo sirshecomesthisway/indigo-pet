@@ -41,6 +41,11 @@ STATE_FILE = STATE_DIR / "state.json"
 
 POLL_INTERVAL_SEC = 1.0
 IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
+# Auto-wake: after this long in sleeping, force one wake cycle even if
+# macOS is still idle. Gives Squid a pet-like rest/wake rhythm instead of
+# being a static sticker on the screen all afternoon.
+AUTO_WAKE_AFTER_SLEEPING_SEC = 600   # 10 min asleep → wake for one rhythm cycle
+AUTO_WAKE_DURATION_SEC = 180         # 3 min awake window (roughly one full IDLE_ROUTINE pass)
 CPU_BUSY_THRESHOLD = 5.0           # %
 TOOL_ACTIVE_WINDOW_SEC = 8         # ANY tool-activity file touched within N sec → working
 SUBAGENT_ACTIVE_WINDOW_SEC = 30    # subagent file touched within last N sec → grooving
@@ -367,6 +372,12 @@ class StateMachine:
         self._agent_idle_since: float = 0.0
         self._last_state: str = ""
         self.busy_streak = 0   # consecutive ticks with CPU >= threshold (burst suppression)
+        # Auto-wake bookkeeping: track when sleeping started + the force-awake
+        # window. When idle >= IDLE_THRESHOLD_SEC for AUTO_WAKE_AFTER_SLEEPING_SEC
+        # consecutive seconds, we suppress sleeping for AUTO_WAKE_DURATION_SEC so
+        # routine.py can run one cycle. Then sleeping returns (if still idle).
+        self._sleeping_since: float = 0.0
+        self._force_awake_until: float = 0.0
         # Prime cpu_percent so first real call returns meaningful number
         self._cpu_primed = False
 
@@ -439,12 +450,34 @@ class StateMachine:
 
         # ── State priority order (highest priority wins) ──
 
-        # 1. SLEEPING — user is away
+        # 1. SLEEPING -- user is away.
+        #    Auto-wake: if we have been sleeping for AUTO_WAKE_AFTER_SLEEPING_SEC
+        #    consecutive seconds, suppress sleeping for AUTO_WAKE_DURATION_SEC so
+        #    Squid does one rhythm cycle ("power nap" then a little movement)
+        #    instead of looking dead on the desk for hours.
         if idle >= IDLE_THRESHOLD_SEC:
-            st.state = "sleeping"
-            st.message = f"💤 idle {int(idle // 60)}m"
-            self.was_busy = False
-            return st
+            if self._sleeping_since == 0.0:
+                self._sleeping_since = now
+            sleeping_for = now - self._sleeping_since
+            if sleeping_for >= AUTO_WAKE_AFTER_SLEEPING_SEC and now >= self._force_awake_until:
+                # Open a wake window. Reset _sleeping_since so the cycle can
+                # re-arm after the window expires.
+                self._force_awake_until = now + AUTO_WAKE_DURATION_SEC
+                self._sleeping_since = 0.0
+                print("[squid-pet] auto-wake: opening 3-min wake window after 10 min asleep",
+                      flush=True)
+            if now >= self._force_awake_until:
+                # Normal sleeping -- no wake window active.
+                st.state = "sleeping"
+                st.message = f"💤 idle {int(idle // 60)}m"
+                self.was_busy = False
+                return st
+            # Else: inside wake window -- fall through to evaluate other states.
+            # Most likely lands at idle (default branch 9) and routine fires.
+        else:
+            # User came back. Clear both flags.
+            self._sleeping_since = 0.0
+            self._force_awake_until = 0.0
 
         # 2. CELEBRATING — sustained, then released
         if now < self.celebrate_until:

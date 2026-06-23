@@ -393,3 +393,65 @@ def test_petstate_default_fields():
     assert st.message == ""
     assert st.concern_reason == ""
     assert st.concern_severity == ""
+
+
+# ----------------------------------------------------------------------
+# Auto-wake from sleeping (dumb-wake): sleep 10 min -> 3-min wake window
+# ----------------------------------------------------------------------
+def test_auto_wake_opens_window_after_10_min_sleeping(monkeypatch):
+    """After AUTO_WAKE_AFTER_SLEEPING_SEC in sleeping, the next tick suppresses
+    sleeping and falls through to a non-sleeping state (idle by default)."""
+    install_world(monkeypatch, idle=900.0)  # 15 min idle (well past threshold)
+    sm = make_machine_primed()
+
+    # First tick: enters sleeping, _sleeping_since stamped.
+    st1 = sm.compute()
+    assert st1.state == "sleeping"
+    assert sm._sleeping_since > 0.0
+
+    # Backdate _sleeping_since to simulate 11 min of continuous sleeping.
+    sm._sleeping_since = time.time() - (watcher.AUTO_WAKE_AFTER_SLEEPING_SEC + 60)
+
+    # Next tick: auto-wake window opens, sleeping is suppressed.
+    st2 = sm.compute()
+    assert st2.state != "sleeping", \
+        f"expected auto-wake to suppress sleeping, got state={st2.state}"
+    # Default fall-through is idle (no TPA, no shell, no errors).
+    assert st2.state == "idle"
+    # Window is now active.
+    assert sm._force_awake_until > time.time()
+    # _sleeping_since reset so the next sleep period can re-arm.
+    assert sm._sleeping_since == 0.0
+
+
+def test_sleeping_returns_after_wake_window_expires(monkeypatch):
+    """Once _force_awake_until passes, sleeping check fires again."""
+    install_world(monkeypatch, idle=900.0)
+    sm = make_machine_primed()
+
+    # Simulate: wake window opened in the past, now expired.
+    sm._force_awake_until = time.time() - 1.0
+    sm._sleeping_since = 0.0  # post-wake state
+
+    st = sm.compute()
+    assert st.state == "sleeping"
+    # New sleeping period started -> _sleeping_since freshly stamped.
+    assert sm._sleeping_since > 0.0
+
+
+def test_user_return_clears_auto_wake_state(monkeypatch):
+    """When idle drops below threshold (user came back), both bookkeeping
+    flags clear so the next sleeping period starts from a fresh timer."""
+    install_world(monkeypatch, idle=900.0)
+    sm = make_machine_primed()
+    # Pretend we were in the middle of a sleep cycle, mid-wake-window.
+    sm._sleeping_since = time.time() - 300
+    sm._force_awake_until = time.time() + 100
+
+    # User comes back: idle drops to 5s.
+    install_world(monkeypatch, idle=5.0)
+    st = sm.compute()
+    assert st.state != "sleeping"
+    assert sm._sleeping_since == 0.0
+    assert sm._force_awake_until == 0.0
+

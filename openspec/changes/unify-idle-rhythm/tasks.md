@@ -57,3 +57,20 @@
 
 - [x] 7.1 Validate change: `openspec validate unify-idle-rhythm` — passes
 - [ ] 7.2 Archive: `openspec archive unify-idle-rhythm` → syncs delta to canonical autonomous-motion (pending Pink go-ahead after she eyeball-verifies 6.3-6.5, 6.7-6.9 in real use)
+
+
+## 8. Auto-wake from sleeping (dumb-wake, added 2026-06-23 per Pink)
+
+Goal: Squid should never look dead. After 10 minutes asleep, force one
+~3 minute wake cycle so the routine fires and she does some movement,
+then naturally re-enter sleeping for another 10 min. Cycle = ~13 min.
+
+- [x] 8.1 Add `AUTO_WAKE_AFTER_SLEEPING_SEC = 600` + `AUTO_WAKE_DURATION_SEC = 180` constants to `watcher.py`
+- [x] 8.2 Add `_sleeping_since` + `_force_awake_until` instance vars to `StateMachine.__init__`
+- [x] 8.3 Modify the sleeping branch in `_compute_inner` to suppress sleeping during the wake window
+- [x] 8.4 Clear both flags when user returns (idle drops below threshold)
+- [x] 8.5 Unit test: auto-wake opens window after 10 min sleeping
+- [x] 8.6 Unit test: sleeping returns after wake window expires
+- [x] 8.7 Unit test: user return clears bookkeeping
+- [x] 8.8 All 27 state_machine tests pass; full suite 126 green
+- [ ] 8.9 MANUAL: leave Mac idle for 13 minutes -- observe Squid sleep -> auto-wake -> rhythm cycle -> back to sleep
