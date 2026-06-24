@@ -20,6 +20,14 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS: dict[str, Any] = {
     "muted": False,
+    # llm-bubbles change 2026-06-24: opt-in LLM-enriched speech bubbles.
+    # When True, eligible state transitions ALSO fire a background LLM
+    # call (via puppy-backend, using the user's own puppy_token from
+    # ~/.tpa/puppy.cfg) that may replace the rule-based bubble
+    # with a more contextual line. Off by default so the pet works
+    # the same out of the box for every associate.
+    "llm_bubbles": False,
+    "llm_bubbles_model": "claude-sonnet-4-6",
 }
 
 
@@ -61,4 +69,16 @@ def toggle_muted() -> bool:
     """Flip the mute flag, persist, return new value."""
     new_val = not is_muted()
     set("muted", new_val)
+    return new_val
+
+def llm_bubbles_enabled() -> bool:
+    """True iff llm_bubbles=True AND a puppy_token is loadable. Cheap to
+    call -- file read happens lazily inside LLMClient on construction."""
+    return bool(get("llm_bubbles", False))
+
+
+def toggle_llm_bubbles() -> bool:
+    """Flip the llm_bubbles flag, persist, return new value."""
+    new_val = not llm_bubbles_enabled()
+    set("llm_bubbles", new_val)
     return new_val

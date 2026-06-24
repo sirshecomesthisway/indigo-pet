@@ -20,6 +20,7 @@ import webview
 
 from . import watcher
 from .passthrough import PassthroughController
+from . import llm_client as _llm_client_mod
 from . import observer
 from . import config
 
@@ -465,7 +466,27 @@ class PetApi:
         self._pending_bubble: str | None = None
         self._last_state_for_bubble: str = "idle"
         self._last_mood_for_bubble: str = ""
-        self._observer = observer.Observer(get_muted=config.is_muted)
+        # LLM-enriched bubbles (opt-in via ~/.squid-pet/config.json).
+        # If disabled or no puppy_token available, _llm is None and the
+        # Observer falls back to rule-based-only behavior automatically.
+        _llm = None
+        if config.llm_bubbles_enabled():
+            _model = config.get("llm_bubbles_model", "claude-sonnet-4-6")
+            _llm = _llm_client_mod.LLMClient(model=_model)
+            if not _llm.is_available():
+                print(
+                    "[squid-pet] llm_bubbles enabled but no puppy_token in "
+                    "~/.tpa/puppy.cfg -- falling back to rule-based bubbles",
+                    flush=True,
+                )
+                _llm = None
+            else:
+                print(f"[squid-pet] llm_bubbles enabled, model={_model}", flush=True)
+        self._observer = observer.Observer(
+            get_muted=config.is_muted,
+            llm_client=_llm,
+            publish_cb=self._publish_llm_bubble,
+        )
 
     def signal_ready(self) -> dict:
         """Called by JS on its first successful get_state poll. Provides a
@@ -543,6 +564,18 @@ class PetApi:
         sees pending_bubble=None instead of replaying the same line."""
         with self._lock:
             self._pending_bubble = None
+
+    def _publish_llm_bubble(self, text: str) -> None:
+        """Callback the Observer's LLM worker thread uses to publish a
+        background-generated bubble. Overwrites whatever rule-based
+        bubble was set immediately by the same state transition.
+
+        SAFE TO CALL FROM ANY THREAD: uses self._lock for the write.
+        """
+        if not text:
+            return
+        with self._lock:
+            self._pending_bubble = text
 
     def set_wander_edge(self, edge: str) -> None:
         """Called by WanderController when she crosses an edge boundary.
@@ -763,6 +796,21 @@ class PetApi:
             with self._lock:
                 self._pending_bubble = None
         print(f"[squid-pet] mute toggled -> {new_val}", flush=True)
+
+    def is_llm_bubbles_enabled(self) -> bool:
+        """JS+menu exposed: current state of llm_bubbles flag."""
+        return config.llm_bubbles_enabled()
+
+    def _menu_toggle_llm_bubbles(self) -> None:
+        """Menu action: flip llm_bubbles flag. Takes effect on next
+        Squid restart -- the LLMClient is constructed once at startup
+        because we don't want to read puppy.cfg on every state change.
+        Shows a brief bubble so the user knows the toggle landed."""
+        new_state = config.toggle_llm_bubbles()
+        msg = "llm on next restart" if new_state else "llm off next restart"
+        with self._lock:
+            self._pending_bubble = msg
+        print(f"[squid-pet] llm_bubbles toggled -> {new_state}", flush=True)
 
     def is_muted(self) -> bool:
         """Exposed so menu can show checkbox state."""

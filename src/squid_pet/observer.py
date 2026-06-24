@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 import logging
+import threading
 from typing import Callable, Optional, Union
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,59 @@ log = logging.getLogger(__name__)
 # default sprite width (~200px @ 14px font). Enforced defensively in
 # _pick(): out-of-spec lines return None and log a warning.
 MAX_BUBBLE_CHARS = 32
+
+# ----------------------------------------------------------------------
+# LLM enrichment layer (llm-bubbles change 2026-06-24)
+# ----------------------------------------------------------------------
+# When an LLMClient is wired in, certain "rich-context" state transitions
+# (working / concerned / celebrating / grooving) ALSO fire a background
+# LLM call that may produce a more contextual bubble line. The rule-based
+# bubble is published immediately as before -- the LLM line, if it
+# arrives in time and respects the 32-char cap, overwrites it. If the LLM
+# call fails, times out, returns empty, or returns too-long text, the
+# rule-based bubble stays. Squid never goes silent because of LLM issues.
+#
+# Triggers NOT in this set keep their rule-based-only behavior:
+#   - thinking/back_to_idle: too frequent, not enough context
+#   - poke/shake/sprint/drowsy/waking: interaction emotes, snappy beats smart
+# ----------------------------------------------------------------------
+LLM_ENRICH_TRIGGERS = frozenset({"working", "concerned", "celebrating", "grooving"})
+
+# The voice contract for the LLM. Anything beyond a single short
+# observation breaks the bubble UI. Empty string = stay silent.
+OBSERVER_SYSTEM_PROMPT = (
+    "You are Squid, a tiny pink octopus pet who lives on the corner "
+    "of the user's screen. You watch them work with TPA (their "
+    "AI coding agent) but you are NOT the agent and NEVER speak as it. "
+    "You are a passive observer who occasionally pipes up.\n\n"
+    "VOICE: dry, fond, perceptive. Lowercase. Fragmentary. Like a cat "
+    "noticing a thing. Asterisk-actions like *peeks* or *flops* are fine.\n\n"
+    "HARD RULES:\n"
+    "- Reply with AT MOST 30 characters, including spaces. Shorter is better.\n"
+    "- Reply with an EMPTY STRING if there's nothing worth saying.\n"
+    "- Never use !, ?, all-caps, emoji, or quotation marks.\n"
+    "- Never say 'I' or 'you' or 'we'. Pure observation only.\n"
+    "- Never explain yourself, never apologize, never narrate.\n"
+    "- Never reference being an AI, model, or language system.\n"
+    "- Stay silent more often than you speak. Silence is the default.\n\n"
+    "Examples of GOOD outputs (note: no emoji, no !, no punctuation flourish):\n"
+    "  pytest, hm\n"
+    "  ohhh, a subagent\n"
+    "  uhoh\n"
+    "  *peeks at the diff*\n"
+    "  shipped\n"
+    "  back to idle\n"
+    "  (empty string)\n"
+    "  (empty string)\n"
+    "  (empty string)\n\n"
+    "Examples of BAD outputs (DO NOT do these):\n"
+    "  Great job!  -- has ! and capital letter\n"
+    "  \U0001f389 nice push  -- has emoji\n"
+    "  Pushed to main, nice!  -- has capital and !\n"
+    "  I see you ran pytest  -- says I and you, narrates\n"
+    "  Let me know if you need anything  -- offers help, sounds like an assistant"
+)
+
 
 # ----------------------------------------------------------------------
 # BUBBLE_LINES -- the voice contract. Pink owns this dict.
@@ -218,8 +272,26 @@ class Observer:
     changes are picked up live without restart).
     """
 
-    def __init__(self, get_muted: Callable[[], bool]):
+    def __init__(
+        self,
+        get_muted: Callable[[], bool],
+        llm_client: Optional["object"] = None,
+        publish_cb: Optional[Callable[[str], None]] = None,
+    ):
+        """get_muted: callback returning current mute state (queried per call).
+
+        llm_client: optional LLMClient instance. If present AND .is_available()
+            returns True, eligible state transitions fire a background LLM
+            call that may overwrite the rule-based bubble with a richer line.
+            If None, behavior is identical to pre-llm-bubbles versions.
+
+        publish_cb: callback the LLM worker uses to publish its result.
+            Required if llm_client is provided. Signature: publish_cb(text).
+            The window-side implementation typically sets _pending_bubble.
+        """
         self._get_muted = get_muted
+        self._llm = llm_client if (llm_client and getattr(llm_client, "is_available", lambda: False)()) else None
+        self._publish_cb = publish_cb
 
     # ------------------------------------------------------------------
     # Internal: random pick + length guard
@@ -249,6 +321,62 @@ class Observer:
                 len(choices) - len(valid), len(choices), key, MAX_BUBBLE_CHARS,
             )
         return random.choice(valid)
+
+    # ------------------------------------------------------------------
+    # LLM enrichment -- fires in background, may overwrite rule-based bubble
+    # ------------------------------------------------------------------
+    def _async_enrich(self, trigger_key: str, context: str) -> None:
+        """Fire a background LLM call. On success, publish via callback.
+
+        Runs in a daemon thread so it never blocks the watcher loop. The
+        LLM call itself is rate-limited inside LLMClient.ask() (5s min
+        between calls per process), so even a busy state machine won't
+        burst-call the gateway. All failures are silent -- the rule-based
+        bubble is already published, so the user sees something either way.
+        """
+        if self._llm is None or self._publish_cb is None:
+            return
+        if self._get_muted():
+            return
+        if trigger_key not in LLM_ENRICH_TRIGGERS:
+            return
+
+        def _worker():
+            try:
+                # Compact context: trigger + reason. The system prompt
+                # does the heavy lifting of voicing the line.
+                user_msg = f"trigger={trigger_key}; context={context[:240]}"
+                reply = self._llm.ask(
+                    system=OBSERVER_SYSTEM_PROMPT,
+                    user=user_msg,
+                    max_tokens=40,
+                )
+            except Exception as e:  # noqa: BLE001 -- defensive
+                log.warning("observer: async enrich failed (%s)", type(e).__name__)
+                return
+
+            if reply is None:
+                return  # rate-limited or HTTP failure -- keep rule-based
+            reply = reply.strip().strip('"\'')
+            if not reply:
+                return  # model chose silence -- keep rule-based
+            if len(reply) > MAX_BUBBLE_CHARS:
+                # Hallucinated past the limit. Drop entirely rather than
+                # truncating -- truncation creates ugly mid-word cuts.
+                log.warning("observer: llm reply %d chars > %d, dropped",
+                            len(reply), MAX_BUBBLE_CHARS)
+                return
+            # Re-check mute right before publishing -- user may have muted
+            # while the call was in-flight.
+            if self._get_muted():
+                return
+            try:
+                self._publish_cb(reply)
+            except Exception as e:  # noqa: BLE001
+                log.warning("observer: publish_cb raised (%s)", type(e).__name__)
+
+        t = threading.Thread(target=_worker, name="squid-llm-enrich", daemon=True)
+        t.start()
 
     # ------------------------------------------------------------------
     # State-change trigger
@@ -291,9 +419,23 @@ class Observer:
         elif trigger_key == "working" and shell_cmdline:
             specific = _shell_cmd_bubble(shell_cmdline)
             if specific is not None and len(specific) <= MAX_BUBBLE_CHARS:
+                # Still fire LLM enrich -- the shell-cmd bubble is fine
+                # but LLM may produce something contextually nicer.
+                context = f"old={old} new={new} shell={' '.join(shell_cmdline[:6])}"
+                self._async_enrich(trigger_key, context)
                 return specific
 
-        return self._pick(trigger_key)
+        rule_bubble = self._pick(trigger_key)
+        # Background LLM enrich: may overwrite the rule-based line if it
+        # arrives in time. Context bundles all the signals we have.
+        if rule_bubble is not None:
+            ctx_parts = [f"old={old}", f"new={new}"]
+            if concern_reason:
+                ctx_parts.append(f"reason={concern_reason[:120]}")
+            if shell_cmdline:
+                ctx_parts.append(f"shell={' '.join(shell_cmdline[:4])}")
+            self._async_enrich(trigger_key, "; ".join(ctx_parts))
+        return rule_bubble
 
     # ------------------------------------------------------------------
     # Interaction trigger

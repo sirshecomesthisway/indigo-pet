@@ -56,6 +56,7 @@ class _MenuTarget(NSObject):
     def strollAnywhere_(self, s): self.api._menu_set_stroll_mode("anywhere")
     def strollEdges_(self, s):    self.api._menu_set_stroll_mode("edges")
     def toggleMute_(self, s): self.api._menu_toggle_mute()
+    def toggleLLMBubbles_(self, s): self.api._menu_toggle_llm_bubbles()
 
     # Stroll path
 
@@ -185,6 +186,13 @@ def _build_menu(target, api) -> NSMenu:
         muted_now = False
     mute_label = "Unmute Squid" if muted_now else "Mute Squid"
     _add(menu, mute_label, target, "toggleMute:", checked=muted_now)
+    # ----- LLM-enriched bubbles toggle (llm-bubbles 2026-06-24) -----
+    try:
+        llm_on = api.is_llm_bubbles_enabled()
+    except Exception:
+        llm_on = False
+    llm_label = "LLM bubbles (on)" if llm_on else "LLM bubbles (off)"
+    _add(menu, llm_label, target, "toggleLLMBubbles:", checked=llm_on)
     menu.addItem_(NSMenuItem.separatorItem())
 
     # ── Diagnostics ──
