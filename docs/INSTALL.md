@@ -14,8 +14,59 @@ This page is for the paranoid (who want to see every step) and the unlucky
 **Install knobs:**
 - `--wizard` — interactive prompts for starting corner / stroll mode
 - `--non-interactive` / `--yes` / `-y` — skip all prompts, take all defaults (good for CI)
+- `--profile` — capture per-stage wall time, print a table at the end, save to `/tmp/squid-pet-install-profile-<UTC>.txt`
 - `SQUID_PROJECT=/path/to/here` — install to non-default location
 - `SQUID_REPO=git@host:user/repo.git` — override non-default remote
+
+## Speed expectations
+
+`install.sh` is lockfile-driven (`uv sync --frozen` against committed
+`uv.lock`), so dependency resolution is skipped entirely. Measured on
+Pink's M1 + corporate VPN, 2026-06-24:
+
+| Scenario | Wall time | What dominates |
+|---|---|---|
+| Warm install (existing venv, no dep changes) | **~30 s** | uv re-verifying the editable install (~22 s) + git ls-remote (~7 s) |
+| `squid update` (alias for re-running install.sh) | **~30 s** | same as warm |
+| Cold install (fresh `~/.cache/uv`, empty `.venv`) | **~3 min** | wheel downloads for pillow + pyobjc + psutil (~15 MiB, throughput-bound) |
+| Uninstall + reinstall | **~1 min** | uninstall is fast; reinstall is warm because uv cache survives |
+
+### How to spot a regression
+
+Every install run appends one line to `~/.squid-pet/logs/install-history.log`:
+
+```
+2026-06-24T18:21:30Z  31.56s  warm  c467139
+2026-06-25T09:14:02Z  178.92s cold  c467139
+```
+
+If your latest run is >2x the typical time for its mode (warm/cold), do
+`./install.sh --profile` next time and check which stage exploded. The
+two usual suspects:
+
+1. **`install_package` >60 s on warm** → your local `uv.lock` is out of
+   date (you probably edited `pyproject.toml` without running `uv lock`).
+   Fix: `cd ~/Projects/squid-pet && uv lock && git add uv.lock && git commit -m "regen lockfile"`.
+2. **`install_package` >3 min on cold** → internal artifactory is slow
+   today, or your VPN is flaky. Run `./install.sh --profile` again in
+   10 min. If it keeps repeating, ping #mint-support.
+
+### Maintainer: when to regenerate `uv.lock`
+
+Anytime you change `pyproject.toml`'s `dependencies` or
+`dependency-groups.dev`. Run:
+
+```bash
+cd ~/Projects/squid-pet
+uv lock                   # regenerates uv.lock from current pyproject.toml
+git add uv.lock
+git commit -m "regen uv.lock for <reason>"
+```
+
+This takes ~1 min on a warm uv cache, ~3 min cold. Skipping this step
+will silently let install.sh fall back to the old slow resolver path
+(with a loud `[!!]` warning to anyone running install.sh — they'll
+file an issue at you).
 
 ## Manual install (step-by-step)
 

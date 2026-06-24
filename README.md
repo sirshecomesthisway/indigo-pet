@@ -21,11 +21,29 @@ git clone git@internal-ghe.example.com:pink/squid-pet.git
 cd squid-pet && ./install.sh
 ```
 
-That sets up `uv venv`, installs the package, renders the LaunchAgent plist,
-drops `~/.local/bin/squid` on your PATH, writes sensible default settings,
-and boots Squid. Typically 3-5 minutes end-to-end — the slow bit is
-`uv pip install` building wheels for `psutil` + `pywebview` on first install
-(subsequent re-runs are fast since uv caches the wheels).
+That sets up `uv venv`, installs the package from the committed `uv.lock`
+(no dependency resolution — fast), renders the LaunchAgent plist, drops
+`~/.local/bin/squid` on your PATH, writes sensible default settings, and
+boots Squid.
+
+**Measured on M1 + corporate VPN:**
+
+| Scenario | Wall time |
+|---|---|
+| Warm install (`./install.sh` again) | **~30 seconds** |
+| `squid update` (re-pull + reinstall) | **~30 seconds** |
+| Cold install (fresh clone, empty `~/.cache/uv`) | **~3 minutes** |
+
+The slow bit on a true cold install is downloading wheels for `pillow`,
+`psutil`, and the `pyobjc-*` frameworks from internal artifactory
+(~15 MiB total, throughput-bound). Every subsequent install reuses
+uv's wheel cache and the committed lockfile, so resolution + downloads
+both get skipped.
+
+If a clean install ever takes more than 5 minutes, run
+`./install.sh --profile` and share the table from
+`/tmp/squid-pet-install-profile-*.txt` — that's a regression worth
+investigating.
 
 > **Why not `curl | bash`?** Our internal GHE repo is private — anonymous
 > curl returns 404. `git clone` uses your existing credentials. Sorry,

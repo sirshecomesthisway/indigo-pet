@@ -53,10 +53,10 @@
 
 ## 6. Phase 5: Documentation + history
 
-- [ ] 6.1 Update README install section with profiled times (replace "3-5 minutes" with actual numbers)
-- [ ] 6.2 Add "Speed expectations" section to `docs/INSTALL.md` with table: cold / warm / update / uninstall+reinstall
-- [ ] 6.3 Add `~/.squid-pet/logs/install-history.log` append at end of `install.sh` (timestamp + duration + cold-or-warm)
-- [ ] 6.4 Add brief "How to spot a regression" note pointing at install-history.log
+- [x] 6.1 Update README install section with profiled times (replace "3-5 minutes" with actual numbers)
+- [x] 6.2 Add "Speed expectations" section to `docs/INSTALL.md` with table: cold / warm / update / uninstall+reinstall
+- [x] 6.3 Add `~/.squid-pet/logs/install-history.log` append at end of `install.sh` (timestamp + duration + cold-or-warm)
+- [x] 6.4 Add brief "How to spot a regression" note pointing at install-history.log
 
 ## 7. Verification
 

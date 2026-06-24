@@ -344,6 +344,30 @@ Have fun!
 SUMMARY
 }
 
+# ─── install history (always on, lightweight) ────────────────────────
+# Every install appends one ISO8601-stamped line to
+#   ~/.squid-pet/logs/install-history.log
+# so we can spot speed regressions over time. Format:
+#   2026-06-24T18:21:30Z  31.56s  warm  c467139
+INSTALL_T0_S=$(date +%s)
+INSTALL_MODE=""   # set in main() before any stage runs
+
+record_install_history() {
+    local total_s=$(($(date +%s) - INSTALL_T0_S))
+    local commit_sha
+    commit_sha=$(cd "$PROJECT" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo "?")
+    local logdir="$HOME/.squid-pet/logs"
+    mkdir -p "$logdir" 2>/dev/null || return 0
+    printf "%s  %ds  %s  %s\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$total_s" \
+        "${INSTALL_MODE:-unknown}" \
+        "$commit_sha" \
+        >> "$logdir/install-history.log" 2>/dev/null || true
+    # Print summary line (always, even without --profile)
+    echo "${C_CYA}(install took ${total_s}s, mode=${INSTALL_MODE:-unknown}, recorded to $logdir/install-history.log)${C_RST}"
+}
+
 # ─── profile helpers (only active with --profile) ─────────────────────
 # Floating-point wall time via python (BSD date has no %N).
 __now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
@@ -415,6 +439,12 @@ PYREPORT
 main() {
     echo "${C_BLD}squid-pet installer${C_RST}"
     [ "$PROFILE" = 1 ] && echo "(profile mode: per-stage timing will print at end)"
+    # Detect warm-vs-cold BEFORE any stage runs (after stages, .venv always exists)
+    if [ -d "$PROJECT/.venv" ] && [ -f "$PROJECT/uv.lock" ]; then
+        INSTALL_MODE="warm"
+    else
+        INSTALL_MODE="cold"
+    fi
     echo ""
     PROFILE_T0=$(__now_ms 2>/dev/null || echo 0)
     time_stage preflight
@@ -431,5 +461,6 @@ main() {
     time_stage permission_walkthrough
     time_stage print_summary
     print_profile
+    record_install_history
 }
 main "$@"
