@@ -12,6 +12,41 @@ window position only.
 
 ---
 
+## Install
+
+```bash
+# One-line install (requires corporate VPN):
+curl -fsSL https://internal-ghe.example.com/raw/pink/squid-pet/main/install.sh | bash
+```
+
+That clones to `~/Projects/squid-pet`, sets up `uv venv`, installs the package,
+renders the LaunchAgent plist, drops `~/.local/bin/squid` on your PATH, runs a
+3-question first-run wizard, and verifies Squid is alive — typically <120 s
+end-to-end.
+
+```bash
+# Re-run any time to upgrade in place (idempotent):
+cd ~/Projects/squid-pet && ./install.sh
+
+# Daily commands:
+squid status         # is she alive? is the watcher ticking?
+squid why            # which detector fired? what state and why?
+squid doctor         # 6-check self-diagnostic
+squid restart        # atomic bounce
+squid update         # git pull + reinstall + restart
+squid logs -f        # tail stdout+stderr live
+
+# Uninstall cleanly:
+squid uninstall              # keeps your settings + source
+squid uninstall --yes --all  # nukes everything, no prompts
+```
+
+**Requirements:** macOS 12+, corporate VPN, Homebrew. `uv` is auto-installed
+if missing. Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
+Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
+
+---
+
 ## States
 
 | State | Trigger | Look |
@@ -82,54 +117,6 @@ contract.
 │   Mouse: drag → move_window_by, contextmenu → next_corner, dbl → cycle │
 └────────────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Install & first run
-
-```bash
-cd ~/Projects/squid-pet
-uv venv
-uv sync --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple --allow-insecure-host pypi.internal.example.com
-
-# Sanity-check the state machine without a window
-.venv/bin/python -m squid_pet --check
-
-# Watcher only — writes state.json, no GUI
-.venv/bin/python -m squid_pet --watcher-only
-
-# Full pet
-.venv/bin/python -m squid_pet
-```
-
-### Daily commands (`squid` CLI wrapper)
-
-A shell wrapper at `~/.local/bin/squid` (alias `squid`) gives you:
-
-```bash
-squid status     # is she running + healthy? + what tpa sessions are live
-squid why        # explain current mood (which trigger fired, recent file mtimes)
-squid restart    # force-kill + relaunch (auto-recovers from stuck WKWebView)
-squid tail       # follow Squid's stdout log
-squid errors     # last 50 lines of tpa errors.log
-squid stop       # shut her down
-```
-
----
-
-## Auto-start at login
-
-A LaunchAgent plist ships in `launchagent/`. Install it once and Squid will
-launch automatically on every login + restart herself on crash.
-
-```bash
-./launchagent/install.sh         # copy plist + load
-./launchagent/install.sh status  # show launchctl status
-./launchagent/install.sh remove  # unload + delete
-```
-
-The plist lives at `~/Library/LaunchAgents/com.pink.squid-pet.plist` after
-install. Logs are redirected to `/tmp/squid-pet.{out,err}.log`.
 
 ---
 
