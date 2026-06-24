@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# squid -- launcher / control CLI for squid-pet
+#
+# Installed to ~/.local/bin/squid by install.sh. Pure bash, no python deps.
+# Subcommands:
+#   start | stop | restart | status | logs
+#   why  | doctor
+#   update     git pull + reinstall + restart
+#   uninstall  shells into the project uninstall.sh
+#   help
+
+set -euo pipefail
+
+LABEL="com.pink.squid-pet"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+STATE_FILE="$HOME/.squid-pet/state.json"
+OUT_LOG="/tmp/squid-pet.out.log"
+ERR_LOG="/tmp/squid-pet.err.log"
+
+# Heuristic project-dir lookup: WorkingDirectory in the loaded plist tells us
+# where the project lives (so this launcher works regardless of where the user
+# cloned). Falls back to ~/Projects/squid-pet.
+project_dir() {
+    if [ -f "$PLIST" ]; then
+        # /usr/libexec/PlistBuddy is built-in on macOS, no brew dep
+        local wd
+        wd=$(/usr/libexec/PlistBuddy -c "Print :WorkingDirectory" "$PLIST" 2>/dev/null || true)
+        if [ -n "$wd" ] && [ -d "$wd" ]; then
+            echo "$wd"; return
+        fi
+    fi
+    echo "$HOME/Projects/squid-pet"
+}
+
+cmd_start() {
+    if ! [ -f "$PLIST" ]; then
+        echo "squid: not installed (no plist at $PLIST). Run install.sh first." >&2
+        exit 1
+    fi
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && echo "squid: started" \
+        || { echo "squid: already loaded; use 'squid restart' to bounce it"; exit 1; }
+}
+
+cmd_stop() {
+    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null && echo "squid: stopped" \
+        || { echo "squid: not running"; exit 1; }
+}
+
+cmd_restart() {
+    if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/${LABEL}"
+        echo "squid: restarted"
+    else
+        cmd_start
+    fi
+}
+
+cmd_status() {
+    # Health check: detect launchd-managed pid AND verify state.json is fresh.
+    # Old launcher was looking at the wrong log path; this one queries launchctl
+    # directly which is the source of truth, then cross-checks state.json mtime
+    # against now() to confirm the watcher is actually ticking (not wedged).
+    local launchd_line pid mtime now age
+    launchd_line=$(launchctl list | grep "$LABEL" || true)
+    if [ -z "$launchd_line" ]; then
+        echo "status:  NOT LOADED"
+        echo "        (no entry in launchctl list for $LABEL)"
+        return 1
+    fi
+    pid=$(echo "$launchd_line" | awk '{print $1}')
+    if [ "$pid" = "-" ]; then
+        echo "status:  LOADED but NOT RUNNING (last exit: $(echo "$launchd_line" | awk '{print $2}'))"
+        echo "        Check: tail $ERR_LOG"
+        return 1
+    fi
+    echo "status:  RUNNING  (pid $pid)"
+    if [ -f "$STATE_FILE" ]; then
+        mtime=$(stat -f %m "$STATE_FILE")
+        now=$(date +%s)
+        age=$((now - mtime))
+        if [ "$age" -le 5 ]; then
+            echo "watcher: TICKING (state.json updated ${age}s ago)"
+        else
+            echo "watcher: STALE   (state.json last updated ${age}s ago -- might be wedged)"
+        fi
+    else
+        echo "watcher: NO STATE FILE at $STATE_FILE"
+    fi
+}
+
+cmd_logs() {
+    if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--follow" ]; then
+        tail -f "$OUT_LOG" "$ERR_LOG"
+    else
+        echo "=== $OUT_LOG (tail -20) ==="
+        tail -20 "$OUT_LOG" 2>/dev/null || echo "(empty)"
+        echo ""
+        echo "=== $ERR_LOG (tail -20) ==="
+        tail -20 "$ERR_LOG" 2>/dev/null || echo "(empty)"
+        echo ""
+        echo "(use 'squid logs -f' to tail live)"
+    fi
+}
+
+cmd_why() {
+    local pdir; pdir=$(project_dir)
+    cd "$pdir" && "$pdir/.venv/bin/python" -m squid_pet --why "$@"
+}
+
+cmd_doctor() {
+    local pdir; pdir=$(project_dir)
+    cd "$pdir" && "$pdir/.venv/bin/python" -m squid_pet --doctor "$@"
+}
+
+cmd_update() {
+    local pdir; pdir=$(project_dir)
+    echo "squid: updating from $pdir"
+    cd "$pdir"
+    echo "-- git pull"
+    git pull --ff-only || { echo "squid: git pull failed -- resolve manually"; exit 1; }
+    echo "-- reinstalling package"
+    if command -v uv >/dev/null 2>&1; then
+        uv pip install -e . \
+            --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
+            --allow-insecure-host pypi.internal.example.com
+    else
+        "$pdir/.venv/bin/pip" install -e .
+    fi
+    echo "-- restarting daemon"
+    cmd_restart
+    echo "squid: update complete"
+}
+
+cmd_uninstall() {
+    local pdir; pdir=$(project_dir)
+    if [ -x "$pdir/uninstall.sh" ]; then
+        exec "$pdir/uninstall.sh" "$@"
+    else
+        echo "squid: uninstall.sh not found at $pdir/uninstall.sh" >&2
+        echo "       Manual uninstall: launchctl bootout gui/\$(id -u)/$LABEL && rm $PLIST" >&2
+        exit 1
+    fi
+}
+
+cmd_help() {
+    cat <<HELP
+squid -- launcher for squid-pet desktop pet
+
+Usage:
+  squid <command> [options]
+
+Lifecycle:
+  start             load + run the LaunchAgent
+  stop              unload the LaunchAgent
+  restart           kickstart -k (atomic bounce)
+  status            running? watcher ticking? (cross-checks state.json)
+  logs [-f]         show recent stdout+stderr; -f to follow
+  update            git pull + reinstall + restart
+  uninstall [...]   shell into project uninstall.sh
+
+Introspection:
+  why               explain current state and which detectors fired
+  doctor            run 6-check self-diagnostic
+
+Files:
+  plist:    $PLIST
+  state:    $STATE_FILE
+  logs:     $OUT_LOG / $ERR_LOG
+  project:  $(project_dir)
+HELP
+}
+
+# ─── dispatch ──────────────────────────────────────────────────────────
+case "${1:-help}" in
+    start)     shift; cmd_start "$@" ;;
+    stop)      shift; cmd_stop "$@" ;;
+    restart)   shift; cmd_restart "$@" ;;
+    status)    shift; cmd_status "$@" ;;
+    logs)      shift; cmd_logs "$@" ;;
+    why)       shift; cmd_why "$@" ;;
+    doctor)    shift; cmd_doctor "$@" ;;
+    update)    shift; cmd_update "$@" ;;
+    uninstall) shift; cmd_uninstall "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        echo "squid: unknown command '$1'" >&2
+        echo "" >&2
+        cmd_help >&2
+        exit 2
+        ;;
+esac

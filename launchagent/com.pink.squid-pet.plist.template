@@ -3,22 +3,22 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.pink.indigo-pet</string>
+    <string>com.pink.squid-pet</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/pink/Projects/indigo-pet/.venv/bin/python</string>
+        <string>__PROJECT__/.venv/bin/python</string>
         <string>-m</string>
-        <string>indigo_pet</string>
+        <string>squid_pet</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/pink/Projects/indigo-pet</string>
+    <string>__PROJECT__</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PYTHONPATH</key>
-        <string>/Users/pink/Projects/indigo-pet/src</string>
+        <string>__PROJECT__/src</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -33,10 +33,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/indigo-pet.out.log</string>
+    <string>/tmp/squid-pet.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/indigo-pet.err.log</string>
+    <string>/tmp/squid-pet.err.log</string>
 
     <key>ProcessType</key>
     <string>Interactive</string>
