@@ -34,11 +34,23 @@ def main() -> None:
         "--doctor-json", action="store_true",
         help="Like --doctor but output machine-readable JSON."
     )
+    parser.add_argument(
+        "--why", action="store_true",
+        help="Explain the current state: which detectors fired and why."
+    )
+    parser.add_argument(
+        "--why-json", action="store_true",
+        help="Like --why but output machine-readable JSON."
+    )
     args = parser.parse_args()
 
     if args.doctor or args.doctor_json:
         from . import doctor as _doctor
         sys.exit(_doctor.run_doctor(json_output=args.doctor_json))
+
+    if args.why or args.why_json:
+        _run_why(json_output=args.why_json)
+        return
 
 
     if args.check:
@@ -108,5 +120,105 @@ def main() -> None:
     window.main()
 
 
+
+def _run_why(json_output: bool = False) -> None:
+    """Implementation of --why and --why-json."""
+    from . import watcher
+    from dataclasses import asdict
+    import json as _j
+    import time as _t
+
+    sm = watcher.StateMachine()
+    sm.compute()        # prime CPU sampling
+    _t.sleep(0.3)
+    st = sm.compute()
+
+    per_detector = []
+    now = _t.time()
+    for d in sm.detectors:
+        # Fire all three queries FIRST so internal caches reflect this tick,
+        # then capture diagnostic so the count fields match what fired.
+        fired_busy = bool(d.is_busy(now))
+        fired_celeb = bool(d.is_celebrating(now))
+        fired_groov = bool(d.is_grooving(now))
+        entry = d.diagnostic()
+        entry["fired_busy"] = fired_busy
+        entry["fired_celebrating"] = fired_celeb
+        entry["fired_grooving"] = fired_groov
+        per_detector.append(entry)
+
+    report = {
+        "state": asdict(st),
+        "detectors": per_detector,
+        "verdict": _explain_verdict(st, per_detector),
+    }
+    if json_output:
+        print(_j.dumps(report, indent=2, default=str))
+    else:
+        _print_why_human(report)
+
+
+def _explain_verdict(state, per_detector) -> str:
+    """One-line plain-English explanation of which detector(s) caused the
+    current state. Used by the --why CLI."""
+    fired = [d for d in per_detector
+             if d["fired_busy"] or d["fired_celebrating"] or d["fired_grooving"]]
+    if state.state == "sleeping":
+        return (f"sleeping because macOS HID idle = "
+                f"{state.idle_seconds:.0f}s (>= 300s threshold)")
+    if state.state == "idle" and not fired:
+        return "idle because no detector fired and macOS is active"
+    triggers = []
+    for d in fired:
+        kinds = []
+        if d["fired_celebrating"]:
+            kinds.append("celebrating")
+        if d["fired_grooving"]:
+            kinds.append("grooving")
+        if d["fired_busy"]:
+            kinds.append("busy")
+        triggers.append(d["name"] + "=" + "+".join(kinds))
+    if triggers:
+        return "state=" + state.state + " because " + ", ".join(triggers)
+    return "state=" + state.state
+
+
+def _print_why_human(report: dict) -> None:
+    """Pretty-printed --why output for terminal use. ANSI bold + yellow."""
+    BOLD = "\033[1m"
+    YEL = "\033[33m"
+    RST = "\033[0m"
+    st = report["state"]
+    print(f"squid-pet state: {BOLD}{st['state']}{RST}")
+    print(f"  message:        {st['message']}")
+    print(f"  cpu_percent:    {st['cpu_percent']}")
+    print(f"  idle (HID):     {st['idle_seconds']}s")
+    print(f"  agent_idle:        {st['agent_idle_seconds']}s")
+    print(f"  TPA running:     {st['tpa_running']}")
+    if st["concern_reason"]:
+        print(f"  concern:        {st['concern_reason']} ({st['concern_severity']})")
+    print()
+    print("DETECTORS:")
+    for d in report["detectors"]:
+        on = "ON " if d["enabled"] else "off"
+        fired_kinds = []
+        if d["fired_busy"]:
+            fired_kinds.append("busy")
+        if d["fired_celebrating"]:
+            fired_kinds.append("celebrating")
+        if d["fired_grooving"]:
+            fired_kinds.append("grooving")
+        flame = f"{YEL}{','.join(fired_kinds)}{RST}" if fired_kinds else "quiet"
+        print(f"  [{on}] {d['name']:<12} -> {flame}")
+        for k, v in d.items():
+            if k in ("name", "enabled", "fired_busy",
+                     "fired_celebrating", "fired_grooving"):
+                continue
+            print(f"      {k}: {v}")
+    print()
+    print("VERDICT:", report["verdict"])
+
+
 if __name__ == "__main__":
     main()
+
