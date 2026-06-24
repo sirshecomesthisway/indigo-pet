@@ -15,14 +15,26 @@ window position only.
 ## Install
 
 ```bash
-# One-line install (requires corporate VPN):
-curl -fsSL https://internal-ghe.example.com/raw/pink/squid-pet/main/install.sh | bash
+# Clone + install (requires corporate VPN + your internal GHE SSH key):
+mkdir -p ~/Projects && cd ~/Projects
+git clone git@internal-ghe.example.com:pink/squid-pet.git
+cd squid-pet && ./install.sh
 ```
 
-That clones to `~/Projects/squid-pet`, sets up `uv venv`, installs the package,
-renders the LaunchAgent plist, drops `~/.local/bin/squid` on your PATH, runs a
-3-question first-run wizard, and verifies Squid is alive — typically <120 s
-end-to-end.
+That sets up `uv venv`, installs the package, renders the LaunchAgent plist,
+drops `~/.local/bin/squid` on your PATH, writes sensible default settings,
+and boots Squid. Typically 3-5 minutes end-to-end — the slow bit is
+`uv pip install` building wheels for `psutil` + `pywebview` on first install
+(subsequent re-runs are fast since uv caches the wheels).
+
+> **Why not `curl | bash`?** Our internal GHE repo is private — anonymous
+> curl returns 404. `git clone` uses your existing credentials. Sorry,
+> internal-only constraint.
+>
+> **Want the corner/stroll prompts back?** Run `./install.sh --wizard`.
+> Otherwise you get sensible defaults (bottom-right corner, edges stroll,
+> show on all spaces) — edit `~/.squid-pet/settings.json` any time to
+> customize; changes are picked up live, no restart needed.
 
 ```bash
 # Re-run any time to upgrade in place (idempotent):

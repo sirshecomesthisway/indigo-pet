@@ -1,13 +1,21 @@
 # squid-pet Manual Install + Troubleshooting
 
-For most users, the one-liner in the README is what you want:
+For most users, the README's clone-then-install block is what you want:
 
 ```bash
-curl -fsSL https://internal-ghe.example.com/raw/pink/squid-pet/main/install.sh | bash
+mkdir -p ~/Projects && cd ~/Projects
+git clone git@internal-ghe.example.com:pink/squid-pet.git
+cd squid-pet && ./install.sh
 ```
 
 This page is for the paranoid (who want to see every step) and the unlucky
 (whose install broke somewhere).
+
+**Install knobs:**
+- `--wizard` — interactive prompts for starting corner / stroll mode
+- `--non-interactive` / `--yes` / `-y` — skip all prompts, take all defaults (good for CI)
+- `SQUID_PROJECT=/path/to/here` — install to non-default location
+- `SQUID_REPO=git@host:user/repo.git` — override non-default remote
 
 ## Manual install (step-by-step)
 

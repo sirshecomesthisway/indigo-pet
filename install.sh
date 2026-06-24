@@ -47,9 +47,11 @@ STATE_FILE="$HOME/.squid-pet/state.json"
 SETTINGS_FILE="$HOME/.squid-pet/settings.json"
 
 NON_INTERACTIVE=0
+RUN_WIZARD=0
 for arg in "$@"; do
     case "$arg" in
         --non-interactive|--yes|-y) NON_INTERACTIVE=1 ;;
+        --wizard)                   RUN_WIZARD=1 ;;
         -h|--help)
             head -25 "$0" | tail -22 | sed 's/^# \{0,1\}//'
             exit 0
@@ -75,8 +77,9 @@ preflight() {
     ok "macOS $ver"
     command -v git >/dev/null || die "git missing. Install Xcode CLT: xcode-select --install"
     ok "git $(git --version | cut -d' ' -f3)"
-    command -v brew >/dev/null || die "Homebrew missing. Install from https://brew.sh first."
-    ok "brew $(brew --version | head -1 | cut -d' ' -f2)"
+    if command -v brew >/dev/null; then ok "brew $(brew --version | head -1 | cut -d' ' -f2)"; else warn "brew not found -- only needed if uv must be installed"; fi
+    # done (real ok-line is in the if-branch above)                   
+    true
 }
 
 # ─── 2. ensure_uv ─────────────────────────────────────────────────────
@@ -86,6 +89,9 @@ ensure_uv() {
         ok "uv $(uv --version | cut -d' ' -f2) already installed"
         return
     fi
+    if ! command -v brew >/dev/null; then                   
+        die "uv missing AND brew missing. Install uv via: curl -LsSf https://astral.sh/uv/install.sh | sh, then re-run"
+    fi                                                                
     warn "uv not found -- installing via brew (this can take ~30s)"
     HTTP_PROXY=http://sysproxy.wal-mart.com:8080 \
     HTTPS_PROXY=http://sysproxy.wal-mart.com:8080 \
@@ -172,14 +178,15 @@ install_launcher() {
 
 # ─── 9. first_run_wizard ──────────────────────────────────────────────
 first_run_wizard() {
-    step "first_run_wizard"
+    step "write_settings"
     if [ -f "$SETTINGS_FILE" ]; then
-        ok "settings.json exists, leaving alone"
+        ok "settings.json already exists, leaving alone"
         return
     fi
-    if [ "$NON_INTERACTIVE" = 1 ]; then
-        warn "non-interactive: writing default settings.json"
-        cat > "$SETTINGS_FILE" <<EOF
+    # Default to silent + sensible. Power users can opt into interactive
+    # configuration with --wizard, or edit ~/.squid-pet/settings.json
+    # later (changes are picked up live -- no restart needed).
+    cat > "$SETTINGS_FILE" <<EOF
 {
   "stroll_mode": "edges",
   "starting_corner": "bottom-right",
@@ -192,32 +199,28 @@ first_run_wizard() {
   }
 }
 EOF
-        ok "default settings written"
-        return
+    if [ "$RUN_WIZARD" = 1 ] && [ "$NON_INTERACTIVE" != 1 ]; then
+        echo ""
+        echo "Optional setup (Enter = keep default):"
+        local corner stroll spaces
+        read -r -p "  starting corner [bottom-right]: " corner
+        read -r -p "  stroll mode [edges] (edges|free|still): " stroll
+        read -r -p "  show on all spaces [y]: " spaces
+        if [ -n "$corner" ] || [ -n "$stroll" ] || [ -n "$spaces" ]; then
+            python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" <<PYEOF2
+import json, sys
+fp, corner, stroll, spaces = sys.argv[1:5]
+with open(fp) as f: d = json.load(f)
+if corner: d["starting_corner"] = corner
+if stroll: d["stroll_mode"] = stroll
+if spaces and spaces.lower() in ("n","no"): d["show_on_all_spaces"] = False
+with open(fp, "w") as f: json.dump(d, f, indent=2)
+PYEOF2
+        fi
+        ok "settings.json written (interactive)"
+    else
+        ok "settings.json written (defaults). Edit ~/.squid-pet/settings.json to customize."
     fi
-    echo ""
-    echo "Quick setup (3 questions, defaults are sensible):"
-    local corner stroll spaces
-    read -r -p "  starting corner [bottom-right] (top-left|top-right|bottom-left|bottom-right): " corner
-    corner=${corner:-bottom-right}
-    read -r -p "  stroll mode [edges] (edges|free|still): " stroll
-    stroll=${stroll:-edges}
-    read -r -p "  show on all spaces (y/N): " spaces
-    case "${spaces:-n}" in y|Y|yes|YES) spaces=true ;; *) spaces=false ;; esac
-    cat > "$SETTINGS_FILE" <<EOF
-{
-  "stroll_mode": "$stroll",
-  "starting_corner": "$corner",
-  "show_on_all_spaces": $spaces,
-  "triggers": {
-    "tpa": true,
-    "git": true,
-    "terminal": true,
-    "ide": true
-  }
-}
-EOF
-    ok "settings.json written"
 }
 
 # ─── 10. boot_launchd ─────────────────────────────────────────────────
@@ -231,9 +234,9 @@ boot_launchd() {
 
 # ─── 11. verify_alive ─────────────────────────────────────────────────
 verify_alive() {
-    step "verify_alive (polling state.json for up to 10s)"
+    step "verify_alive (polling state.json for up to 5s)"
     local i mtime now age
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    for i in 1 2 3 4 5; do
         if [ -f "$STATE_FILE" ]; then
             mtime=$(stat -f %m "$STATE_FILE")
             now=$(date +%s)
@@ -245,7 +248,7 @@ verify_alive() {
         fi
         sleep 1
     done
-    warn "state.json not fresh after 10s. Check: tail /tmp/squid-pet.err.log"
+    warn "state.json not fresh after 5s. Check: tail /tmp/squid-pet.err.log"
     return 1
 }
 
@@ -264,8 +267,7 @@ Opening System Settings -> Privacy & Security -> Accessibility now...
 PERMS
     if [ "$NON_INTERACTIVE" != 1 ]; then
         open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" || true
-        echo ""
-        read -r -p "Press Enter once you've granted the permission (or skip with Ctrl-C)..." _
+        echo "(System Settings should have opened in the background -- grant when convenient)"
     else
         warn "non-interactive: skipping perms walkthrough"
     fi
