@@ -4,6 +4,8 @@
 # Usage:
 #   ./install.sh                 # interactive (recommended)
 #   ./install.sh --non-interactive  # skip wizard + perms walkthrough (CI/curl)
+#   ./install.sh --wizard        # prompt for starting corner / stroll mode
+#   ./install.sh --profile       # capture per-stage timing -> /tmp + summary
 #
 # What this does (in order):
 #   1.  preflight              macOS 12+, git, brew
@@ -48,10 +50,12 @@ SETTINGS_FILE="$HOME/.squid-pet/settings.json"
 
 NON_INTERACTIVE=0
 RUN_WIZARD=0
+PROFILE=0
 for arg in "$@"; do
     case "$arg" in
         --non-interactive|--yes|-y) NON_INTERACTIVE=1 ;;
         --wizard)                   RUN_WIZARD=1 ;;
+        --profile)                  PROFILE=1 ;;
         -h|--help)
             head -25 "$0" | tail -22 | sed 's/^# \{0,1\}//'
             exit 0
@@ -304,22 +308,92 @@ Have fun!
 SUMMARY
 }
 
+# ─── profile helpers (only active with --profile) ─────────────────────
+# Floating-point wall time via python (BSD date has no %N).
+__now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+
+# Append-only profile data: each entry is "STAGE_NAME=DURATION_MS"
+PROFILE_DATA=()
+PROFILE_T0=0
+
+time_stage() {
+    local fn=$1
+    if [ "$PROFILE" != 1 ]; then
+        "$fn"
+        return $?
+    fi
+    local t0 t1 rc
+    t0=$(__now_ms)
+    "$fn"
+    rc=$?
+    t1=$(__now_ms)
+    PROFILE_DATA+=("$fn=$((t1 - t0))")
+    return $rc
+}
+
+print_profile() {
+    [ "$PROFILE" != 1 ] && return 0
+    local total_ms=$(($(__now_ms) - PROFILE_T0))
+    local ts
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    local outfile="/tmp/squid-pet-install-profile-${ts}.txt"
+
+    # Build report -- header + sorted rows + total -- via python (clean math)
+    python3 - "$total_ms" "$outfile" "${PROFILE_DATA[@]}" <<'PYREPORT'
+import sys
+total = int(sys.argv[1])
+outfile = sys.argv[2]
+rows = []
+for entry in sys.argv[3:]:
+    name, dur = entry.split("=")
+    dur = int(dur)
+    rows.append((name, dur, 100.0 * dur / total if total else 0.0))
+rows.sort(key=lambda r: -r[1])
+
+lines = []
+lines.append("")
+lines.append("install profile  (per-stage wall time, sorted descending)")
+lines.append("-" * 60)
+lines.append(f"  {'STAGE':<28} {'DURATION':>12} {'%TOTAL':>8}")
+lines.append("-" * 60)
+for name, dur, pct in rows:
+    if dur >= 1000:
+        dur_s = f"{dur/1000:.2f} s"
+    else:
+        dur_s = f"{dur} ms"
+    lines.append(f"  {name:<28} {dur_s:>12} {pct:>7.1f}%")
+lines.append("-" * 60)
+lines.append(f"  {'TOTAL':<28} {total/1000:>10.2f} s {100.0:>7.1f}%")
+lines.append("")
+lines.append(f"saved to: {outfile}")
+lines.append("")
+
+report = "\n".join(lines)
+print(report)
+with open(outfile, "w") as f:
+    f.write(report)
+PYREPORT
+}
+
 # ─── main ─────────────────────────────────────────────────────────────
 main() {
     echo "${C_BLD}squid-pet installer${C_RST}"
+    [ "$PROFILE" = 1 ] && echo "(profile mode: per-stage timing will print at end)"
     echo ""
-    preflight
-    ensure_uv
-    clone_or_update
-    setup_venv
-    install_package
-    migrate_legacy
-    render_plist
-    install_launcher
-    first_run_wizard
-    boot_launchd
-    verify_alive || true   # don't fail install if first tick is slow
-    permission_walkthrough
-    print_summary
+    PROFILE_T0=$(__now_ms 2>/dev/null || echo 0)
+    time_stage preflight
+    time_stage ensure_uv
+    time_stage clone_or_update
+    time_stage setup_venv
+    time_stage install_package
+    time_stage migrate_legacy
+    time_stage render_plist
+    time_stage install_launcher
+    time_stage first_run_wizard
+    time_stage boot_launchd
+    time_stage verify_alive || true   # don't fail install if first tick is slow
+    time_stage permission_walkthrough
+    time_stage print_summary
+    print_profile
 }
 main "$@"
