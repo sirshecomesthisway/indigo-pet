@@ -88,11 +88,11 @@ preflight() {
 
 # ─── 2. ensure_uv ─────────────────────────────────────────────────────
 ensure_uv() {
-    step "ensure uv"
+    # Phase 2: silent fast-path when uv is already on PATH (no header, no [ok])
     if command -v uv >/dev/null; then
-        ok "uv $(uv --version | cut -d' ' -f2) already installed"
         return
     fi
+    step "ensure uv"
     if ! command -v brew >/dev/null; then                   
         die "uv missing AND brew missing. Install uv via: curl -LsSf https://astral.sh/uv/install.sh | sh, then re-run"
     fi                                                                
@@ -108,16 +108,29 @@ clone_or_update() {
     step "clone_or_update -> $PROJECT"
     mkdir -p "$(dirname "$PROJECT")"
     if [ -d "$PROJECT/.git" ]; then
-        ok "repo exists, pulling latest"
-        (cd "$PROJECT" && git pull --ff-only) || \
-            warn "git pull failed (local changes?) -- continuing with current checkout"
+        # Phase 2: skip the git pull entirely when local HEAD already
+        # matches origin/main. Saves a multi-second network round-trip
+        # on warm installs. ls-remote is one round-trip; pull is two
+        # plus full pack data for any new commits.
+        local local_head remote_head
+        local_head=$(cd "$PROJECT" && git rev-parse HEAD 2>/dev/null || echo "")
+        remote_head=$(cd "$PROJECT" && git ls-remote origin main 2>/dev/null | cut -f1 || echo "")
+        if [ -n "$local_head" ] && [ "$local_head" = "$remote_head" ]; then
+            ok "repo is up to date (HEAD matches origin/main, skipped pull)"
+        else
+            ok "repo exists, pulling latest"
+            (cd "$PROJECT" && git pull --ff-only) || \
+                warn "git pull failed (local changes?) -- continuing with current checkout"
+        fi
     else
         if [ -e "$PROJECT" ] && [ ! -d "$PROJECT/.git" ]; then
             die "$PROJECT exists but is not a git repo. Move it aside first."
         fi
-        # HTTPS only -- corporate VPN blocks github.com:22 (SSH).
+        # Note: install.sh defaults to HTTPS for the curl-bash flow, but if
+        # the user already cloned via SSH (recommended for internal GHE since
+        # anonymous HTTPS is rejected), SQUID_REPO env var can override.
         git clone "$REPO_URL" "$PROJECT" || \
-            die "git clone failed. Are you on corporate VPN? Repo: $REPO_URL"
+            die "git clone failed. Are you on corporate VPN + have HTTPS creds? Repo: $REPO_URL"
         ok "cloned $REPO_URL"
     fi
 }
@@ -135,12 +148,35 @@ setup_venv() {
 
 # ─── 5. install_package ───────────────────────────────────────────────
 install_package() {
-    step "install_package (editable, internal artifactory)"
-    (cd "$PROJECT" && uv pip install -e . \
-        --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
-        --allow-insecure-host pypi.internal.example.com \
-    ) || die "uv pip install failed. Are you on corporate VPN?"
-    ok "squid_pet installed in $PROJECT/.venv"
+    # Phase 2: prefer `uv sync --frozen` when uv.lock exists. Lockfile-driven
+    # installs skip dependency resolution entirely (the slow part -- ~3 min on
+    # cold cache against internal artifactory). Fall back to pip install -e
+    # only if the lockfile is missing or out of sync (which would be a
+    # maintainer bug, not a user problem -- they should regenerate uv.lock).
+    if [ -f "$PROJECT/uv.lock" ]; then
+        step "install_package (uv sync --frozen, lockfile-driven)"
+        (cd "$PROJECT" && uv sync --frozen \
+            --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
+            --allow-insecure-host pypi.internal.example.com \
+        ) || {
+            warn "uv sync --frozen failed -- lockfile may be out of date"
+            warn "Falling back to uv pip install -e . (this resolves + downloads, can take 3-5 min)"
+            (cd "$PROJECT" && uv pip install -e . \
+                --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
+                --allow-insecure-host pypi.internal.example.com \
+            ) || die "uv pip install also failed. Are you on corporate VPN?"
+            warn "Maintainer: regenerate uv.lock with 'uv lock' and commit it"
+        }
+        ok "squid_pet installed (from lockfile) in $PROJECT/.venv"
+    else
+        step "install_package (uv pip install -e ., no lockfile)"
+        warn "uv.lock missing -- using slow resolver path (3-5 min). Run 'uv lock' to fix."
+        (cd "$PROJECT" && uv pip install -e . \
+            --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
+            --allow-insecure-host pypi.internal.example.com \
+        ) || die "uv pip install failed. Are you on corporate VPN?"
+        ok "squid_pet installed in $PROJECT/.venv"
+    fi
 }
 
 # ─── 6. migrate_legacy ────────────────────────────────────────────────

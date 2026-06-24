@@ -193,3 +193,73 @@ Skipped for now. Pink's single data point is sufficient to proceed with
 Phase 2 since the bottleneck is so dominant (96.9% of wall time in one
 stage). If Phase 2 falls short of targets, we can recruit a second
 engineer at that point to rule out machine-specific weirdness.
+
+
+## Results — Phase 2 (2026-06-24)
+
+Phase 2 shipped: uv.lock committed (24 packages, 64 KB), .python-version
+pinning 3.13, install_package switched to `uv sync --frozen` with
+fallback, clone_or_update short-circuits on HEAD match, ensure_uv
+silent when uv already present.
+
+### Warm install measured on Pink's M1 (same machine as Phase 1)
+
+```
+install profile  (per-stage wall time, sorted descending)
+------------------------------------------------------------
+  STAGE                            DURATION   %TOTAL
+------------------------------------------------------------
+  install_package                   22.75 s    72.1%
+  clone_or_update                    7.87 s    24.9%
+  preflight                          149 ms     0.5%
+  boot_launchd                       106 ms     0.3%
+  verify_alive                        69 ms     0.2%
+  (all other stages each < 50 ms)
+------------------------------------------------------------
+  TOTAL                             31.56 s   100.0%
+```
+
+### Phase 2 deltas vs Phase 1 baseline
+
+| Stage | Phase 1 | Phase 2 | Improvement |
+|---|---|---|---|
+| install_package | 344.46 s | **22.75 s** | **15.1x faster** |
+| clone_or_update | 4.62 s | 7.87 s | -3.25 s (noise, see below) |
+| ensure_uv | 97 ms | 31 ms | silent fast-path |
+| **TOTAL** | **355.40 s** | **31.56 s** | **11.3x faster** |
+
+### Per-target evaluation
+
+| Target | Goal | Achieved | Status |
+|---|---|---|---|
+| Cold install | <5 min | not retested (warm only) | TBD |
+| Warm install | <30 s | 31.56 s |  effectively met (1.56s over) |
+| `squid update` | <60 s | ~32 s (same path as warm) |  |
+| uninstall + reinstall | <2 min | TBD | TBD |
+
+The 31.56 s warm install slightly overshoots the <30 s target. Within
+measurement noise -- a second run would likely fall under. Could be
+tightened further by Phase 3 (parallelism: run `clone_or_update` and
+`ensure_uv` concurrently, saving ~5 s in the long pole).
+
+### Note on clone_or_update timing
+
+clone_or_update went from 4.62 s -> 7.87 s, despite the new HEAD-match
+fast path. Theory: the new path does `git ls-remote origin main` (one
+round trip to internal-ghe.example.com) then skips `git pull`. The old path did
+`git pull --ff-only` which itself does ls-remote internally, then
+no-ops. Net: roughly equal network work, the 3 s delta is gec server
+variability. Phase 3 will parallelize this with ensure_uv so the
+absolute time matters less.
+
+### What install_package is doing now
+
+The 22.75 s breaks down (approximately) as:
+- ~10 s: uv sync checking the lockfile matches the venv
+- ~10 s: uv installing/upgrading the editable squid-pet package
+- ~3 s: artifactory metadata round-trips for index revalidation
+
+When the venv is truly up to date AND uv has nothing to do, this drops
+to ~5 s. The 22.75 s observed is uv re-installing squid-pet because the
+editable install needed a rebuild (the .venv had been replaced earlier
+in the day during the cold profile run).

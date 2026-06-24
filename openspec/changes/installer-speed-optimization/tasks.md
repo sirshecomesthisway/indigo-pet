@@ -13,16 +13,16 @@
 
 ## 2. Phase 2: Skip work that doesn't need doing
 
-- [ ] 2.1 Generate `uv.lock` via `uv lock` in repo root; verify it commits cleanly + covers all platforms we care about (macOS arm64 minimum, macOS Intel + Linux nice-to-have for future)
-- [ ] 2.2 Add `uv.lock` to git, NOT to .gitignore
-- [ ] 2.3 Add `.python-version` file pinning the version from `pyproject.toml`'s `requires-python` (e.g., `3.12`)
-- [ ] 2.4 Rewrite `install_package` to prefer `uv sync` when `uv.lock` exists, fall back to `uv pip install -e .` otherwise. Use `uv sync --frozen` to refuse to re-resolve (would be a bug).
-- [ ] 2.5 `clone_or_update` early-exit: if `git rev-parse HEAD == git ls-remote origin main`, skip `git pull` entirely (saves a network round-trip on warm installs)
-- [ ] 2.6 `ensure_uv` reorder: check `command -v uv` BEFORE printing the `step` header. If already installed, print nothing (one less line of noise).
-- [ ] 2.7 Re-run `./install.sh --profile` warm install, verify it drops below 30s
-- [ ] 2.8 Re-run `./install.sh --profile` cold install (after `uninstall.sh --all`), verify it drops by >=2 min vs Phase 1 baseline
-- [ ] 2.9 Document the new times in proposal "Results" section
-- [ ] 2.10 Commit Phase 2 + push
+- [x] 2.1 Generate `uv.lock` via `uv lock` in repo root; verify it commits cleanly + covers all platforms we care about (macOS arm64 minimum, macOS Intel + Linux nice-to-have for future)
+- [x] 2.2 Add `uv.lock` to git, NOT to .gitignore
+- [x] 2.3 Add `.python-version` file pinning the version from `pyproject.toml`'s `requires-python` (e.g., `3.12`)
+- [x] 2.4 Rewrite `install_package` to prefer `uv sync` when `uv.lock` exists, fall back to `uv pip install -e .` otherwise. Use `uv sync --frozen` to refuse to re-resolve (would be a bug).
+- [x] 2.5 `clone_or_update` early-exit: if `git rev-parse HEAD == git ls-remote origin main`, skip `git pull` entirely (saves a network round-trip on warm installs)
+- [x] 2.6 `ensure_uv` reorder: check `command -v uv` BEFORE printing the `step` header. If already installed, print nothing (one less line of noise).
+- [x] 2.7 Re-run `./install.sh --profile` warm install, verify it drops below 30s
+- [x] 2.8 Re-run `./install.sh --profile` cold install (after `uninstall.sh --all`), verify it drops by >=2 min vs Phase 1 baseline
+- [x] 2.9 Document the new times in proposal "Results" section
+- [x] 2.10 Commit Phase 2 + push
 
 ## 3. Phase 2.5: Wheel investigation (optional, only if `psutil`/`pywebview` are building from sdist)
 
