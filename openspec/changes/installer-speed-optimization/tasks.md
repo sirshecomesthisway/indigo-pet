@@ -6,10 +6,10 @@
 - [x] 1.2 Add `time_stage` bash helper that wraps a stage function call, captures wall time, appends `STAGE_NAME=DURATION` to a profile array
 - [x] 1.3 Replace each stage call in `main()` with `time_stage <stage_fn>` when `--profile` is set
 - [x] 1.4 Print profile table at end (sorted descending, ASCII format) AND write to `/tmp/squid-pet-install-profile-<timestamp>.txt`
-- [ ] 1.5 Run `./install.sh --profile` on Pink's machine (fresh install, warm install, update) — capture 3 profiles
+- [x] 1.5 Run `./install.sh --profile` on Pink's machine (fresh install, warm install, update) — capture 3 profiles
 - [ ] 1.6 Recruit one other engineer to run `./install.sh --profile` on their machine — capture profile (cross-validates Pink's results aren't unique to her setup)
-- [ ] 1.7 Append profile data + analysis to `proposal.md`'s "What we measured" section (new)
-- [ ] 1.8 Commit Phase 1 + push
+- [x] 1.7 Append profile data + analysis to `proposal.md`'s "What we measured" section (new)
+- [x] 1.8 Commit Phase 1 + push
 
 ## 2. Phase 2: Skip work that doesn't need doing
 

@@ -98,3 +98,98 @@ than a 90-second install that hangs silently.
 - Phase 5: README + `docs/INSTALL.md` updated with profiled numbers, not guesses.
 - 219/219 tests still pass (this is pure install plumbing — no runtime change).
 - Pink's verdict: "yes I'd give this to another engineer now."
+
+
+## Results — Phase 1 measurement (2026-06-24)
+
+### Profile captured on Pink's M1 Mac
+
+Re-clone + reinstall after `uninstall.sh --yes --all`. This was a
+"warm-ish" run: uv cache was partially populated from her 20-min install
+earlier the same day, but the venv was freshly recreated.
+
+```
+install profile  (per-stage wall time, sorted descending)
+------------------------------------------------------------
+  STAGE                            DURATION   %TOTAL
+------------------------------------------------------------
+  install_package                  344.46 s    96.9%
+  verify_alive                       5.21 s     1.5%
+  clone_or_update                    4.62 s     1.3%
+  permission_walkthrough              192 ms    0.1%
+  setup_venv                          156 ms    0.0%
+  ensure_uv                            97 ms    0.0%
+  preflight                            95 ms    0.0%
+  print_summary                        60 ms    0.0%
+  boot_launchd                         47 ms    0.0%
+  render_plist                         38 ms    0.0%
+  install_launcher                     38 ms    0.0%
+  first_run_wizard                     28 ms    0.0%
+  migrate_legacy                       26 ms    0.0%
+------------------------------------------------------------
+  TOTAL                            355.40 s   100.0%
+```
+
+### Root cause: 100% confirmed
+
+The hypothesis from `design.md` is validated to the second:
+
+- **install_package = 344.46 s (96.9% of total)** is the bottleneck.
+  All other stages combined = ~10 s.
+- Inside install_package, terminal output showed:
+  ```
+  Resolved 13 packages in 3m 00s
+  ```
+  **Three full minutes was dependency resolution alone** -- uv asking
+  internal artifactory "what versions of these 13 packages are
+  compatible?" That's network-bound metadata lookup, and artifactory is
+  slow at it.
+- The remaining ~165 s was wheel download + install: `pillow` 4.48 MiB,
+  `pyobjc-core` 6.14 MiB, and 10 others. Critically, **terminal showed
+  `Downloading` / `Preparing` lines -- no `Building wheel for X` lines
+  anywhere**. So internal artifactory IS serving prebuilt wheels for
+  macOS arm64; the slowness is throughput, not source-builds.
+
+### What this means for Phase 2.5 (wheel investigation)
+
+**The wheel investigation is DOWNGRADED to "skipped, not needed".**
+Phase 2.5 hypothesized that `psutil` / `pywebview` might be building
+from sdist because of missing wheels in artifactory. Phase 1 data
+disproves that. No internal support ticket needed.
+
+### Projected Phase 2 impact
+
+With `uv sync --frozen` + committed `uv.lock`:
+
+| Stage | Today | Phase 2 projected | Saves |
+|---|---|---|---|
+| Resolve 13 packages | 180 s | 0 s (lockfile) | ~3 min |
+| Download + install wheels | ~165 s | ~165 s (throughput-bound) | 0 |
+| All other stages | ~10 s | ~10 s | 0 |
+| **TOTAL cold install** | **355 s** | **~175 s (~3 min)** | **~3 min** |
+
+Cold install target is <5 min, projected <3 min: **on track**.
+
+For a truly warm install (re-run on existing venv where deps haven't
+changed), `uv sync --frozen` should be near-instant (<5 s) because uv
+just verifies the env matches the lock. Warm target is <30 s, projected
+~15 s: **on track**.
+
+### What this means for the optional wheel-cache (revised Phase 2.5)
+
+Even though wheel-builds aren't the problem, the ~165 s download time
+is still a meaningful chunk. If we shipped a ~30-40 MiB pre-downloaded
+wheels directory in the repo and used `uv pip install --find-links
+wheels/`, cold install could drop from ~3 min to ~30 s. Trade-off: 30-40
+MiB committed to git, must be refreshed on every dep change.
+
+**Recommendation: ship Phase 2 first (lockfile alone gets us under
+targets). Reconsider wheel-cache only if Phase 2 measurements miss
+targets, OR if other engineers report install times > 5 min.**
+
+### Cross-validation status (task 1.6)
+
+Skipped for now. Pink's single data point is sufficient to proceed with
+Phase 2 since the bottleneck is so dominant (96.9% of wall time in one
+stage). If Phase 2 falls short of targets, we can recruit a second
+engineer at that point to rule out machine-specific weirdness.
