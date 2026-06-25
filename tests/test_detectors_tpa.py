@@ -34,10 +34,14 @@ def test_no_processes_is_quiet():
 
 
 def test_cpu_busy_requires_sustained_streak():
-    """A single high-CPU tick should NOT count as busy (burst suppression)."""
+    """A short CPU burst should NOT count as busy (burst suppression
+    bumped from 2 to 4 ticks on 2026-06-25 to stop transient TUI render
+    spikes from flipping Squid into thinking when TPA is actually idle)."""
     d = _make(procs=[_FakeProc()], cpu=20.0, tool_age=2.0)
-    assert d.is_busy(now=1.0) is False    # streak=1 -> not yet sustained
-    assert d.is_busy(now=2.0) is True     # streak=2 -> sustained
+    assert d.is_busy(now=1.0) is False    # streak=1
+    assert d.is_busy(now=2.0) is False    # streak=2
+    assert d.is_busy(now=3.0) is False    # streak=3
+    assert d.is_busy(now=4.0) is True     # streak=4 -> sustained
 
 
 def test_shell_active_fires_busy_immediately():
@@ -65,9 +69,11 @@ def test_celebrate_fires_after_cpu_drop():
         most_recent_tool_activity_age_fn=lambda: 2.0,
         newest_subagent_age_fn=lambda: float("inf"),
     )
-    # Build up streak
+    # Build up streak (now requires 4 ticks per 2026-06-25 change)
     d.is_busy(now=1.0)
     d.is_busy(now=2.0)
+    d.is_busy(now=3.0)
+    d.is_busy(now=4.0)
     assert d.sustained_busy is True
     # CPU drops to zero -> celebrate fires
     state["cpu"] = 0.0

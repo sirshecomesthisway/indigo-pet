@@ -46,7 +46,7 @@ IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
 # being a static sticker on the screen all afternoon.
 AUTO_WAKE_AFTER_SLEEPING_SEC = 600   # 10 min asleep → wake for one rhythm cycle
 AUTO_WAKE_DURATION_SEC = 180         # 3 min awake window (roughly one full IDLE_ROUTINE pass)
-CPU_BUSY_THRESHOLD = 5.0           # %
+CPU_BUSY_THRESHOLD = 15.0           # %
 TOOL_ACTIVE_WINDOW_SEC = 8         # ANY tool-activity file touched within N sec → working
 SUBAGENT_ACTIVE_WINDOW_SEC = 30    # subagent file touched within last N sec → grooving
 # Names of transient CLI tools that indicate ACTIVE tool use.

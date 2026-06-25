@@ -319,15 +319,19 @@ def test_single_cpu_spike_does_not_trigger_thinking(monkeypatch):
     assert sm.busy_streak == 1
 
 
-def test_two_consecutive_cpu_spikes_trigger_thinking(monkeypatch):
+def test_four_consecutive_cpu_spikes_trigger_thinking(monkeypatch):
+    """As of 2026-06-25 the busy_streak threshold is 4 ticks (was 2) --
+    transient TUI render spikes shouldn't flip Squid into thinking."""
     install_world(
         monkeypatch, procs=["fake"],
         cpu=watcher.CPU_BUSY_THRESHOLD + 10,
         tool_activity_age=999.0,
     )
     sm = make_machine_primed()
-    sm.compute()              # busy_streak → 1, state != thinking
-    st = sm.compute()         # busy_streak → 2, sustained_busy=True
+    sm.compute()              # streak=1, not yet
+    sm.compute()              # streak=2, not yet
+    sm.compute()              # streak=3, not yet
+    st = sm.compute()         # streak=4, sustained_busy=True
     assert st.state == "thinking"
 
 

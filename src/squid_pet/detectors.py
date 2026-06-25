@@ -62,7 +62,7 @@ class TPADetector:
     name = "tpa"
 
     # Threshold + sticky-window constants -- mirror watcher.py module-level.
-    CPU_BUSY_THRESHOLD = 5.0
+    CPU_BUSY_THRESHOLD = 15.0
     TOOL_ACTIVE_WINDOW_SEC = 8
     SUBAGENT_ACTIVE_WINDOW_SEC = 30
     CELEBRATE_DURATION_SEC = 4
@@ -134,7 +134,7 @@ class TPADetector:
             self._busy_streak += 1
         else:
             self._busy_streak = 0
-        self.sustained_busy = self._busy_streak >= 2
+        self.sustained_busy = self._busy_streak >= 4
         # was_busy -> celebrate edge detection
         any_busy = (
             self.sustained_busy or self.shell_active or
