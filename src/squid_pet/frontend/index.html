@@ -468,7 +468,7 @@
     }
     let _lastWakeSeq = 0;     // tracks backend wake_trigger_seq
     let _blinkCooldownUntil = 0;
-    const DROWSY_IDLE_SEC   = 60;     // 1 min idle -> drowsy mood
+    const DROWSY_IDLE_SEC   = 120;   // 2 min idle -> drowsy mood
     const SLEEPING_IDLE_SEC = 180;   // 3 min idle total (2 min after drowsy) -> sleeping
     const BLINK_MIN_SEC     = 6;
     const BLINK_MAX_SEC     = 9;
@@ -520,8 +520,8 @@
       // in Slack/email/etc. macOS-wide idle is intentionally ignored.
       //
       // Sleep cycle (TPA-idle based):
-      //   0-60s        -> idle.png (mood="")
-      //   60-180s      -> drowsy.png (mood="drowsy")
+      //   0-120s       -> idle.png (mood="")
+      //   120-180s    -> drowsy.png (mood="drowsy")
       //   180s+        -> sleeping.png (mood="sleeping")
       //   on TPA wake   -> stretch.png for 1.5s, then idle.png
       const state = result?.state || "idle";
