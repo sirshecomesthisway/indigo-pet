@@ -176,14 +176,31 @@ def move_window_by_delta(dx: float, dy: float) -> tuple[float, float] | None:
 # Persistent corner
 # ──────────────────────────────────────────────────────────────────
 def load_corner() -> str:
+    """Resolve which corner Squid should start in.
+
+    Priority: position.json (last saved location) -> settings.json
+    starting_corner (user-configured intent) -> "bottom-right"
+    (Pink-blessed default 2026-06-25; feels more natural than top-right
+    because the dock + macOS menu bar already crowd the top edge)."""
     try:
         if POSITION_FILE.exists():
             data = json.loads(POSITION_FILE.read_text())
-            c = data.get("corner", "top-right")
-            return c if c in CORNERS else "top-right"
+            c = data.get("corner")
+            if c in CORNERS:
+                return c
     except Exception:
         pass
-    return "top-right"
+    # Fall back to user-configured starting_corner from settings.json.
+    try:
+        settings_file = Path.home() / ".squid-pet" / "settings.json"
+        if settings_file.exists():
+            s = json.loads(settings_file.read_text())
+            c = s.get("starting_corner")
+            if c in CORNERS:
+                return c
+    except Exception:
+        pass
+    return "bottom-right"
 
 
 def save_corner(corner: str) -> None:
