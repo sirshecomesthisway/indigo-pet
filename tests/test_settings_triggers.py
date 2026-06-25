@@ -6,22 +6,38 @@ from squid_pet.detectors import (
 )
 
 
-def test_empty_settings_yields_all_four_enabled():
+def test_empty_settings_yields_three_enabled_one_off():
+    """Default config: tpa + git + ide are on, terminal is off
+    (2026-06-25: terminal misfires on any dev machine -- see
+    test_explicit_opt_out_disables_one_detector for context)."""
     ds = build_detectors(settings=None)
     assert len(ds) == 4
     assert {d.name for d in ds} == {"tpa", "git", "terminal", "ide"}
-    for d in ds:
-        assert d.enabled is True
+    by_name = {d.name: d for d in ds}
+    assert by_name["tpa"].enabled is True
+    assert by_name["git"].enabled is True
+    assert by_name["terminal"].enabled is False
+    assert by_name["ide"].enabled is True
 
 
 def test_explicit_opt_out_disables_one_detector():
+    """terminal default is False (2026-06-25): the TerminalDetector
+    misfires on any dev machine -- any long-lived shell child counts
+    as 'busy', flooding the state machine with false thinking. Users
+    who actually want terminal-based emoting opt in via settings.json.
+    """
     s = {"triggers": {"git": False}}
     ds = build_detectors(settings=s)
     by_name = {d.name: d for d in ds}
     assert by_name["git"].enabled is False
     assert by_name["tpa"].enabled is True
-    assert by_name["terminal"].enabled is True
+    assert by_name["terminal"].enabled is False  # off by default
     assert by_name["ide"].enabled is True
+
+    # And when explicitly turned on, terminal honors that.
+    s2 = {"triggers": {"terminal": True}}
+    by_name2 = {d.name: d for d in build_detectors(settings=s2)}
+    assert by_name2["terminal"].enabled is True
 
 
 def test_all_off_yields_all_disabled():
