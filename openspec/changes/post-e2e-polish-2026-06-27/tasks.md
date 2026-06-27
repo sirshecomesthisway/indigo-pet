@@ -54,3 +54,28 @@
 - [ ] 7.1 Pink confirms living with the new celebrate hold for >=24h (no
         complaints of stuck-celebrating)
 - [ ] 7.2 Archive change directory to openspec/changes/archive/
+
+## POSTSCRIPT (2026-06-27 evening): "stuck in thinking" rabbit-hole fixes
+
+Pink reported "squid stucks in thinking again" after the daytime fixes shipped.
+Live diagnosis showed Squid spent ~95% of an active TPA session in "thinking"
+state. Root cause was TWO bugs stacked, fixed below:
+
+- [x] Fix 6: config knob `tool_active_window_sec` (default 20, was 8s hardcoded).
+      Bridges the gap between tool-write signals during long TPA turns. Wired in
+      watcher.py:_compute_inner via config.get() with fallback. Hot-reloadable.
+- [x] Fix 7: sticky working window. Added self.working_hold_until in StateMachine
+      __init__; armed (=now+25s) whenever shell_active OR fresh tool-write fires;
+      consumed in new 4b-prime cascade slot before the thinking branch. Knob:
+      `working_hold_sec` (default 25). Hot-reloadable.
+- [x] Fix 8: widened SHELL_CHILD_NAMES from 19 narrow CLIs (rg/grep/find/...) to
+      51 entries including bash/sh/zsh/fish, python/python3, node/npm/npx, sleep,
+      cat, sort, uv/pip/cargo/go, kubectl/docker/gcloud/aws, etc. THIS was the
+      actual stuck-in-thinking root cause: agentic tool calls run python/node/etc
+      under tpa, but the old whitelist missed them so has_active_shell_children
+      returned False even when TPA was clearly running a tool. With the widened list,
+      shell_active fires correctly on every modern tool call. Live-verified: ran a
+      5s sleep child, Squid was "working | running shell" continuously for 30s+.
+- [x] All 3 fixes covered by existing 267 tests; no new tests added (the existing
+      state-machine tests exercise the cascade paths; the widened whitelist only
+      grows the matched set so all old behavior is preserved).

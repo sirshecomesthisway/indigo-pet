@@ -47,17 +47,34 @@ IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
 AUTO_WAKE_AFTER_SLEEPING_SEC = 600   # 10 min asleep → wake for one rhythm cycle
 AUTO_WAKE_DURATION_SEC = 180         # 3 min awake window (roughly one full IDLE_ROUTINE pass)
 CPU_BUSY_THRESHOLD = 15.0           # %
-TOOL_ACTIVE_WINDOW_SEC = 8         # ANY tool-activity file touched within N sec → working
+TOOL_ACTIVE_WINDOW_SEC = 20        # post-e2e-polish 2026-06-27 Fix 6: was 8s; bumped to 20s. ANY tool-activity file touched within N sec -> working. Override via config tool_active_window_sec (hot-reloadable).
 SUBAGENT_ACTIVE_WINDOW_SEC = 30    # subagent file touched within last N sec → grooving
 # Names of transient CLI tools that indicate ACTIVE tool use.
 # Excludes shells (bash/sh/zsh) because shells are always the wrapper —
 # we want to detect the actual TOOL inside the shell (grep, git, etc).
 # Excludes runtime hosts (python/node/npm/pip) because tpa itself
 # is python and playwright keeps a long-lived node process.
-SHELL_CHILD_NAMES = ("rg", "grep", "find", "git", "sed", "awk",
-                     "curl", "wget", "tail", "head", "diff",
-                     "make", "pytest", "gh", "jq", "fd", "ag",
-                     "ripgrep", "ls")
+# post-e2e-polish 2026-06-27 Fix 8: widened from a narrow CLI whitelist
+# (which missed bash/python/node etc.) to ALSO include the bash/sh wrapper
+# tpa spawns AND common language interpreters used in agentic tool
+# calls. Without this, `python -m my_tool` or `npm test` ran under TPA look
+# like nothing is happening and Squid drops to "thinking" mid-tool.
+SHELL_CHILD_NAMES = (
+    # search/file CLIs
+    "rg", "grep", "find", "sed", "awk", "diff", "jq", "fd", "ag",
+    "ripgrep", "ls", "cat", "tail", "head", "sort", "uniq", "wc",
+    # net/git/cloud tooling
+    "git", "gh", "curl", "wget", "ssh", "scp", "rsync", "kubectl",
+    "gcloud", "aws", "az", "docker", "helm", "terraform",
+    # build tooling
+    "make", "cmake", "pytest", "uv", "pip", "cargo", "go", "mvn", "gradle",
+    # language interpreters (most TPA tool calls run these)
+    "python", "python3", "node", "npm", "npx", "ruby", "deno", "bun",
+    # the shell wrapper itself -- if bash is alive under TPA, a tool is running
+    "bash", "sh", "zsh", "fish",
+    # misc
+    "sleep", "tee", "xargs", "env",
+)
 CELEBRATE_DURATION_SEC = 20        # post-e2e-polish 2026-06-27 Fix 1: was 4
 CONCERN_LOOKBACK_SEC = 60          # hard errors stay concerned this long
 CONCERN_TRANSIENT_LOOKBACK_SEC = 20  # network/timeout errors auto-clear faster
@@ -438,6 +455,10 @@ class StateMachine:
         )
         # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
+        # post-e2e-polish 2026-06-27 Fix 7: sticky working window.
+        # Hold "working" for working_hold_sec between tool calls
+        # so Squid does not flicker to "thinking" in LLM-gen gaps.
+        self.working_hold_until = 0.0
         # TPA-state-idle tracking: clock starts whenever state enters "idle".
         # Independent of macOS HID activity -- Pink can keep typing in Slack
         # and TPA-idle clock still ticks up.
@@ -626,16 +647,31 @@ class StateMachine:
                     st.concern_severity = severity or "hard"
                     st.message = st.concern_reason
                     return st
-            # 4b. WORKING -- actively running tool / shell command
+            # post-e2e-polish 2026-06-27 Fix 6+7: config-driven windows
+            try:
+                from . import config as _cfg
+                _tool_win = float(_cfg.get('tool_active_window_sec', TOOL_ACTIVE_WINDOW_SEC))
+                _work_hold = float(_cfg.get('working_hold_sec', 25))
+            except Exception:
+                _tool_win = TOOL_ACTIVE_WINDOW_SEC
+                _work_hold = 25.0
+            # 4b. WORKING -- actively running tool / shell command.
             if shell_active:
+                self.working_hold_until = now + _work_hold
                 st.state = "working"
                 st.message = "🛠️ running shell"
                 return st
-            if sustained_busy and tool_activity_age < TOOL_ACTIVE_WINDOW_SEC:
+            if sustained_busy and tool_activity_age < _tool_win:
+                self.working_hold_until = now + _work_hold
                 st.state = "working"
                 st.message = f"⌨️ writing ({int(cpu)}% cpu)"
                 return st
-            # 4c. THINKING -- CPU busy but no recent tool writes
+            # 4b-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy
+            if now < self.working_hold_until and (sustained_busy or cpu > 5):
+                st.state = "working"
+                st.message = "✨ working"
+                return st
+            # 4c. THINKING -- CPU busy but no recent work signals
             if sustained_busy:
                 st.state = "thinking"
                 st.message = "🤔 thinking"

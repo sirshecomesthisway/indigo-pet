@@ -63,7 +63,7 @@ class TPADetector:
 
     # Threshold + sticky-window constants -- mirror watcher.py module-level.
     CPU_BUSY_THRESHOLD = 15.0
-    TOOL_ACTIVE_WINDOW_SEC = 8
+    TOOL_ACTIVE_WINDOW_SEC = 20  # post-e2e-polish 2026-06-27 Fix 6: was 8s
     SUBAGENT_ACTIVE_WINDOW_SEC = 30
     CELEBRATE_DURATION_SEC = 20  # post-e2e-polish 2026-06-27 Fix 1: was 4
 

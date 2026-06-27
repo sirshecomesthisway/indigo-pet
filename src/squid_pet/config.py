@@ -33,6 +33,14 @@ DEFAULTS: dict[str, Any] = {
     # she never sees Squid celebrate (window closed before she glanced).
     # Hot-reloadable via config.get() pattern. Valid range 4-60.
     "celebrate_hold_sec": 20,
+    # post-e2e-polish 2026-06-27 Fix 6: how long after the last tool-call
+    # write Squid stays in "working" before falling to "thinking". Was
+    # 8s hard-coded; bumped to 20s after Pink noted Squid kept flickering
+    # to "thinking" during LLM-generation gaps in active sessions. Hot-
+    # reloadable. Set to 60+ for very long generation windows.
+    "tool_active_window_sec": 20,
+    # Fix 7: sticky working window -- bridges LLM-gen gaps
+    "working_hold_sec": 25,
     # llm-bubbles polish 2026-06-27, item 3: hard daily cap to prevent
     # runaway puppy-backend costs. Enforced silently in LLMClient.ask()
     # -- over-cap calls return None and rule-based bubbles fill in.
