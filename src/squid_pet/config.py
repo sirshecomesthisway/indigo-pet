@@ -28,6 +28,14 @@ DEFAULTS: dict[str, Any] = {
     # the same out of the box for every associate.
     "llm_bubbles": False,
     "llm_bubbles_model": "claude-sonnet-4-6",
+    # llm-bubbles polish 2026-06-27, item 3: hard daily cap to prevent
+    # runaway puppy-backend costs. Enforced silently in LLMClient.ask()
+    # -- over-cap calls return None and rule-based bubbles fill in.
+    # Persistent across Squid restarts via ~/.squid-pet/llm_usage.json.
+    # Resets at midnight local time. Set to 0 to disable LLM bubbles
+    # entirely (functionally equivalent to llm_bubbles=False but lets
+    # you flip the menu toggle without re-enabling network calls).
+    "llm_bubbles_daily_cap": 500,
 }
 
 

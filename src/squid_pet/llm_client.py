@@ -28,6 +28,8 @@ import logging
 import os
 import ssl
 import threading
+import datetime
+import pathlib
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +60,50 @@ HTTP_TIMEOUT_SEC = 10.0
 # Minimum gap between LLM calls per-process. Protects associates from
 # unintentional cost bursts if their state-machine starts thrashing.
 MIN_CALL_GAP_SEC = 5.0
+
+# ── Daily cap (cost protection, llm-bubbles polish 2026-06-27) ────────
+# Persistent across Squid restarts; resets on date rollover. Set the
+# cap via config.json key `llm_bubbles_daily_cap` (default 500). The
+# cap is enforced silently -- when exceeded, ask() returns None and
+# the observer falls back to rule-based bubbles. Users never see an
+# error; they just see fewer LLM-flavored lines until midnight.
+USAGE_FILE = pathlib.Path.home() / ".squid-pet" / "llm_usage.json"
+DEFAULT_DAILY_CAP = 500
+
+def _today() -> str:
+    """ISO date for today (local). Used as the daily-cap reset key."""
+    return datetime.date.today().isoformat()
+
+def _load_usage() -> tuple[str, int]:
+    """Read (date, count) from USAGE_FILE. On any failure or stale
+    date, return (today, 0). Never raises."""
+    try:
+        data = json.loads(USAGE_FILE.read_text())
+        if isinstance(data, dict):
+            d = data.get("date")
+            n = int(data.get("calls", 0))
+            if d == _today():
+                return (d, n)
+    except (OSError, ValueError, TypeError):
+        pass
+    return (_today(), 0)
+
+def _write_usage(date: str, count: int) -> None:
+    """Persist usage. Best-effort -- failures are silent."""
+    try:
+        USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        USAGE_FILE.write_text(json.dumps({"date": date, "calls": count}))
+    except OSError:
+        pass
+
+def _read_daily_cap() -> int:
+    """Read cap from config.json (cheap; config caches). Default 500."""
+    try:
+        from . import config as _cfg
+        return int(_cfg.get("llm_bubbles_daily_cap", DEFAULT_DAILY_CAP))
+    except Exception:  # noqa: BLE001 -- defensive; never crash on cap read
+        return DEFAULT_DAILY_CAP
+
 
 
 def _load_puppy_token() -> Optional[str]:
@@ -167,6 +213,23 @@ class LLMClient:
                 return None
             self._last_call_at = now
 
+        # Daily-cap check (llm-bubbles polish 2026-06-27). Silent enforcement:
+        # over-cap calls return None so the rule-based fallback kicks in.
+        # USAGE_FILE read is cheap (one syscall) and lets the cap persist
+        # across Squid restarts in case launchd restarts us mid-day.
+        cap = _read_daily_cap()
+        usage_date, usage_count = _load_usage()
+        if usage_count >= cap:
+            # Log once per day-over-cap to make the gating visible.
+            if usage_count == cap:
+                print(f"[squid-pet] llm_client: daily cap reached ({cap}); "
+                      f"falling back to rule-based bubbles until midnight",
+                      flush=True)
+                _write_usage(usage_date, usage_count + 1)  # tip past so we don't re-log
+            return None
+
+        call_started = time.time()
+
         body = json.dumps({
             "model": self._model,
             "max_tokens": max_tokens,
@@ -203,11 +266,23 @@ class LLMClient:
 
         # Anthropic Messages API response shape:
         # {"content": [{"type": "text", "text": "..."}], ...}
+        elapsed = time.time() - call_started
         try:
             blocks = payload.get("content") or []
             for blk in blocks:
                 if blk.get("type") == "text":
-                    return (blk.get("text") or "").strip()
+                    text = (blk.get("text") or "").strip()
+                    # Success log (llm-bubbles polish 2026-06-27, item 4).
+                    # Goes to stdout so it lands in /tmp/squid-pet.out.log
+                    # next to other lifecycle events. NEVER logs the
+                    # response body (could contain PII echoed by the
+                    # model) -- only metadata: elapsed time + char count.
+                    print(f"[squid-pet] llm_client: ok ({elapsed:.1f}s, "
+                          f"{len(text)} chars)", flush=True)
+                    # Increment daily counter on success only -- failed
+                    # calls don't count toward the cap.
+                    _write_usage(usage_date, usage_count + 1)
+                    return text
         except (AttributeError, TypeError):
             return None
         return None

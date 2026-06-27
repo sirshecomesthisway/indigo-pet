@@ -484,25 +484,30 @@ class PetApi:
         self._last_state_for_bubble: str = "idle"
         self._last_mood_for_bubble: str = ""
         # LLM-enriched bubbles (opt-in via ~/.squid-pet/config.json).
-        # If disabled or no puppy_token available, _llm is None and the
-        # Observer falls back to rule-based-only behavior automatically.
-        _llm = None
-        if config.llm_bubbles_enabled():
-            _model = config.get("llm_bubbles_model", "claude-sonnet-4-6")
-            _llm = _llm_client_mod.LLMClient(model=_model)
-            if not _llm.is_available():
-                print(
-                    "[squid-pet] llm_bubbles enabled but no puppy_token in "
-                    "~/.tpa/puppy.cfg -- falling back to rule-based bubbles",
-                    flush=True,
-                )
-                _llm = None
-            else:
-                print(f"[squid-pet] llm_bubbles enabled, model={_model}", flush=True)
+        # llm-bubbles polish 2026-06-27, item 1: construct the LLMClient
+        # unconditionally (cheap -- just reads puppy.cfg once) so that
+        # toggling `llm_bubbles` later via the menu takes effect live
+        # without a restart. Observer gates on config.llm_bubbles_enabled
+        # per-dispatch instead of caching the decision here.
+        _model = config.get("llm_bubbles_model", "claude-sonnet-4-6")
+        _llm = _llm_client_mod.LLMClient(model=_model)
+        if not _llm.is_available():
+            print(
+                "[squid-pet] llm_client: no puppy_token in ~/.tpa/puppy.cfg "
+                "-- bubbles will be rule-based only until token appears",
+                flush=True,
+            )
+            _llm = None  # Observer treats None as "never dispatch LLM"
+        else:
+            cur_state = "ON" if config.llm_bubbles_enabled() else "OFF"
+            print(f"[squid-pet] llm_client wired, model={_model}, "
+                  f"current llm_bubbles={cur_state} (toggle live via menu)",
+                  flush=True)
         self._observer = observer.Observer(
             get_muted=config.is_muted,
             llm_client=_llm,
             publish_cb=self._publish_llm_bubble,
+            get_llm_enabled=config.llm_bubbles_enabled,
         )
 
     def signal_ready(self) -> dict:

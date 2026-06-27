@@ -277,21 +277,31 @@ class Observer:
         get_muted: Callable[[], bool],
         llm_client: Optional["object"] = None,
         publish_cb: Optional[Callable[[str], None]] = None,
+        get_llm_enabled: Optional[Callable[[], bool]] = None,
     ):
         """get_muted: callback returning current mute state (queried per call).
 
-        llm_client: optional LLMClient instance. If present AND .is_available()
-            returns True, eligible state transitions fire a background LLM
-            call that may overwrite the rule-based bubble with a richer line.
-            If None, behavior is identical to pre-llm-bubbles versions.
+        llm_client: optional LLMClient instance. Held regardless of current
+            llm_bubbles config state (constructing it is cheap, no network).
+            The actual gating happens at dispatch time -- see get_llm_enabled.
 
         publish_cb: callback the LLM worker uses to publish its result.
             Required if llm_client is provided. Signature: publish_cb(text).
             The window-side implementation typically sets _pending_bubble.
+
+        get_llm_enabled: callback returning the CURRENT value of the
+            llm_bubbles config flag. Queried on every dispatch so menu
+            toggles take effect without a Squid restart (llm-bubbles polish
+            2026-06-27, item 1). If None, defaults to "always enabled when
+            llm_client is available and is_available()" -- back-compat
+            behavior for older tests/embedders.
         """
         self._get_muted = get_muted
+        # Hold the LLM client; gate on get_llm_enabled() at dispatch time
+        # rather than caching the "is it enabled" decision at __init__.
         self._llm = llm_client if (llm_client and getattr(llm_client, "is_available", lambda: False)()) else None
         self._publish_cb = publish_cb
+        self._get_llm_enabled = get_llm_enabled or (lambda: True)
 
     # ------------------------------------------------------------------
     # Internal: random pick + length guard
@@ -337,6 +347,13 @@ class Observer:
         if self._llm is None or self._publish_cb is None:
             return
         if self._get_muted():
+            return
+        # Hot-reload gate (llm-bubbles polish 2026-06-27, item 1): the
+        # llm_bubbles config flag is queried per-dispatch via the
+        # get_llm_enabled callback, so flipping the menu toggle (or
+        # editing config.json) takes effect on the very next state
+        # change. No Squid restart needed.
+        if not self._get_llm_enabled():
             return
         if trigger_key not in LLM_ENRICH_TRIGGERS:
             return
