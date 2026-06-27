@@ -139,6 +139,18 @@ def find_tpa_processes() -> list[psutil.Process]:
             if "tpa" in cmdline or "tpa" in cmdline:
                 # Filter to actual python processes, not bash wrappers
                 if "python" in cmdline or "tpa" in cmdline.split("/")[-1]:
+                    # post-e2e-polish 2026-06-27 Fix 9: skip headless
+                    # one-shot TPA runs (daily-summary cron, doghouse pings,
+                    # scripted automations). They have --prompt in argv;
+                    # they are NOT interactive Pink sessions, so Squid
+                    # should stay idle while they run. Pink reported
+                    # "no TPA is running" while the daily summary cron
+                    # was active and Squid showed "thinking" -- that
+                    # confused her. Filter them out here so the entire
+                    # downstream cascade (CPU, shell_active, busy)
+                    # ignores them.
+                    if " --prompt " in (" " + cmdline + " "):
+                        continue
                     matches.append(p)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue

@@ -79,3 +79,15 @@ state. Root cause was TWO bugs stacked, fixed below:
 - [x] All 3 fixes covered by existing 267 tests; no new tests added (the existing
       state-machine tests exercise the cascade paths; the widened whitelist only
       grows the matched set so all old behavior is preserved).
+
+- [x] Fix 9: filter headless `tpa --prompt ...` runs out of
+      find_tpa_processes(). Pink reported "no TPA is running, why
+      is squid thinking?" while the daily-summary cron was active. The
+      cron IS a TPA process (so detection was technically correct) but
+      it's not an interactive Pink session, so Squid reacting to it
+      was confusing. Now: only interactive TPA sessions count toward
+      shell_active/sustained_busy/cpu_percent. Daily summary cron,
+      doghouse pings, scripted automations all silently ignored.
+      Live-verified: with daily-summary cron pid=40923 running, Squid
+      sees 0 TPA procs from the cron (just the 2 interactive ones from
+      Pink's current chat). Tests 267/267 green.
