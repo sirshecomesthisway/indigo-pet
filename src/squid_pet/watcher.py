@@ -379,18 +379,60 @@ class StateMachine:
     are populated from the TPADetector's public attrs.
     """
 
+    # Settings file path (centralised so tests can monkey-patch).
+    _SETTINGS_FILE = STATE_DIR / "settings.json"
+
     def __init__(self, detectors: list | None = None) -> None:
-        # Lazy import to keep test-isolated detectors testing-friendly
+        # Track whether caller explicitly supplied detectors. If they did,
+        # we never hot-reload (caller controls the list). If they didn't,
+        # we own the list and pick up settings.json changes at runtime.
+        self._owns_detectors = detectors is None
+        self._settings_mtime: float = 0.0
         if detectors is None:
-            try:
-                settings = json.loads((STATE_DIR / "settings.json").read_text())
-            except (OSError, ValueError):
-                settings = {}
+            settings = self._load_settings()
             from .detectors import build_detectors as _bd
             detectors = _bd(settings)
         self.detectors = list(detectors)
-        # Pull out the TPA detector for richer-state queries (or use a
-        # no-op shim if disabled / absent).
+        self._refresh_tpa_detector_ref()
+
+    # --- Settings load + hot-reload ----------------------------------
+    def _load_settings(self) -> dict:
+        """Read settings.json, update tracked mtime. Empty dict on error."""
+        try:
+            st = self._SETTINGS_FILE.stat()
+            self._settings_mtime = st.st_mtime
+            return json.loads(self._SETTINGS_FILE.read_text())
+        except (OSError, ValueError):
+            self._settings_mtime = 0.0
+            return {}
+
+    def _maybe_reload_settings(self) -> None:
+        """Hot-reload detectors if settings.json mtime changed.
+
+        Called at the top of compute() every tick (~800ms). Cheap: one
+        stat() syscall. Only rebuilds if we own the detector list
+        (i.e. caller didn't pass one explicitly -- test contexts and
+        custom embeddings keep their immutable list)."""
+        if not self._owns_detectors:
+            return
+        try:
+            mtime = self._SETTINGS_FILE.stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._settings_mtime:
+            return
+        # Settings changed -- rebuild detectors.
+        settings = self._load_settings()
+        from .detectors import build_detectors as _bd
+        new_detectors = _bd(settings)
+        self.detectors = list(new_detectors)
+        self._refresh_tpa_detector_ref()
+        enabled_names = [d.name for d in self.detectors if d.enabled]
+        print(f"[squid-pet] settings.json changed -- detectors reloaded: "
+              f"{enabled_names}", flush=True)
+
+    def _refresh_tpa_detector_ref(self) -> None:
+        """Re-point the TPA-detector cache after a detector list swap."""
         self._tpa_detector = next(
             (d for d in self.detectors if d.name == "tpa"), None
         )
@@ -433,7 +475,12 @@ class StateMachine:
     })
 
     def compute(self) -> PetState:
-        """Run the cascade, then layer in agent_idle_seconds tracking."""
+        """Run the cascade, then layer in agent_idle_seconds tracking.
+
+        Hot-reloads detectors from settings.json if the file changed
+        since the last tick (only when this StateMachine owns its
+        detector list -- explicit lists passed in stay immutable)."""
+        self._maybe_reload_settings()
         st = self._compute_inner()
         now = time.time()
         agent_active_now = st.state in self._AGENT_ACTIVE_STATES

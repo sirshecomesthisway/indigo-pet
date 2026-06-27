@@ -27,7 +27,7 @@
       detector list
 - [x] 2.3 `StateMachine.compute()` — OR `is_busy`/`is_celebrating`/`is_grooving`
       across enabled detectors; preserve existing 9-state priority cascade
-- [ ] 2.4 Build detector list from settings: `_build_detectors(settings)` —
+- [x] 2.4 Build detector list from settings: `_build_detectors(settings)` —
       returns list filtered by `triggers.{name}` flags
 - [x] 2.5 Verify state.json payload schema unchanged (frontend compat)
 
@@ -38,7 +38,7 @@
       ide:true, project_dirs:["~/Projects"], ide_processes:[...]}` if missing
 - [x] 3.3 Validate `project_dirs` are absolute or `~`-expanded; warn on
       non-existent paths
-- [ ] 3.4 Handle settings reload — re-build detector list on settings change
+- [x] 3.4 Handle settings reload — re-build detector list on settings change
 
 ## 4. CLI: `squid why` enhancement
 
