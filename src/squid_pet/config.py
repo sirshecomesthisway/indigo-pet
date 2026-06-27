@@ -28,6 +28,11 @@ DEFAULTS: dict[str, Any] = {
     # the same out of the box for every associate.
     "llm_bubbles": False,
     "llm_bubbles_model": "claude-sonnet-4-6",
+    # post-e2e-polish 2026-06-27 Fix 1: celebrate hold duration in seconds.
+    # Was 4s hard-coded in 3 places; bumped to 20s after Pink noted
+    # she never sees Squid celebrate (window closed before she glanced).
+    # Hot-reloadable via config.get() pattern. Valid range 4-60.
+    "celebrate_hold_sec": 20,
     # llm-bubbles polish 2026-06-27, item 3: hard daily cap to prevent
     # runaway puppy-backend costs. Enforced silently in LLMClient.ask()
     # -- over-cap calls return None and rule-based bubbles fill in.

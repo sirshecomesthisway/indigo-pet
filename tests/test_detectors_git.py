@@ -71,7 +71,7 @@ def test_no_activity_is_quiet(tmp_path):
     assert d.is_celebrating(now=now) is False
 
 
-def test_celebrate_hold_lasts_4_seconds(tmp_path):
+def test_celebrate_hold_lasts_20_seconds(tmp_path):
     git = _make_repo(tmp_path, "myrepo")
     now = time.time()
     _touch(git / "HEAD", now - 1.0)
@@ -81,7 +81,7 @@ def test_celebrate_hold_lasts_4_seconds(tmp_path):
     # sticky hold should keep firing for CELEBRATE_HOLD_SEC.
     _touch(git / "HEAD", now - 100.0)
     assert d.is_celebrating(now=now + 1.0) is True
-    assert d.is_celebrating(now=now + 5.0) is False  # past 4s hold
+    assert d.is_celebrating(now=now + 25.0) is False  # past 20s hold (post-e2e-polish Fix 1)
 
 
 def test_disabled_detector_returns_false(tmp_path):

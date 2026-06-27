@@ -116,8 +116,25 @@ cmd_update() {
     local pdir; pdir=$(project_dir)
     echo "squid: updating from $pdir"
     cd "$pdir"
+
+    # post-e2e-polish 2026-06-27 Fix 4: capture HEAD before pull so we can
+    # skip the 42s uv resolve when git pull is a no-op (was 55s wasted
+    # whenever 'squid update' was run with no remote changes).
+    local local_head_before local_head_after
+    local_head_before=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
     echo "-- git pull"
     git pull --ff-only || { echo "squid: git pull failed -- resolve manually"; exit 1; }
+
+    local_head_after=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
+    # If HEAD didn't move AND the venv is healthy (entry point exists), skip
+    # both reinstall and restart. Sub-3-second 'squid update' for no-op pulls.
+    if [ "$local_head_before" = "$local_head_after" ] && [ -x "$pdir/.venv/bin/squid-pet" ]; then
+        echo "squid: already up to date (HEAD=$local_head_before); skipping reinstall + restart"
+        return 0
+    fi
+
     echo "-- reinstalling package"
     if command -v uv >/dev/null 2>&1; then
         uv pip install -e . \

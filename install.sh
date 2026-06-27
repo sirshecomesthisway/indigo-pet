@@ -42,7 +42,16 @@ die()  { echo "${C_RED}[XX]${C_RST} $*" >&2; exit 1; }
 # ─── configuration ────────────────────────────────────────────────────
 LABEL="com.pink.squid-pet"
 PROJECT="${SQUID_PROJECT:-$HOME/Projects/squid-pet}"
-REPO_URL="${SQUID_REPO:-https://internal-ghe.example.com/pink/squid-pet.git}"
+REPO_URL="${SQUID_REPO:-git@internal-ghe.example.com:pink/squid-pet.git}"
+
+# post-e2e-polish 2026-06-27 Fix 3: detect cold vs warm install at script start
+# so verify_alive can use the right polling timeout. Cold = first ever install
+# (no state.json yet). Warm = reinstall.
+if [ -f "$HOME/.squid-pet/state.json" ]; then
+    WAS_COLD="false"
+else
+    WAS_COLD="true"
+fi
 PLIST_DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LAUNCHER_DST="$HOME/.local/bin/squid"
 STATE_FILE="$HOME/.squid-pet/state.json"
@@ -107,6 +116,25 @@ ensure_uv() {
 clone_or_update() {
     step "clone_or_update -> $PROJECT"
     mkdir -p "$(dirname "$PROJECT")"
+
+    # post-e2e-polish 2026-06-27 Fix 5: if user already cloned to a non-canonical
+    # location and is running ./install.sh from inside it, MOVE the repo to
+    # $PROJECT rather than re-clone. Avoids needless network round-trip AND the
+    # surprise of two squid-pet checkouts on disk.
+    if [ ! -d "$PROJECT/.git" ] && [ -d "$PWD/.git" ]; then
+        local pwd_origin
+        pwd_origin=$(cd "$PWD" && git remote get-url origin 2>/dev/null || echo "")
+        case "$pwd_origin" in
+            *squid-pet*)
+                if [ "$PWD" != "$PROJECT" ]; then
+                    ok "found squid-pet clone at $PWD -> moving to canonical $PROJECT"
+                    mv "$PWD" "$PROJECT" || die "failed to relocate $PWD to $PROJECT (perms? existing dir?)"
+                    cd "$PROJECT" || die "failed to cd into $PROJECT after move"
+                fi
+                ;;
+        esac
+    fi
+
     if [ -d "$PROJECT/.git" ]; then
         # Phase 2: skip the git pull entirely when local HEAD already
         # matches origin/main. Saves a multi-second network round-trip
@@ -128,9 +156,9 @@ clone_or_update() {
         fi
         # Note: install.sh defaults to HTTPS for the curl-bash flow, but if
         # the user already cloned via SSH (recommended for internal GHE since
-        # anonymous HTTPS is rejected), SQUID_REPO env var can override.
+        # anonymous HTTPS is rejected). post-e2e-polish 2026-06-27 Fix 2: default is now SSH; override with SQUID_REPO=https://... if needed.
         git clone "$REPO_URL" "$PROJECT" || \
-            die "git clone failed. Are you on corporate VPN + have HTTPS creds? Repo: $REPO_URL"
+            die "git clone failed. Are you on corporate VPN? If using HTTPS, ensure PAT is cached: git config --global credential.helper osxkeychain. Or override: SQUID_REPO=git@internal-ghe.example.com:pink/squid-pet.git. Tried: $REPO_URL"
         ok "cloned $REPO_URL"
     fi
 }
@@ -274,9 +302,21 @@ boot_launchd() {
 
 # ─── 11. verify_alive ─────────────────────────────────────────────────
 verify_alive() {
-    step "verify_alive (polling state.json for up to 5s)"
+    # post-e2e-polish 2026-06-27 Fix 3: cold install needs ~10s (sprite load +
+    # WKWebView spin-up on M1). Warm reinstall stays at 5s. WAS_COLD is set
+    # at script start before any state.json gets written.
+    local timeout_sec mode_label
+    if [ "$WAS_COLD" = "true" ]; then
+        timeout_sec=20
+        mode_label="cold install, polling ${timeout_sec}s for first state.json write"
+    else
+        timeout_sec=5
+        mode_label="warm reinstall, polling ${timeout_sec}s"
+    fi
+    step "verify_alive ($mode_label)"
     local i mtime now age
-    for i in 1 2 3 4 5; do
+    i=0
+    while [ "$i" -lt "$timeout_sec" ]; do
         if [ -f "$STATE_FILE" ]; then
             mtime=$(stat -f %m "$STATE_FILE")
             now=$(date +%s)
@@ -287,8 +327,9 @@ verify_alive() {
             fi
         fi
         sleep 1
+        i=$((i + 1))
     done
-    warn "state.json not fresh after 5s. Check: tail /tmp/squid-pet.err.log"
+    warn "state.json not fresh after ${timeout_sec}s. Check: tail /tmp/squid-pet.err.log"
     return 1
 }
 

@@ -58,7 +58,7 @@ SHELL_CHILD_NAMES = ("rg", "grep", "find", "git", "sed", "awk",
                      "curl", "wget", "tail", "head", "diff",
                      "make", "pytest", "gh", "jq", "fd", "ag",
                      "ripgrep", "ls")
-CELEBRATE_DURATION_SEC = 4         # how long to hold celebrating state
+CELEBRATE_DURATION_SEC = 20        # post-e2e-polish 2026-06-27 Fix 1: was 4
 CONCERN_LOOKBACK_SEC = 60          # hard errors stay concerned this long
 CONCERN_TRANSIENT_LOOKBACK_SEC = 20  # network/timeout errors auto-clear faster
 

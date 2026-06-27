@@ -65,7 +65,7 @@ class TPADetector:
     CPU_BUSY_THRESHOLD = 15.0
     TOOL_ACTIVE_WINDOW_SEC = 8
     SUBAGENT_ACTIVE_WINDOW_SEC = 30
-    CELEBRATE_DURATION_SEC = 4
+    CELEBRATE_DURATION_SEC = 20  # post-e2e-polish 2026-06-27 Fix 1: was 4
 
     def __init__(
         self,
@@ -141,7 +141,13 @@ class TPADetector:
             self.subagent_age < self.SUBAGENT_ACTIVE_WINDOW_SEC
         )
         if self._was_busy and self.cpu_percent < 1.0 and not any_busy:
-            self._celebrate_until = now + self.CELEBRATE_DURATION_SEC
+            # post-e2e-polish 2026-06-27 Fix 1: config-driven hold
+            try:
+                from . import config as _cfg
+                hold = float(_cfg.get('celebrate_hold_sec', self.CELEBRATE_DURATION_SEC))
+            except Exception:
+                hold = self.CELEBRATE_DURATION_SEC
+            self._celebrate_until = now + hold
             self._was_busy = False
         elif any_busy:
             self._was_busy = True
@@ -197,7 +203,7 @@ class GitDetector:
     name = "git"
 
     BUSY_WINDOW_SEC = 5.0
-    CELEBRATE_HOLD_SEC = 4.0
+    CELEBRATE_HOLD_SEC = 20.0  # post-e2e-polish 2026-06-27 Fix 1: was 4.0
     DISCOVERY_CACHE_SEC = 60.0
     MAX_REPOS = 50
     MAX_DEPTH = 4
@@ -292,7 +298,13 @@ class GitDetector:
     def _refresh(self, now: float) -> tuple[bool, bool]:
         any_busy, any_celeb, br, cr = self._scan_repos(now)
         if any_celeb:
-            self._celebrate_until = now + self.CELEBRATE_HOLD_SEC
+            # post-e2e-polish 2026-06-27 Fix 1: config-driven hold
+            try:
+                from . import config as _cfg
+                hold = float(_cfg.get('celebrate_hold_sec', self.CELEBRATE_HOLD_SEC))
+            except Exception:
+                hold = self.CELEBRATE_HOLD_SEC
+            self._celebrate_until = now + hold
             self._last_celebrate_reason = cr
         if any_busy:
             self._last_busy_reason = br

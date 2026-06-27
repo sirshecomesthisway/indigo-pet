@@ -79,7 +79,7 @@ def test_celebrate_fires_after_cpu_drop():
     state["cpu"] = 0.0
     d.is_celebrating(now=3.0)
     assert d.is_celebrating(now=3.5) is True
-    assert d.is_celebrating(now=10.0) is False  # past CELEBRATE_DURATION_SEC=4
+    assert d.is_celebrating(now=30.0) is False  # past CELEBRATE_DURATION_SEC=20 (post-e2e-polish Fix 1)
 
 
 def test_disabled_detector_always_returns_false():

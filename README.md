@@ -21,6 +21,8 @@ git clone git@internal-ghe.example.com:pink/squid-pet.git
 cd squid-pet && ./install.sh
 ```
 
+> **Where Squid lives:** her source is in `~/Projects/squid-pet/`, runtime state in `~/.squid-pet/`, launcher at `~/.local/bin/squid`, LaunchAgent plist at `~/Library/LaunchAgents/com.pink.squid-pet.plist`. The installer is idempotent — re-running it from `~/Projects/squid-pet/` is the supported update path (or `squid update`). If you cloned somewhere else, the installer detects that and relocates the repo to the canonical location for you (post-e2e-polish 2026-06-27 Fix 5).
+
 That sets up `uv venv`, installs the package from the committed `uv.lock`
 (no dependency resolution — fast), renders the LaunchAgent plist, drops
 `~/.local/bin/squid` on your PATH, writes sensible default settings, and
