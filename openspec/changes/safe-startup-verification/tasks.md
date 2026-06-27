@@ -11,7 +11,7 @@
 - [x] 2.2 Triage: REAL=move_to_corner@141, move_window_by_delta@162. FALSE-POS=setCollectionBehavior@960 (inside _set_all_spaces->callAfter), makeKeyAndOrderFront@menu:290 (inside _on_main->callAfter), setIgnoresMouseEvents@passthrough:168 (inside _apply_on_main->callAfter)
 - [x] 2.3 `src/squid_pet/window.py`: decorated `move_to_corner` and `move_window_by_delta` with `@cocoa_main_thread`
 - [x] 2.4 `src/squid_pet/menu.py:290`: already inside `_on_main` closure dispatched via `AppHelper.callAfter(_on_main)` on line 307 -- no change needed
-- [ ] 2.5 `src/squid_pet/passthrough.py`: verify `setIgnoresMouseEvents_` is properly dispatched (already via callAfter — confirm or upgrade to decorator)
+- [x] 2.5 `src/squid_pet/passthrough.py`: setIgnoresMouseEvents_ + setUserInteractionEnabled_ confirmed dispatched via `AppHelper.callAfter(_apply_on_main)` (functionally equivalent to @cocoa_main_thread; structured comment added pointing to safe-startup-verification layer 1 + refactor path documented for future maintainers)
 - [x] 2.6 Re-audit: zero remaining direct NSWindow setters outside `cocoa_main_thread` decorators or callAfter dispatch
 - [x] 2.7 Full suite 133/133 green (was 126; +7 from threading_guards tests)
 
@@ -58,6 +58,6 @@
 ## 8. Commit + memory
 - [x] 8.1 3 commits this session: 626d524 (decorator + migration), 7ae4032 (doctor + tests), THIS COMMIT (pre-commit hook + docs). Healthcheck/CI re-scoped/deferred per Groups 4-5.
 - [ ] 8.2 internal pushed each commit. github.com origin still VPN-blocked -- pending.
-- [ ] 8.3 File kennel drawer (decisions room) — the four-layer defense pattern, applicable to future cross-platform UI projects
+- [x] 8.3 Filed kennel drawer 434 (repo wing, decisions room) — four-layer defense pattern: decorator + liveness handshake + window-rendering smoke test + CI startup verification. Generalizes to any cross-platform UI project where the toolkit demands a specific thread.
 - [ ] 8.4 Update `~/.tpa/agent_memory/pink-pm/squid-pet.md` — mark this change archived, link decorator pattern as repo standard
 - [ ] 8.5 PENDING: archive when Group 5 (CI) is decided and 7.3 cross-link lands (after distribution-installer implementation)

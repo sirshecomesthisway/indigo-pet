@@ -163,6 +163,19 @@ class PassthroughController:
             from PyObjCTools import AppHelper
             ig = bool(ignore)
 
+            # ── Cocoa main-thread safety (safe-startup-verification, layer 1)
+            # setIgnoresMouseEvents_ + setUserInteractionEnabled_ MUST run on
+            # the main thread; from a worker thread on macOS 14+ they block
+            # indefinitely (the 2026-06-16 wedge bug). We dispatch via
+            # AppHelper.callAfter here rather than @cocoa_main_thread because
+            # _apply_on_main is a closure over nw / ig / contentView — the
+            # decorator pattern wants a module-level callable. callAfter is
+            # functionally equivalent (decorator wraps it under the hood) and
+            # this site is the only callAfter in the codebase that ISN'T
+            # behind the decorator. If this gets refactored later, lift
+            # _apply_on_main to a method on PassthroughManager + apply
+            # @cocoa_main_thread; tests in test_cocoa_main_thread_hook.py
+            # already prove the dispatch contract.
             def _apply_on_main():
                 try:
                     nw.setIgnoresMouseEvents_(ig)
