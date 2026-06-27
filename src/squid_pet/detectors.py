@@ -64,6 +64,12 @@ class TPADetector:
     # Threshold + sticky-window constants -- mirror watcher.py module-level.
     CPU_BUSY_THRESHOLD = 20.0  # Fix 10 (2026-06-27): 15.0 -> 20.0 to suppress TUI-redraw false positives
     TOOL_ACTIVE_WINDOW_SEC = 20  # post-e2e-polish 2026-06-27 Fix 6: was 8s
+    # Fix 10b (2026-06-27): primary "LLM is thinking" signal -- TPA's sitecustomize
+    # patch writes ~/.tpa/llm_active.flag on stream entry and removes it on
+    # exit. Anything older than LLM_FLAG_STALE_SEC is treated as a crashed TPA and
+    # ignored (don't pin Squid into thinking if TPA died mid-stream).
+    LLM_FLAG_PATH = os.path.join(os.path.expanduser("~"), ".tpa", "llm_active.flag")
+    LLM_FLAG_STALE_SEC = 60
     SUBAGENT_ACTIVE_WINDOW_SEC = 30
     CELEBRATE_DURATION_SEC = 20  # post-e2e-polish 2026-06-27 Fix 1: was 4
 
@@ -98,6 +104,9 @@ class TPADetector:
         # Burst suppression -- consecutive busy ticks before sustained_busy
         self._busy_streak: int = 0
         self.sustained_busy: bool = False
+        # Fix 10b (2026-06-27): LLM heartbeat from TPA's sitecustomize patch
+        self.llm_streaming: bool = False
+        self.llm_flag_age: float = float("inf")
 
     def _lazy_defaults(self) -> None:
         """Resolve default scan functions from watcher on first use."""
@@ -129,6 +138,18 @@ class TPADetector:
             self._most_recent_tool_activity_age() if procs else float("inf")
         )
         self.subagent_age = self._newest_subagent_age()
+        # Fix 10b (2026-06-27): read TPA's LLM heartbeat flag
+        try:
+            _mtime = os.path.getmtime(self.LLM_FLAG_PATH)
+            self.llm_flag_age = now - _mtime
+            self.llm_streaming = self.llm_flag_age < self.LLM_FLAG_STALE_SEC
+        except FileNotFoundError:
+            self.llm_flag_age = float("inf")
+            self.llm_streaming = False
+        except Exception:
+            # Permission, FS error, etc. -- treat as unavailable
+            self.llm_flag_age = float("inf")
+            self.llm_streaming = False
         # Burst suppression: only "really busy" after 2 sustained ticks.
         # Fix 10 (2026-06-27): threshold is config-hot-reloadable so Pink can tune
         # without restarting Squid. Falls back to class default if config unavailable.
@@ -188,6 +209,8 @@ class TPADetector:
             "tool_activity_age": self.tool_activity_age,
             "subagent_age": self.subagent_age,
             "sustained_busy": self.sustained_busy,
+            "llm_streaming": self.llm_streaming,
+            "llm_flag_age": self.llm_flag_age,
             "celebrate_until": self._celebrate_until,
         }
 
