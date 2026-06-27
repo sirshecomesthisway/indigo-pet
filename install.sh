@@ -251,6 +251,20 @@ first_run_wizard() {
         ok "settings.json already exists, leaving alone"
         return
     fi
+
+    # trigger-broadening 7.1: probe for tpa. If user doesn't run it,
+    # default tpa trigger to false so CPU detection doesn't churn
+    # finding no TPA process every tick.
+    local tpa_default="true"
+    if ! pgrep -f tpa >/dev/null 2>&1; then
+        tpa_default="false"
+        ok "tpa process not detected -- defaulting triggers.tpa=false (re-enable in settings.json if you install TPA later)"
+    fi
+
+    # trigger-broadening 7.3: default project_dirs to ~/Projects (matches the
+    # canonical clone location from distribution-installer Phase 5).
+    local proj_default="$HOME/Projects"
+
     # Default to silent + sensible. Power users can opt into interactive
     # configuration with --wizard, or edit ~/.squid-pet/settings.json
     # later (changes are picked up live -- no restart needed).
@@ -260,10 +274,11 @@ first_run_wizard() {
   "starting_corner": "bottom-right",
   "show_on_all_spaces": true,
   "triggers": {
-    "tpa": true,
+    "tpa": ${tpa_default},
     "git": true,
     "terminal": true,
-    "ide": true
+    "ide": true,
+    "project_dirs": ["${proj_default}"]
   }
 }
 EOF
@@ -274,20 +289,44 @@ EOF
         read -r -p "  starting corner [bottom-right]: " corner
         read -r -p "  stroll mode [edges] (edges|free|still): " stroll
         read -r -p "  show on all spaces [y]: " spaces
-        if [ -n "$corner" ] || [ -n "$stroll" ] || [ -n "$spaces" ]; then
-            python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" <<PYEOF2
+        # trigger-broadening 7.2: trigger prompts (default Y for all)
+        local trig_cp trig_git trig_ide trig_term trig_proj
+        read -r -p "  trigger: react to tpa CPU [$tpa_default]: " trig_cp
+        read -r -p "  trigger: react to git activity (commits, refs) [y]: " trig_git
+        read -r -p "  trigger: react to IDE focus (VSCode, IntelliJ) [y]: " trig_ide
+        read -r -p "  trigger: react to terminal activity [y]: " trig_term
+        # trigger-broadening 7.3: project_dirs prompt
+        read -r -p "  project dirs to watch for git activity [$proj_default]: " trig_proj
+        python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" "${trig_cp:-}" "${trig_git:-}" "${trig_ide:-}" "${trig_term:-}" "${trig_proj:-}" <<PYEOF2
 import json, sys
-fp, corner, stroll, spaces = sys.argv[1:5]
+fp = sys.argv[1]
+corner, stroll, spaces, trig_cp, trig_git, trig_ide, trig_term, trig_proj = sys.argv[2:10]
 with open(fp) as f: d = json.load(f)
 if corner: d["starting_corner"] = corner
 if stroll: d["stroll_mode"] = stroll
 if spaces and spaces.lower() in ("n","no"): d["show_on_all_spaces"] = False
+def _bool(s, default):
+    s = s.strip().lower()
+    if not s: return default
+    return s in ("y","yes","true","1","on")
+# Trigger overrides (only if user typed something)
+if trig_cp.strip():
+    d["triggers"]["tpa"] = _bool(trig_cp, d["triggers"]["tpa"])
+if trig_git.strip():
+    d["triggers"]["git"] = _bool(trig_git, d["triggers"]["git"])
+if trig_ide.strip():
+    d["triggers"]["ide"] = _bool(trig_ide, d["triggers"]["ide"])
+if trig_term.strip():
+    d["triggers"]["terminal"] = _bool(trig_term, d["triggers"]["terminal"])
+if trig_proj.strip():
+    # Allow comma-separated list of dirs
+    dirs = [s.strip() for s in trig_proj.split(",") if s.strip()]
+    d["triggers"]["project_dirs"] = dirs
 with open(fp, "w") as f: json.dump(d, f, indent=2)
 PYEOF2
-        fi
-        ok "settings.json written (interactive)"
+        ok "settings.json written (interactive: triggers + project_dirs configured)"
     else
-        ok "settings.json written (defaults). Edit ~/.squid-pet/settings.json to customize."
+        ok "settings.json written (defaults: triggers.tpa=$tpa_default, project_dirs=[$proj_default]). Edit ~/.squid-pet/settings.json to customize."
     fi
 }
 

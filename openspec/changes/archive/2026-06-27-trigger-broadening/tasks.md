@@ -73,11 +73,11 @@
 
 ## 7. First-run wizard integration (depends on distribution-installer)
 
-- [ ] 7.1 In install.sh `first_run_wizard()`, probe `pgrep -f tpa`;
+- [x] 7.1 In install.sh first_run_wizard(), probe pgrep -f tpa;
       if absent, default `triggers.tpa=false`
-- [ ] 7.2 Add wizard prompts for `triggers.git`, `triggers.ide`,
+- [x] 7.2 Add wizard prompts for triggers.git, triggers.ide,
       `triggers.terminal` (default Y for all)
-- [ ] 7.3 Add wizard prompt for `triggers.project_dirs` (default `~/Projects`)
+- [x] 7.3 Add wizard prompt for triggers.project_dirs (default ~/Projects) -- IMPLEMENTED in install.sh first_run_wizard: (1) tpa auto-detect via pgrep with messaging, (2) interactive prompts for tpa/git/ide/terminal triggers with _bool() helper handling y/n/empty, (3) project_dirs prompt accepts comma-separated list, defaults to $HOME/Projects. settings.json structure now includes triggers.project_dirs array. bash -n syntax OK.
 
 ## 8. Commit + memory
 

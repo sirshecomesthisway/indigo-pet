@@ -26,11 +26,11 @@
 
 ## 3. Phase 2.5: Wheel investigation (optional, only if `psutil`/`pywebview` are building from sdist)
 
-- [ ] 3.1 Run `uv pip install -e . --verbose 2>&1 | tee /tmp/uv-install.log` on a fresh venv; grep for `Building wheel` lines
-- [ ] 3.2 If wheels ARE being built, check internal artifactory for upstream wheels: `curl -I https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple/psutil/`
-- [ ] 3.3 If artifactory is missing wheels, file internal support ticket (component: "PyPI mirror") with package list + reproduce steps
-- [ ] 3.4 If artifactory has them but uv resolves to sdist anyway, dig into uv resolver hints (maybe `--prefer-binary` or pyproject.toml `[tool.uv]` settings)
-- [ ] 3.5 If wheels CAN'T be obtained from artifactory in the short term, ship a pre-built wheel cache at `~/Projects/squid-pet/wheels/` and `pip install --find-links wheels/` as fallback
+- [x] 3.1 Run uv pip install -e . --verbose on a fresh venv; grep for 'Building wheel' lines -- DONE 2026-06-27. FINDING: 0 'Building wheel' lines in 1416-line log. uv IS using prebuilt wheels (e.g. 'Using cached metadata for: proxy-tools', 'pyobjc_core-12.2.1-cp313-cp313-macosx_10_13_universal2.whl'). So sdist-building is NOT the bottleneck.
+- [x] 3.2 Check internal artifactory for wheels -- NOT NEEDED (3.1 confirmed wheels exist). HOWEVER, found a different blocker: 'WARN Range requests not supported for pyobjc_core-12.2.1-cp313-cp313-macosx_10_13_universal2.whl; streaming wheel'. internal artifactory mirror doesn't support HTTP Range requests, forcing uv to STREAM the ~50MB universal2 pyobjc_core wheel instead of downloading in parallel chunks. This is likely the dominant slowness.
+- [x] 3.3 File internal support ticket for artifactory -- DRAFTED for Pink. Subject: 'PyPI mirror lacks HTTP Range request support; forces streaming for large wheels'. Component: PyPI mirror. Repro: uv venv test && uv pip install --index-url https://pypi.internal.example.com/... pyobjc-core; observe WARN. Impact: ~50MB streamed sequentially instead of parallel chunks adds ~30s cold install. Workaround: pre-bundle wheels (task 3.5). Pink to actually file the ticket (Indigo can draft the form via msgraph if needed).
+- [x] 3.4 uv resolver hints (--prefer-binary etc.) -- NOT APPLICABLE: artifactory already returns wheels (per 3.1). The slowness is the wheel transport, not the resolver.
+- [x] 3.5 Pre-built wheel cache fallback -- DEFERRED (decision required). Pros: bypasses range-request issue entirely, sub-10s cold install. Cons: wheels are platform-specific (would need universal2 arm64+x86_64 variants), bumps repo size by ~80MB, requires manual refresh when deps update. Recommend: file internal support ticket FIRST (task 3.3); if no response in 2 weeks, ship the wheel cache as a stop-gap. Pink to decide.
 
 ## 4. Phase 3: Parallelism
 

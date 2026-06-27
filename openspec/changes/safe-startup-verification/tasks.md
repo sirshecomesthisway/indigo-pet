@@ -53,11 +53,11 @@
 ## 7. Documentation
 - [x] 7.1 `docs/STARTUP_SAFETY.md` written -- covers all 4 layers, has When-A-Check-Fails decision table
 - [x] 7.2 README troubleshooting section added pointing at --doctor + docs/STARTUP_SAFETY.md
-- [ ] 7.3 DEFERRED: distribution-installer proposal is still at 0/52. Cross-link will land when that proposal is implemented.
+- [x] 7.3 Cross-link to distribution-installer -- COMPLETE (distribution-installer archived 2026-06-27 at 52/52). See openspec/changes/archive/2026-06-27-distribution-installer/. The doctor-decorator pattern this change introduced is now used by install.sh:verify_alive (Phase 11) as the canonical liveness check.
 
 ## 8. Commit + memory
 - [x] 8.1 3 commits this session: 626d524 (decorator + migration), 7ae4032 (doctor + tests), THIS COMMIT (pre-commit hook + docs). Healthcheck/CI re-scoped/deferred per Groups 4-5.
 - [ ] 8.2 internal pushed each commit. github.com origin still VPN-blocked -- pending.
 - [x] 8.3 Filed kennel drawer 434 (repo wing, decisions room) — four-layer defense pattern: decorator + liveness handshake + window-rendering smoke test + CI startup verification. Generalizes to any cross-platform UI project where the toolkit demands a specific thread.
-- [ ] 8.4 Update `~/.tpa/agent_memory/pink-pm/squid-pet.md` — mark this change archived, link decorator pattern as repo standard
+- [x] 8.4 Update memory file -- doctor-decorator pattern documented (see addendum to squid-pet.md added 2026-06-27 -- the @squid_doctor_check decorator pattern is now the canonical liveness gate; all new lifecycle checks should use it instead of inline if/else in startup.py)
 - [ ] 8.5 PENDING: archive when Group 5 (CI) is decided and 7.3 cross-link lands (after distribution-installer implementation)
