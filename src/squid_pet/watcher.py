@@ -3,8 +3,8 @@ Squid Pet Watcher — observes TPA + macOS activity and emits state.
 
 State model:
   - idle         : nothing happening
-  - thinking     : tpa CPU > 5%, no recent tool activity
-  - working      : tpa has shell child process, OR CPU > 5% with recent autosave/subagent/command_history write (tool calls)
+  - thinking     : tpa CPU >= cpu_busy_threshold (default 20%) for 4+ consecutive ticks, no recent tool activity
+  - working      : tpa has shell child process, OR sustained CPU (>= cpu_busy_threshold for 4+ ticks) with recent autosave/subagent/command_history write
   - grooving     : subagent file in subagent_sessions/ modified < 30s ago
   - celebrating  : task just completed (heuristic: CPU was high then dropped to 0)
   - concerned    : recent error in errors.log
@@ -46,7 +46,7 @@ IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
 # being a static sticker on the screen all afternoon.
 AUTO_WAKE_AFTER_SLEEPING_SEC = 600   # 10 min asleep → wake for one rhythm cycle
 AUTO_WAKE_DURATION_SEC = 180         # 3 min awake window (roughly one full IDLE_ROUTINE pass)
-CPU_BUSY_THRESHOLD = 15.0           # %
+CPU_BUSY_THRESHOLD = 20.0           # % (Fix 10 2026-06-27: 15.0 -> 20.0)
 TOOL_ACTIVE_WINDOW_SEC = 20        # post-e2e-polish 2026-06-27 Fix 6: was 8s; bumped to 20s. ANY tool-activity file touched within N sec -> working. Override via config tool_active_window_sec (hot-reloadable).
 SUBAGENT_ACTIVE_WINDOW_SEC = 30    # subagent file touched within last N sec → grooving
 # Names of transient CLI tools that indicate ACTIVE tool use.

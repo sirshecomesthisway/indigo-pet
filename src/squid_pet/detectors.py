@@ -62,7 +62,7 @@ class TPADetector:
     name = "tpa"
 
     # Threshold + sticky-window constants -- mirror watcher.py module-level.
-    CPU_BUSY_THRESHOLD = 15.0
+    CPU_BUSY_THRESHOLD = 20.0  # Fix 10 (2026-06-27): 15.0 -> 20.0 to suppress TUI-redraw false positives
     TOOL_ACTIVE_WINDOW_SEC = 20  # post-e2e-polish 2026-06-27 Fix 6: was 8s
     SUBAGENT_ACTIVE_WINDOW_SEC = 30
     CELEBRATE_DURATION_SEC = 20  # post-e2e-polish 2026-06-27 Fix 1: was 4
@@ -130,7 +130,14 @@ class TPADetector:
         )
         self.subagent_age = self._newest_subagent_age()
         # Burst suppression: only "really busy" after 2 sustained ticks.
-        if self.cpu_percent >= self.CPU_BUSY_THRESHOLD:
+        # Fix 10 (2026-06-27): threshold is config-hot-reloadable so Pink can tune
+        # without restarting Squid. Falls back to class default if config unavailable.
+        try:
+            from . import config as _cfg
+            _threshold = float(_cfg.get('cpu_busy_threshold', self.CPU_BUSY_THRESHOLD))
+        except Exception:
+            _threshold = self.CPU_BUSY_THRESHOLD
+        if self.cpu_percent >= _threshold:
             self._busy_streak += 1
         else:
             self._busy_streak = 0
