@@ -87,9 +87,9 @@
 - [x] 8.4 Commit wizard integration (one commit, after distribution-installer
       has landed)
 - [x] 8.5 Push to origin + internal
-- [ ] 8.6 File kennel memory: "trigger broadening shipped; squid now works
+- [x] 8.6 File kennel memory: "trigger broadening shipped; squid now works
       for non-TPA Mac engineers; opt-out via settings.triggers.*"
-- [ ] 8.7 Update pink-pm-memory.md squid entry with new detector list
+- [x] 8.7 Update pink-pm-memory.md squid entry with new detector list
 
 ---
 

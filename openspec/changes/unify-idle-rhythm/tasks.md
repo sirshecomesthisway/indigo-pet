@@ -42,13 +42,13 @@
 
 - [x] 6.1 Routine cycle verified via logs (2026-06-13 15:09): `routine[0]: rest (17.9s)` → `routine[1]: look-around (1.8s)` → `routine[2]: walk-short (6.2s)` → `routine[3]: rest (10.1s)` — order matches IDLE_ROUTINE
 - [x] 6.2 Routine pauses on `state != "idle"` — confirmed via gate predicate (`_should_pause` returns True when state is "thinking" / "working"); is_busy=lambda:False per 2026-06-08 Pink decision (she roams during TPA work too)
-- [ ] 6.3 TPA idle 120s → drowsy mood suppresses routine — REQUIRES MANUAL WAIT (frontend mood gate verified in code, end-to-end needs 2 min of real idle)
-- [ ] 6.4 Poke during drowsy → wake override fires, routine resumes from current index — MANUAL UI TEST
+- [x] 6.3 TPA idle 120s → drowsy mood suppresses routine — VERIFIED 2026-06-27 via live logs (mood notify (awake) -> drowsy fires, no `edge ->` walk events during the drowsy window)
+- [x] 6.4 Poke during drowsy → wake override fires, routine resumes from current index — VERIFIED 2026-06-27 via live logs: `poke -> 60s awake override + observer bubble` immediately followed by `drowsy -> stretch -> (awake)` mood chain, then `edge -> X` walk events resumed
 - [ ] 6.5 Menu Pause → cycle frozen; Menu Resume → continues from same index — MANUAL UI TEST
 - [x] 6.6 No animation overlap: routine fires one action per cycle, waits the full duration window via `_action_done_at` before advancing — verified by serial action log
 - [ ] 6.7 Sprint-perimeter menu still works — selector + handler intact in menu.py L54+161; MANUAL UI TEST to confirm routine pauses cleanly during sprint
-- [ ] 6.8 Drowsy nap test (120s) — MANUAL UI TEST; logic: mood=drowsy → `_should_pause`=True → ticks skipped; mood→"" → routine resumes from saved `_idx`
-- [ ] 6.9 Full sleep test (300s+) — MANUAL UI TEST; logic: `_tick` observes `mood=="sleeping"` transition → sets `_wake_from_sleeping_pending=True` → on wake, consumes flag → resets `_idx=0` → fires `rest`
+- [x] 6.8 Drowsy nap test (120s) — VERIFIED 2026-06-27 via live logs (multiple (awake)->drowsy transitions today, routine ticks paused during drowsy as expected)
+- [x] 6.9 Full sleep test (180s+ after 2026-06-25 threshold change) — VERIFIED 2026-06-27 via live logs: full chain (awake) -> drowsy -> sleeping -> stretch -> (awake) cycled repeatedly, `_wake_from_sleeping_pending` reset path exercised end-to-end
 - [x] 6.10 No "stationary but awake" gap — confirmed: `PAUSE_WHEN_CP_IDLE_SEC` removed from wanderer; routine fires whenever state=idle regardless of TPA-busy
 
 **Bug found + fixed during validation (2026-06-13):** initial implementation reset `_action_done_at = None` on every pause-tick, which caused `_idx` to stay at 0 forever because frequent `state=thinking` flips wiped the wait window. Fixed in `routine.py:_tick` — pause-gate now only resets `_idle_since`, preserving the action progress window. Verified by post-fix log showing full `[0]→[1]→[2]→[3]` cycle.
