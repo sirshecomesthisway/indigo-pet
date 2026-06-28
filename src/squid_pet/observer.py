@@ -335,7 +335,7 @@ class Observer:
     # ------------------------------------------------------------------
     # LLM enrichment -- fires in background, may overwrite rule-based bubble
     # ------------------------------------------------------------------
-    def _async_enrich(self, trigger_key: str, context: str) -> None:
+    def _async_enrich(self, trigger_key: str, context: str, *, is_specific: bool = False) -> None:
         """Fire a background LLM call. On success, publish via callback.
 
         Runs in a daemon thread so it never blocks the watcher loop. The
@@ -356,6 +356,12 @@ class Observer:
         if not self._get_llm_enabled():
             return
         if trigger_key not in LLM_ENRICH_TRIGGERS:
+            return
+        # Fix A (2026-06-28): if the rule-based bubble is already SPECIFIC
+        # (e.g. "running git commit", "rate limited"), don't let the LLM
+        # overwrite it with a generic mood like "settle in". Concrete info
+        # beats poetic emote -- Pink's words: "say something meaningful".
+        if is_specific:
             return
 
         def _worker():
@@ -439,7 +445,7 @@ class Observer:
                 # Still fire LLM enrich -- the shell-cmd bubble is fine
                 # but LLM may produce something contextually nicer.
                 context = f"old={old} new={new} shell={' '.join(shell_cmdline[:6])}"
-                self._async_enrich(trigger_key, context)
+                self._async_enrich(trigger_key, context, is_specific=True)
                 return specific
 
         rule_bubble = self._pick(trigger_key)
