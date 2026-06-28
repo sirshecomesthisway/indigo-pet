@@ -448,6 +448,13 @@ class PetApi:
         self._wander_edge = ""       # "" | "bottom" | "left" | "right" | "top"
         self._pinned: bool = False             # ⚓ disables wandering when True
         self._wander_paused_until: float = 0.0  # epoch seconds; wandering off until this time
+        # menubar-hide (2026-06-28 Pink/Indigo): when True, Squid's
+        # NSWindow alpha is forced to 0 so she's invisible without
+        # being quit. Toggled from menu bar (left/right click on 🦑)
+        # AND from the same item in the right-click menu. State lives
+        # in-memory only -- restart brings her back visible by design
+        # (avoids the "where did Squid go?" footgun across reboots).
+        self._hidden: bool = False
         self._wrapper_deg_override = None  # Optional[float]: bypass edge->deg mapping when set
         self._wake_trigger_seq: int = 0    # increments on wake-fire; frontend tracks last seen
         self._user_wake_until: float = 0.0  # epoch sec; user-interaction wake override (poke, sprint)
@@ -848,6 +855,44 @@ class PetApi:
         label = "edges only" if mode == "edges" else "anywhere"
         self._emit_hint(f"stroll path -> {label}")
 
+    def _menu_toggle_hide(self) -> None:
+        """menubar-hide: flip self._hidden + actually hide/show the
+        NSWindow by setting alpha. Bubbles, wandering, watcher all
+        keep running -- only the visual is suppressed. Cheaper than
+        actually closing the window (which would force re-init)."""
+        self._hidden = not self._hidden
+        self._apply_hide_state()
+        if self._menu is not None:
+            try:
+                self._menu.refresh_status_icon()
+            except Exception as e:
+                print(f"[squid-pet] status icon refresh failed: {e}", flush=True)
+        msg = ("hidden -- click 💤 in menu bar to show"
+               if self._hidden else "back!")
+        self._emit_hint(msg)
+        print(f"[squid-pet] hide toggled -> {self._hidden}", flush=True)
+
+    def is_hidden(self) -> bool:
+        """Menu + menu bar query the current hide state."""
+        return self._hidden
+
+    def _apply_hide_state(self) -> None:
+        """Set the NSWindow alpha to 0 (hidden) or 1.0 (shown).
+        Must run on the AppKit main thread."""
+        try:
+            from PyObjCTools import AppHelper
+            alpha = 0.0 if self._hidden else 1.0
+            def _set_alpha():
+                try:
+                    w = _get_ns_window()
+                    if w is not None:
+                        w.setAlphaValue_(alpha)
+                except Exception as e:
+                    print(f"[squid-pet] setAlpha failed: {e}", flush=True)
+            AppHelper.callAfter(_set_alpha)
+        except Exception as e:
+            print(f"[squid-pet] hide dispatch failed: {e}", flush=True)
+
     def _menu_toggle_mute(self) -> None:
         """Right-click menu: Mute/Unmute Squid. Persists to config.json."""
         new_val = config.toggle_muted()
@@ -858,6 +903,11 @@ class PetApi:
             with self._lock:
                 self._pending_bubble = None
         print(f"[squid-pet] mute toggled -> {new_val}", flush=True)
+        if self._menu is not None:
+            try:
+                self._menu.refresh_status_icon()
+            except Exception as e:
+                print(f"[squid-pet] status icon refresh failed: {e}", flush=True)
 
     def is_llm_bubbles_enabled(self) -> bool:
         """JS+menu exposed: current state of llm_bubbles flag."""
