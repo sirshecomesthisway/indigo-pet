@@ -60,6 +60,19 @@ OBSERVER_SYSTEM_PROMPT = (
     "- Never explain yourself, never apologize, never narrate.\n"
     "- Never reference being an AI, model, or language system.\n"
     "- Stay silent more often than you speak. Silence is the default.\n\n"
+    "CONTEXT SIGNALS in the user message (use them, do not invent):\n"
+    "  shell=git push   -> reply like: shipping it, pushing\n"
+    "  shell=git commit -> reply like: sealed it, committed\n"
+    "  shell=pytest     -> reply like: pytest, hm   or   watching tests\n"
+    "  shell=git diff   -> reply like: *peeks at the diff*\n"
+    "  shell=uv pip|npm -> reply like: fetching deps\n"
+    "  subagent=NAME    -> reply like: ohhh, subagent   or   help arrived\n"
+    "  llm=streaming with no shell -> reply like: thinking out loud, model talking\n"
+    "  git=just-changed (no shell) -> reply like: noticed a commit\n"
+    "  reason=ratelimit -> reply like: ugh, capped\n"
+    "  from=working to=idle        -> reply like: back to idle, *flops*\n"
+    "  from=working to=celebrating -> reply like: shipped, finally, done done\n"
+    "  no obvious signal           -> reply with EMPTY STRING\n\n"
     "Examples of GOOD outputs (note: no emoji, no !, no punctuation flourish):\n"
     "  pytest, hm\n"
     "  ohhh, a subagent\n"
@@ -67,6 +80,9 @@ OBSERVER_SYSTEM_PROMPT = (
     "  *peeks at the diff*\n"
     "  shipped\n"
     "  back to idle\n"
+    "  fetching deps\n"
+    "  thinking out loud\n"
+    "  sealed it\n"
     "  (empty string)\n"
     "  (empty string)\n"
     "  (empty string)\n\n"
@@ -411,6 +427,13 @@ class Observer:
         *,
         concern_reason: str = "",
         shell_cmdline: Optional[list[str]] = None,
+        # Fix B (2026-06-28): richer LLM context. All optional, all
+        # back-compat -- existing callers/tests work unchanged.
+        subagent_name: Optional[str] = None,
+        llm_streaming: bool = False,
+        git_active: bool = False,
+        cpu_pct: float = 0.0,
+        tool_age: float = float("inf"),
     ) -> Optional[str]:
         """Called when the StateMachine reports a transition.
 
@@ -451,12 +474,26 @@ class Observer:
         rule_bubble = self._pick(trigger_key)
         # Background LLM enrich: may overwrite the rule-based line if it
         # arrives in time. Context bundles all the signals we have.
+        # Fix B (2026-06-28): include subagent name, llm-streaming heartbeat,
+        # git activity, cpu, and tool age so the model has enough to say
+        # something specific instead of falling back to mood-mush like
+        # "settle in".
         if rule_bubble is not None:
-            ctx_parts = [f"old={old}", f"new={new}"]
-            if concern_reason:
-                ctx_parts.append(f"reason={concern_reason[:120]}")
+            ctx_parts = [f"from={old}", f"to={new}"]
             if shell_cmdline:
                 ctx_parts.append(f"shell={' '.join(shell_cmdline[:4])}")
+            if subagent_name:
+                ctx_parts.append(f"subagent={subagent_name}")
+            if llm_streaming:
+                ctx_parts.append("llm=streaming")
+            if git_active:
+                ctx_parts.append("git=just-changed")
+            if cpu_pct > 0:
+                ctx_parts.append(f"cpu={cpu_pct:.0f}%")
+            if tool_age < 30:
+                ctx_parts.append(f"tool_age={tool_age:.0f}s")
+            if concern_reason:
+                ctx_parts.append(f"reason={concern_reason[:120]}")
             self._async_enrich(trigger_key, "; ".join(ctx_parts))
         return rule_bubble
 

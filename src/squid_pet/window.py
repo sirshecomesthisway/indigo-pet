@@ -545,10 +545,49 @@ class PetApi:
                     shell_cmd = watcher.latest_shell_child_cmdline(procs)
                 except Exception:
                     shell_cmd = None
+            # Fix B (2026-06-28): collect richer signals for LLM context
+            # so the model can be specific ("shipped", "fetching deps")
+            # instead of generic ("settle in"). All best-effort -- a
+            # failure to read any signal just omits it from the context.
+            subagent_name = None
+            llm_streaming = False
+            git_active = False
+            cpu_pct = 0.0
+            tool_age = float("inf")
+            try:
+                # TPA detector signals (already scanned this tick)
+                cp = getattr(self, "_tpa_detector", None) or getattr(watcher, "_tpa_detector_singleton", None)
+                if cp is not None:
+                    llm_streaming = bool(getattr(cp, "llm_streaming", False))
+                    cpu_pct = float(getattr(cp, "cpu_percent", 0.0))
+                    tool_age = float(getattr(cp, "tool_activity_age", float("inf")))
+            except Exception:
+                pass
+            try:
+                # Subagent name: newest *.pkl in subagent_sessions/
+                _sub_dir = watcher.SUBAGENT_DIR
+                if _sub_dir.exists():
+                    _pkls = sorted(_sub_dir.glob("*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if _pkls and (state.timestamp - _pkls[0].stat().st_mtime) < 60:
+                        subagent_name = _pkls[0].stem
+            except Exception:
+                pass
+            try:
+                # Git active: GitDetector reads .git/HEAD/index/refs mtimes
+                gd = getattr(self, "_git_detector", None)
+                if gd is not None:
+                    git_active = bool(gd.is_celebrating(state.timestamp) or gd.is_busy(state.timestamp))
+            except Exception:
+                pass
             bubble = self._observer.on_state_change(
                 prev_state, state.state,
                 concern_reason=getattr(state, "concern_reason", "") or "",
                 shell_cmdline=shell_cmd,
+                subagent_name=subagent_name,
+                llm_streaming=llm_streaming,
+                git_active=git_active,
+                cpu_pct=cpu_pct,
+                tool_age=tool_age,
             )
             if bubble is not None:
                 with self._lock:
