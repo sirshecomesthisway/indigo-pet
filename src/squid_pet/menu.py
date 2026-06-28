@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import objc
 from AppKit import (
-    NSMenu, NSMenuItem, NSApp, NSEvent, NSStatusBar,
+    NSMenu, NSMenuItem, NSApp, NSEvent, NSStatusBar, NSImage,
     NSVariableStatusItemLength, NSAlert, NSAlertFirstButtonReturn,
     NSAlertSecondButtonReturn,
 )
@@ -47,6 +47,34 @@ EMO_GHOST = "👻"
 EMO_SPARKLE = "✨"
 
 DEV_MODE = bool(os.environ.get("SQUID_DEV"))
+
+# Menu bar icon assets: use Squid's actual sprite (cuter than the
+# system squid emoji which renders pink/blobby in the menu bar).
+import pathlib as _pl
+SPRITES_DIR = _pl.Path(__file__).parent / "frontend" / "sprites"
+SPRITE_VISIBLE = SPRITES_DIR / "idle.png"      # happy face
+SPRITE_HIDDEN  = SPRITES_DIR / "sleeping.png"  # she's away
+MENU_BAR_ICON_SIZE = (20, 20)  # px, fits 22px menu bar with breathing room
+
+_image_cache: dict = {}
+
+def _load_sprite_image(path: _pl.Path):
+    """Load + resize a sprite into an NSImage suitable for the menu
+    bar. Cached so we only hit disk once per icon."""
+    key = str(path)
+    if key in _image_cache:
+        return _image_cache[key]
+    try:
+        img = NSImage.alloc().initWithContentsOfFile_(str(path))
+        if img is not None:
+            img.setSize_(MENU_BAR_ICON_SIZE)
+            # Full color, not auto-tinted to monochrome (template mode)
+            img.setTemplate_(False)
+            _image_cache[key] = img
+        return img
+    except Exception as e:
+        print(f"[squid-pet] sprite load failed ({path.name}): {e}", flush=True)
+        return None
 
 
 class _MenuTarget(NSObject):
@@ -336,25 +364,27 @@ class SquidMenu:
             print(f"[squid-pet] status item install failed: {e}", flush=True)
 
     def refresh_status_icon(self):
-        """Set the menu bar icon to reflect current state. Called when
-        hide / mute toggles. Priority: hidden > muted > visible."""
+        """Menu bar icon = Squid's actual sprite (cuter than emoji).
+        idle.png when visible, sleeping.png when hidden. Mute does
+        not change the icon (menu label already shows muted state)
+        because three sprite swaps in the menu bar would be visually
+        noisy. Fallback to emoji glyph if sprite loading fails."""
         if self._status_item is None:
             return
         try:
             hidden = bool(getattr(self.api, "_hidden", False))
-            try:
-                muted = bool(self.api.is_muted())
-            except Exception:
-                muted = False
-            if hidden:
-                glyph = EMO_ZZZ
-            elif muted:
-                glyph = EMO_MUTE
-            else:
-                glyph = EMO_SQUID
+            sprite_path = SPRITE_HIDDEN if hidden else SPRITE_VISIBLE
+            img = _load_sprite_image(sprite_path)
             btn = self._status_item.button()
-            if btn is not None:
-                btn.setTitle_(glyph)
+            if btn is None:
+                return
+            if img is not None:
+                btn.setImage_(img)
+                btn.setTitle_("")  # clear any previous text glyph
+            else:
+                # Fallback to emoji if sprite load failed
+                btn.setImage_(None)
+                btn.setTitle_(EMO_ZZZ if hidden else EMO_SQUID)
         except Exception as e:
             print(f"[squid-pet] refresh_status_icon failed: {e}", flush=True)
 
