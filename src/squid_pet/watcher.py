@@ -98,6 +98,10 @@ class PetState:
     message: str = ""             # short caption shown under the pet
     concern_reason: str = ""      # short headline of why concerned (for tooltip)
     concern_severity: str = ""    # "transient" (network) or "hard" (code crash)
+    # Fix C (2026-06-28): short human-readable explanation of WHY this
+    # state fired this tick. Surfaced in `squid why` + optionally used
+    # as the bubble.
+    state_reason: str = ""
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -621,6 +625,7 @@ class StateMachine:
                       flush=True)
             if now >= self._force_awake_until:
                 st.state = "sleeping"
+                st.state_reason = f"idle {int(idle // 60)}m"
                 st.message = f"💤 idle {int(idle // 60)}m"
                 # Stale: user is away, clear any leftover busy edge so we
                 # don't fire a celebrate as soon as they come back.
@@ -644,12 +649,14 @@ class StateMachine:
         # ── 2. CELEBRATING ── sticky post-CPU-drop, or any detector says so
         if now < self.celebrate_until or tpa_celebrating or other_celebrating():
             st.state = "celebrating"
+            st.state_reason = "post-busy: done" if tpa_edge_fired else "celebrating"
             st.message = "🎉 done!" if tpa_edge_fired else "🎉 nice!"
             return st
 
         # ── 3. GROOVING ── TPA subagent active, or any detector says so
         if tpa_grooving or other_grooving():
             st.state = "grooving"
+            st.state_reason = "subagent active" if tpa_grooving else "creative burst"
             st.message = "🤸 subagent" if tpa_grooving else "🤸 creative burst"
             return st
 
@@ -664,6 +671,7 @@ class StateMachine:
                     st.state = "concerned"
                     st.concern_reason = reason or " recent error"
                     st.concern_severity = severity or "hard"
+                    st.state_reason = f"error: {(reason or 'recent error')[:40]}"
                     st.message = st.concern_reason
                     return st
             # post-e2e-polish 2026-06-27 Fix 6+7: config-driven windows
@@ -678,16 +686,19 @@ class StateMachine:
             if shell_active:
                 self.working_hold_until = now + _work_hold
                 st.state = "working"
+                st.state_reason = "shell child active"
                 st.message = "🛠️ running shell"
                 return st
             if sustained_busy and tool_activity_age < _tool_win:
                 self.working_hold_until = now + _work_hold
                 st.state = "working"
+                st.state_reason = f"writing (cpu {int(cpu)}%, tool {int(tool_activity_age)}s ago)"
                 st.message = f"⌨️ writing ({int(cpu)}% cpu)"
                 return st
             # 4b-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy
             if now < self.working_hold_until and (sustained_busy or cpu > 5):
                 st.state = "working"
+                st.state_reason = f"working hold ({int(self.working_hold_until - now)}s left)"
                 st.message = "✨ working"
                 return st
             # 4c-prime. REAL THINKING (Fix 10b 2026-06-27) -- TPA's sitecustomize
@@ -697,6 +708,7 @@ class StateMachine:
             # executing, that's a more useful state than 'thinking'.
             if llm_streaming:
                 st.state = "thinking"
+                st.state_reason = "llm streaming"
                 st.message = "🤔 thinking"
                 return st
             # 4c. THINKING (FALLBACK) -- CPU busy heuristic for TPA installs
@@ -704,6 +716,7 @@ class StateMachine:
             # false positives even with the 20% threshold from Fix 10.
             if sustained_busy:
                 st.state = "thinking"
+                st.state_reason = f"cpu busy proxy ({int(cpu)}%)"
                 st.message = "🤔 thinking"
                 return st
             # 4d. Post-busy celebrate -- TPADetector handles
@@ -713,11 +726,13 @@ class StateMachine:
         # ── 5. NON-TPA DETECTORS -- generic busy fallback ──
         if other_busy():
             st.state = "thinking"
+            st.state_reason = "non-cp detector busy"
             st.message = "🤔 working"
             return st
 
         # ── 6. Default -- idle/watching ──
         st.state = "idle"
+        st.state_reason = "cp idle, listening" if running else "no signals"
         st.message = "👂 listening" if running else "👀 watching"
         return st
 

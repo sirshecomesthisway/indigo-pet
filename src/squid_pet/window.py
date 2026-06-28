@@ -588,6 +588,7 @@ class PetApi:
                 git_active=git_active,
                 cpu_pct=cpu_pct,
                 tool_age=tool_age,
+                state_reason=getattr(state, "state_reason", "") or "",
             )
             if bubble is not None:
                 with self._lock:

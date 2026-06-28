@@ -434,6 +434,10 @@ class Observer:
         git_active: bool = False,
         cpu_pct: float = 0.0,
         tool_age: float = float("inf"),
+        # Fix C (2026-06-28): state machine's "why" string. When non-empty
+        # AND starts with an interesting prefix, 50% chance Squid uses it
+        # verbatim as the bubble (the "mix mood + reason" path Pink chose).
+        state_reason: str = "",
     ) -> Optional[str]:
         """Called when the StateMachine reports a transition.
 
@@ -471,6 +475,19 @@ class Observer:
                 self._async_enrich(trigger_key, context, is_specific=True)
                 return specific
 
+        # Fix C (2026-06-28): "mix mood + reason" path. If state_reason
+        # starts with one of these interesting prefixes, 50% chance
+        # use it AS the bubble. The other 50% falls through to the
+        # rule-based emote pick for personality variety.
+        REASON_PREFIXES = ("shell ", "subagent", "llm streaming",
+                           "error:", "writing", "post-busy")
+        if (state_reason
+                and state_reason.lower().startswith(REASON_PREFIXES)
+                and random.random() < 0.5):
+            rb = state_reason.lower()
+            if len(rb) > MAX_BUBBLE_CHARS:
+                rb = rb[:MAX_BUBBLE_CHARS - 3].rstrip() + "..."
+            return rb
         rule_bubble = self._pick(trigger_key)
         # Background LLM enrich: may overwrite the rule-based line if it
         # arrives in time. Context bundles all the signals we have.

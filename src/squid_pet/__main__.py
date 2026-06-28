@@ -195,6 +195,11 @@ def _print_why_human(report: dict) -> None:
     print(f"  idle (HID):     {st['idle_seconds']}s")
     print(f"  agent_idle:        {st['agent_idle_seconds']}s")
     print(f"  TPA running:     {st['tpa_running']}")
+    # Fix C (2026-06-28): show state_reason -- the one-line answer to
+    # "why is she in this state right now?" without decoding CPU and
+    # detector booleans by hand.
+    if st.get("state_reason"):
+        print(f"  WHY:            {st['state_reason']}")
     if st["concern_reason"]:
         print(f"  concern:        {st['concern_reason']} ({st['concern_severity']})")
     print()
