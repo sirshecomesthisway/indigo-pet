@@ -52,9 +52,9 @@ DEV_MODE = bool(os.environ.get("SQUID_DEV"))
 # system squid emoji which renders pink/blobby in the menu bar).
 import pathlib as _pl
 SPRITES_DIR = _pl.Path(__file__).parent / "frontend" / "sprites"
-SPRITE_VISIBLE = SPRITES_DIR / "idle.png"      # happy face
-SPRITE_HIDDEN  = SPRITES_DIR / "sleeping.png"  # she's away
-MENU_BAR_ICON_SIZE = (20, 20)  # px, fits 22px menu bar with breathing room
+SPRITE_VISIBLE = SPRITES_DIR / "idle_menubar.png"      # cropped, fills the bar
+SPRITE_HIDDEN  = SPRITES_DIR / "sleeping_menubar.png"  # cropped, fills the bar
+MENU_BAR_ICON_SIZE = (22, 22)  # px, full macOS menu bar height (Squid fills it)
 
 _image_cache: dict = {}
 
