@@ -45,6 +45,7 @@ EMO_RELOAD = "↻"
 EMO_XMARK = "❌"
 EMO_GHOST = "👻"
 EMO_SPARKLE = "✨"
+EMO_BELL = "\U0001F514"
 
 DEV_MODE = bool(os.environ.get("SQUID_DEV"))
 
@@ -116,6 +117,7 @@ class _MenuTarget(NSObject):
     def resumeWander_(self, s):  self.api._menu_resume_wander()
     def toggleMute_(self, s): self.api._menu_toggle_mute()
     def toggleLLMBubbles_(self, s): self.api._menu_toggle_llm_bubbles()
+    def toggleApprovalAlert_(self, s): self.api._menu_toggle_approval_alert()
 
     # Easter eggs
     def sprintPerimeter_(self, s): self.api._menu_sprint_perimeter()
@@ -234,6 +236,15 @@ def _populate_menu(menu, target, api) -> None:
         else f"{EMO_SPARKLE}  LLM bubbles (off)"
     )
     _add(bub, llm_label, target, "toggleLLMBubbles:", checked=llm_on)
+    try:
+        alert_on = api.is_approval_alert_enabled()
+    except Exception:
+        alert_on = True
+    alert_label = (
+        f"{EMO_BELL}  'Your turn' alerts (on)" if alert_on
+        else f"{EMO_BELL}  'Your turn' alerts (off)"
+    )
+    _add(bub, alert_label, target, "toggleApprovalAlert:", checked=alert_on)
     bub_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         f"{EMO_SPARKLE}  Bubbles", None, ""
     )

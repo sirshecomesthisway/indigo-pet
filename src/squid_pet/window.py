@@ -924,6 +924,16 @@ class PetApi:
             self._pending_bubble = msg
         print(f"[squid-pet] llm_bubbles toggled -> {new_state}", flush=True)
 
+    def is_approval_alert_enabled(self) -> bool:
+        from . import config as _cfg
+        return _cfg.approval_alert_enabled()
+
+    def _menu_toggle_approval_alert(self) -> None:
+        """Toggle the 'your turn' notification + sticky bubble."""
+        from . import config as _cfg
+        new_val = _cfg.toggle_approval_alert()
+        self._emit_hint("🔔 alerts ON" if new_val else "🔔 alerts OFF")
+
     def is_muted(self) -> bool:
         """Exposed so menu can show checkbox state."""
         return config.is_muted()

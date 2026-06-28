@@ -103,3 +103,15 @@ def toggle_llm_bubbles() -> bool:
     new_val = not llm_bubbles_enabled()
     set("llm_bubbles", new_val)
     return new_val
+
+
+def approval_alert_enabled() -> bool:
+    """Approval-needed notification + sticky bubble (default ON)."""
+    return bool(get("approval_alert_enabled", True))
+
+
+def toggle_approval_alert() -> bool:
+    """Flip the approval-alert flag. Returns new value."""
+    new = not approval_alert_enabled()
+    set_("approval_alert_enabled", new)
+    return new

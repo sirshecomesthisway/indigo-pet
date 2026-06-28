@@ -71,6 +71,37 @@
     @keyframes concerned-tremble { 0%,100%{transform:translate(-50%,-50%) translate(0,0);} 10%,30%,50%,70%,90%{transform:translate(-50%,-50%) translate(-1.5px,1.5px);} 20%,40%,60%,80%{transform:translate(-50%,-50%) translate(1.5px,-1.5px);} }
     .pet[data-state="concerned"] { animation: concerned-tremble 0.25s linear infinite; }
 
+    /* ── APPROVAL-NEEDED ── TPA waiting on user input. Big bouncy jump
+       PLUS golden glow ring (drop-shadow follows alpha of idle.png so
+       it hugs her silhouette, no ugly square box). Combined animation
+       so jump and glow stay in phase. */
+    @keyframes approval-bounce-glow {
+      0%, 100% {
+        transform: translate(-50%,-50%) translateY(0) scale(1);
+        filter: drop-shadow(0 0 6px rgba(255,200,40,0.55))
+                drop-shadow(0 0 12px rgba(255,180,20,0.35));
+      }
+      30% {
+        transform: translate(-50%,-50%) translateY(-22px) scale(1.10);
+        filter: drop-shadow(0 0 16px rgba(255,210,60,0.95))
+                drop-shadow(0 0 28px rgba(255,180,20,0.70));
+      }
+      55% {
+        transform: translate(-50%,-50%) translateY(0) scale(1);
+        filter: drop-shadow(0 0 6px rgba(255,200,40,0.55))
+                drop-shadow(0 0 12px rgba(255,180,20,0.35));
+      }
+      70% {
+        transform: translate(-50%,-50%) translateY(-10px) scale(1.05);
+        filter: drop-shadow(0 0 12px rgba(255,210,60,0.80))
+                drop-shadow(0 0 20px rgba(255,180,20,0.55));
+      }
+    }
+    .pet[data-state="approval_needed"] {
+      animation: approval-bounce-glow 1.1s ease-out infinite;
+    }
+
+
     #hint {
       position: fixed; bottom: 4px; left: 50%;
       transform: translateX(-50%);
@@ -360,7 +391,18 @@
     let dragMovedPx     = 0;        // total movement during drag
     let clickStartTime  = 0;
 
-    function spriteUrl(state) { return `sprites/${state}.png`; }
+    function spriteUrl(state) {
+      // Backend sends arbitrary classifier states (thinking, working,
+      // approval_needed, etc.). Most don't have matching PNGs -- only
+      // a small allowlist does. Anything unknown falls back to idle.png
+      // (Pink's lock: visible sprite is always idle unless mood layer
+      // owns it). Pre-existing bug: backend state "approval_needed"
+      // would 404 on sprites/approval_needed.png and show macOS's
+      // broken-image placeholder.
+      const VALID = new Set(["idle","drowsy","stretch","sleeping",
+                             "look-left","look-right","heart","blink"]);
+      return VALID.has(state) ? `sprites/${state}.png` : `sprites/idle.png`;
+    }
 
     function setState(state, force = false) {
       if (!state) return;

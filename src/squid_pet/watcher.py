@@ -486,6 +486,11 @@ class StateMachine:
         # Auto-wake bookkeeping
         self._sleeping_since: float = 0.0
         self._force_awake_until: float = 0.0
+        # v0.2.1 -- "your turn" alert latch. Fires once per busy-to-idle
+        # cycle when TPA is still running but idle past the threshold
+        # (= probably waiting for user input).
+        self._approval_alert_fired: bool = False
+        self._approval_alert_at: float = 0.0
 
 
     # --- Back-compat proxies to the TPADetector state. -----------
@@ -532,7 +537,44 @@ class StateMachine:
         else:
             st.agent_idle_seconds = 0.0
             self._agent_idle_since = 0.0
+            # Reset alert latch when TPA goes active again
+            self._approval_alert_fired = False
         self._last_state = st.state
+
+        # ── APPROVAL-NEEDED ALERT ──────────────────────────────────
+        # TPA still running but state machine idle past threshold =
+        # probably waiting for user input. Fire banner + sticky bubble.
+        tpa_running_now = (self._tpa_detector.tpa_running
+                          if self._tpa_detector else False)
+        if tpa_running_now and st.agent_idle_seconds > 0:
+            try:
+                from . import config as _cfg
+                _enabled = bool(_cfg.get("approval_alert_enabled", True))
+                _threshold = float(_cfg.get("approval_alert_threshold_sec", 10.0))
+                _sound = str(_cfg.get("approval_alert_sound", "Glass") or "")
+                _text = str(_cfg.get("approval_alert_text", "your turn"))
+            except Exception:
+                _enabled, _threshold, _sound, _text = True, 10.0, "Glass", "your turn"
+
+            if _enabled and st.agent_idle_seconds >= _threshold:
+                # Sticky bubble + sticky state for frontend animation.
+                # "approval_needed" is NOT in _AGENT_ACTIVE_STATES so the
+                # idle clock keeps ticking, which is what we want.
+                st.state = "approval_needed"
+                st.message = _text
+                st.state_reason = "approval needed (" + str(int(st.agent_idle_seconds)) + "s idle)"
+                # Fire OS notification ONCE per idle cycle
+                if not self._approval_alert_fired:
+                    self._approval_alert_fired = True
+                    self._approval_alert_at = now
+                    # _fire_approval_notification(_text, _sound)  # disabled 2026-06-28 per Pink: visual on Squid is enough
+                    _sound_label = _sound if _sound else "off"
+                    print(
+                        "[squid-pet] approval alert fired "
+                        "(agent_idle=" + str(st.agent_idle_seconds) + "s, "
+                        "sound=" + _sound_label + ")",
+                        flush=True,
+                    )
         return st
 
     def _other_detectors(self):
@@ -740,6 +782,34 @@ class StateMachine:
 # ────────────────────────────────────────────────────────────────────────
 # Writer loop
 # ────────────────────────────────────────────────────────────────────────
+
+
+def _fire_approval_notification(text: str, sound: str) -> None:
+    """Fire a macOS notification banner in a background thread.
+
+    osascript is ~50ms so we do not block the watcher loop. Silent on
+    failure (notification is supplementary; the bubble is the primary
+    signal).
+    """
+    import subprocess, threading
+
+    def _go():
+        try:
+            title = "Squid"
+            body = "TPA: " + text
+            sound_clause = ' sound name "' + sound + '"' if sound else ""
+            script = 'display notification "' + body + '" with title "' + title + '"' + sound_clause
+            subprocess.run(
+                ["osascript", "-e", script],
+                timeout=3,
+                capture_output=True,
+            )
+        except Exception as e:
+            print("[squid-pet] notification fire failed: " + str(e), flush=True)
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
 def write_state(state: PetState) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".json.tmp")

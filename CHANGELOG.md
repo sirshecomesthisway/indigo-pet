@@ -1,3 +1,57 @@
+## [0.2.1] - 2026-06-28
+
+The "tap me on the shoulder" release. Single-feature hotfix on top of
+0.2.0 -- when TPA stops mid-session waiting for user input, you
+were not noticing because Squid is small and TPA is not in focus. Now
+Squid speaks up.
+
+### Added
+- **Approval-needed alert** -- when `tpa_running` is True AND
+  the state machine sits idle for >= 10 seconds (default threshold),
+  Squid signals you visually (silent, no OS-level interruptions):
+  1. Sticky bubble overrides the normal message and reads "your turn"
+     until TPA transitions back to a busy state
+  2. Squid jumps in place every 1.1s with a pulsing golden drop-shadow
+     glow that hugs her silhouette (new CSS state "approval_needed"
+     maps to "approval-bounce-glow" keyframe; drop-shadow respects
+     alpha so no ugly square box)
+  
+  Latched per idle session -- one signal per busy->idle cycle, no
+  re-firing during long pondering pauses. macOS notification banner
+  + Glass chime helper exists but is disabled by default (Pink's
+  preference: do not interrupt Zoom/meetings).
+
+- **Bubbles submenu toggle** -- "'Your turn' alerts (on/off)" with a
+  bell icon. Default ON. Persists to settings.json.
+
+- **New config keys** (all optional, sensible defaults):
+  ```
+  approval_alert_enabled        bool   true
+  approval_alert_threshold_sec  float  10.0
+  approval_alert_sound          str    "Glass"   ("" = silent)
+  approval_alert_text           str    "your turn"
+  ```
+
+- **`squid why` enrichment** -- when alert is active, the WHY line
+  reads "approval needed (NNs idle)" instead of the previous
+  "cp idle, listening".
+
+
+### Fixed
+- **Broken-sprite when backend sent unknown states** (pre-existing
+  latent bug, triggered by the new "approval_needed" state): the
+  frontend's `spriteUrl(state)` blindly returned `sprites/${state}.png`,
+  so any backend state without a matching PNG (now including
+  approval_needed) loaded macOS's broken-image placeholder. Fixed with
+  a whitelist that falls back to `idle.png` for unknown states.
+
+### Internal
+- New `_fire_approval_notification(text, sound)` helper in watcher.py
+  runs osascript in a background thread (~50ms cost) so the watcher
+  loop never blocks on the notification subprocess.
+- New `_approval_alert_fired` latch on StateMachine prevents re-fire
+  during a single idle session.
+
 # Changelog
 
 All notable changes to squid-pet. Follows [Keep a Changelog](https://keepachangelog.com).
