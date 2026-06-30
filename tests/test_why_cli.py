@@ -57,6 +57,42 @@ def test_why_json_is_valid_json_with_expected_shape():
     assert len(report["verdict"]) > 0
 
 
+def test_why_human_surfaces_approval_alert_toggle():
+    """Pink-2026-06-29 silent-kill-switch fix: --why MUST surface whether
+    'Your turn' alerts are enabled. We learned the hard way that a False
+    flag in config.json silently disables every approval_needed override
+    in the cascade -- with no visible cue. --why is the diagnostic of last
+    resort and must show this."""
+    result = _run("--why")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    out = result.stdout.lower()
+    assert "approval alert" in out, (
+        "--why output must mention 'approval alert' status. "
+        "Got:\n" + result.stdout
+    )
+    # Should be marked as on/off so Pink can spot the kill switch instantly
+    assert ("on" in out) or ("off" in out)
+
+
+def test_why_json_includes_approval_alert_fields():
+    """--why-json must expose the approval-alert config + live per-proc idle
+    so scripts/agents can diagnose 'why didn't Squid wave her flag?' without
+    reading config.json directly."""
+    result = _run("--why-json")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    report = json.loads(result.stdout)
+    assert "approval_alert" in report, (
+        "--why-json must include a top-level 'approval_alert' block. "
+        "Got keys: " + str(list(report.keys()))
+    )
+    aa = report["approval_alert"]
+    for k in ("enabled", "threshold_sec", "per_proc_max_idle_sec"):
+        assert k in aa, f"approval_alert.{k} missing; got {aa}"
+    assert isinstance(aa["enabled"], bool)
+    assert isinstance(aa["threshold_sec"], (int, float))
+    assert isinstance(aa["per_proc_max_idle_sec"], (int, float))
+
+
 def test_why_help_advertises_both_flags():
     result = _run("--help")
     assert result.returncode == 0

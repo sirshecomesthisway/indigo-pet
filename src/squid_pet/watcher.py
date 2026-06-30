@@ -177,8 +177,56 @@ def aggregate_cpu(procs: list[psutil.Process]) -> float:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Log timestamp helpers
+# Per-process idle tracking for multi-TPA approval detection
 # ────────────────────────────────────────────────────────────────────────
+# When Pink has multiple TPA consoles open, the aggregate state machine
+# masks per-process idleness: if TPA-A is working but TPA-B is waiting for
+# approval, aggregate CPU stays high, agent_idle_seconds=0, and approval
+# never fires. Track each PID's last-busy timestamp so approval can fire
+# whenever ANY single TPA has been quiet past threshold.
+_PER_PID_LAST_BUSY: dict[int, float] = {}
+_PER_PID_BUSY_CPU_THRESHOLD = 5.0  # %, per-process (lower than aggregate)
+
+
+def per_process_max_idle_seconds(procs: list[psutil.Process]) -> float:
+    """Maximum idle duration across the given TPA processes.
+
+    Each PID is considered "busy this tick" if its individual CPU%
+    crosses _PER_PID_BUSY_CPU_THRESHOLD; otherwise its idle timer
+    advances. Returns the LONGEST idle duration across all processes
+    (so if ANY TPA has been quiet for 12s, this returns >=12). Dead
+    PIDs are evicted from the cache.
+    """
+    now = time.time()
+    live_pids: set[int] = set()
+    max_idle = 0.0
+    for p in procs:
+        try:
+            pid = p.pid
+            cpu = p.cpu_percent(interval=None)
+            live_pids.add(pid)
+            if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
+                _PER_PID_LAST_BUSY[pid] = now
+            else:
+                # First time seeing this PID idle? Treat "birth" as last-busy
+                # so brand-new processes don't immediately count as idle for
+                # eternity.
+                _PER_PID_LAST_BUSY.setdefault(pid, now)
+                idle = now - _PER_PID_LAST_BUSY[pid]
+                if idle > max_idle:
+                    max_idle = idle
+        except (psutil.NoSuchProcess, psutil.AccessDenied,
+                AttributeError, TypeError):
+            # AttributeError/TypeError: test mocks sometimes inject non-Process
+            # sentinels (strings, ints). Skip them rather than crashing the
+            # entire watcher tick.
+            continue
+    # Evict dead PIDs so the dict doesn't grow forever
+    dead = set(_PER_PID_LAST_BUSY.keys()) - live_pids
+    for pid in dead:
+        del _PER_PID_LAST_BUSY[pid]
+    return round(max_idle, 1)
+
 def file_age_sec(p: Path) -> float:
     """Seconds since file was modified. Returns large number if missing."""
     try:
@@ -544,9 +592,23 @@ class StateMachine:
         # ── APPROVAL-NEEDED ALERT ──────────────────────────────────
         # TPA still running but state machine idle past threshold =
         # probably waiting for user input. Fire banner + sticky bubble.
+        #
+        # 2026-06-29 (Pink): use PER-PROCESS idle, not aggregate. With
+        # multiple TPA consoles open, aggregate agent_idle_seconds stays 0 as
+        # long as ANY TPA is working -- which masks the one that's actually
+        # waiting for approval. per_process_max_idle_seconds returns the
+        # LONGEST idle time across all running CPs, so we fire whenever
+        # any single console has been quiet past threshold regardless of
+        # what the others are doing. attention_needed takes prime above
+        # all other rhythms per Pink's design.
         tpa_running_now = (self._tpa_detector.tpa_running
                           if self._tpa_detector else False)
-        if tpa_running_now and st.agent_idle_seconds > 0:
+        try:
+            procs = find_tpa_processes()
+        except Exception:
+            procs = []
+        per_proc_idle = per_process_max_idle_seconds(procs) if procs else 0.0
+        if tpa_running_now and per_proc_idle > 0:
             try:
                 from . import config as _cfg
                 _enabled = bool(_cfg.get("approval_alert_enabled", True))
@@ -556,25 +618,42 @@ class StateMachine:
             except Exception:
                 _enabled, _threshold, _sound, _text = True, 10.0, "Glass", "your turn"
 
-            if _enabled and st.agent_idle_seconds >= _threshold:
-                # Sticky bubble + sticky state for frontend animation.
-                # "approval_needed" is NOT in _AGENT_ACTIVE_STATES so the
-                # idle clock keeps ticking, which is what we want.
+            if _enabled and per_proc_idle >= _threshold:
+                # OVERRIDE whatever the cascade picked. approval_needed
+                # is highest priority -- it interrupts working/thinking/etc.
+                # because it's the only state that requires Pink to ACT.
                 st.state = "approval_needed"
                 st.message = _text
-                st.state_reason = "approval needed (" + str(int(st.agent_idle_seconds)) + "s idle)"
+                st.state_reason = (
+                    "approval needed (" + str(int(per_proc_idle)) + "s per-proc idle)"
+                )
                 # Fire OS notification ONCE per idle cycle
                 if not self._approval_alert_fired:
                     self._approval_alert_fired = True
                     self._approval_alert_at = now
-                    # _fire_approval_notification(_text, _sound)  # disabled 2026-06-28 per Pink: visual on Squid is enough
                     _sound_label = _sound if _sound else "off"
                     print(
                         "[squid-pet] approval alert fired "
-                        "(agent_idle=" + str(st.agent_idle_seconds) + "s, "
+                        "(per_proc_idle=" + str(per_proc_idle) + "s, "
                         "sound=" + _sound_label + ")",
                         flush=True,
                     )
+        # ── FORCE-STATE OVERRIDE (test/demo) ─────────────────────────
+        # If ~/.squid-pet/force_state exists with a non-empty state name,
+        # use it directly. Lets Pink test any state visually or take demo
+        # screenshots without waiting for natural triggers. Remove the
+        # file (or write empty) to resume normal computation. Highest
+        # priority -- overrides every other branch including approval.
+        try:
+            from pathlib import Path as _P
+            _force_file = _P.home() / ".squid-pet" / "force_state"
+            if _force_file.exists():
+                _forced = _force_file.read_text().strip()
+                if _forced:
+                    st.state = _forced
+                    st.state_reason = "force_state override (" + _forced + ")"
+        except Exception:
+            pass
         return st
 
     def _other_detectors(self):

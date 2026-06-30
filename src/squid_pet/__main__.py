@@ -147,10 +147,31 @@ def _run_why(json_output: bool = False) -> None:
         entry["fired_grooving"] = fired_groov
         per_detector.append(entry)
 
+    # Pink-2026-06-29: surface the approval-alert kill switch in --why.
+    # If approval_alert_enabled is False, no per_proc_idle ever triggers a
+    # flag-wave -- and the user has no way to discover this without grepping
+    # config.json. So plumb it through here.
+    from . import config as _cfg
+    try:
+        procs = watcher.find_tpa_processes()
+    except Exception:
+        procs = []
+    # Prime per-PID CPU sampling so the second call gives a real reading.
+    _ = watcher.per_process_max_idle_seconds(procs) if procs else 0.0
+    _t.sleep(0.3)
+    per_proc_idle = (watcher.per_process_max_idle_seconds(procs)
+                     if procs else 0.0)
+    approval_alert = {
+        "enabled": bool(_cfg.get("approval_alert_enabled", True)),
+        "threshold_sec": float(_cfg.get("approval_alert_threshold_sec", 10.0)),
+        "per_proc_max_idle_sec": per_proc_idle,
+    }
+
     report = {
         "state": asdict(st),
         "detectors": per_detector,
-        "verdict": _explain_verdict(st, per_detector),
+        "approval_alert": approval_alert,
+        "verdict": _explain_verdict(st, per_detector, approval_alert),
     }
     if json_output:
         print(_j.dumps(report, indent=2, default=str))
@@ -158,7 +179,7 @@ def _run_why(json_output: bool = False) -> None:
         _print_why_human(report)
 
 
-def _explain_verdict(state, per_detector) -> str:
+def _explain_verdict(state, per_detector, approval_alert=None) -> str:
     """One-line plain-English explanation of which detector(s) caused the
     current state. Used by the --why CLI."""
     fired = [d for d in per_detector
@@ -179,8 +200,19 @@ def _explain_verdict(state, per_detector) -> str:
             kinds.append("busy")
         triggers.append(d["name"] + "=" + "+".join(kinds))
     if triggers:
-        return "state=" + state.state + " because " + ", ".join(triggers)
-    return "state=" + state.state
+        base = "state=" + state.state + " because " + ", ".join(triggers)
+    else:
+        base = "state=" + state.state
+    # If the user has disabled the approval-alert toggle AND a TPA is idle
+    # past threshold, call it out so they know WHY no flag is waving.
+    if approval_alert and not approval_alert.get("enabled", True):
+        ppi = approval_alert.get("per_proc_max_idle_sec", 0.0)
+        thr = approval_alert.get("threshold_sec", 10.0)
+        if ppi >= thr:
+            base += (" -- NOTE: approval_alert is OFF; flag-wave would"
+                     " otherwise be firing (per_proc_idle="
+                     + str(ppi) + "s >= " + str(thr) + "s)")
+    return base
 
 
 def _print_why_human(report: dict) -> None:
@@ -221,6 +253,18 @@ def _print_why_human(report: dict) -> None:
                 continue
             print(f"      {k}: {v}")
     print()
+    # Pink-2026-06-29: surface the approval-alert kill switch so the user
+    # can spot "why isn't Squid waving her flag?" without grepping config.
+    aa = report.get("approval_alert") or {}
+    if aa:
+        toggle = "ON" if aa["enabled"] else f"{YEL}OFF{RST}"
+        print(f"APPROVAL ALERT: {toggle}  "
+              f"(threshold={aa['threshold_sec']}s, "
+              f"per_proc_max_idle={aa['per_proc_max_idle_sec']}s)")
+        if not aa["enabled"]:
+            print(f"  {YEL}!! alerts are OFF -- flag-wave override disabled.{RST}")
+            print("     Re-enable via tray: Bubbles -> 'Your turn' alerts.")
+        print()
     print("VERDICT:", report["verdict"])
 
 
