@@ -62,19 +62,41 @@ override. The state SHALL be paired with a human-readable message
 The watcher SHALL provide a fallback trigger for TPA versions
 that do not write the awaiting-input flag. The fallback SHALL use the
 `per_process_pending_approval_idle()` function, which returns the
-maximum idle duration across TPA processes that have BOTH (a) been
-observed busy (CPU >= 5%) at least once in the watcher's lifetime AND
-(b) been idle for no more than 120 seconds (snooze cap). The fallback
-SHALL fire `approval_needed` when the returned idle time is at or above
-`approval_alert_threshold_sec` (default 10.0) AND the direct signal is
-absent.
+maximum idle duration across TPA processes that satisfy ALL of:
+
+1. The PID has been observed busy (CPU >= 5%) for at least 3 consecutive
+   ticks (sustained-busy gate; filters Python GC and prompt_toolkit
+   redraw blips). Any single idle tick resets the streak.
+2. The PID has NOT been observed writing its awaiting-input flag at any
+   point in the watcher's lifetime. Once a PID writes the flag, the
+   watcher trusts the direct signal exclusively for that PID and SHALL
+   skip the fallback for it.
+3. The PID is currently idle (CPU < 5%).
+4. The idle duration is no greater than 120 seconds (snooze cap).
+
+The fallback SHALL fire `approval_needed` when the returned idle time is
+at or above `approval_alert_threshold_sec` (default 10.0) AND the
+direct signal is absent.
 
 #### Scenario: Fallback fires when TPA busy then idle
 - **WHEN** no awaiting-input flag is present
-- **AND** at least one TPA process was observed busy and has been idle for 15s
+- **AND** at least one TPA process was observed busy for 3+ consecutive ticks and has been idle for 15s
 - **AND** `approval_alert_enabled` is `true`
 - **THEN** `state` is `approval_needed`
 - **AND** `state_reason` ends with `"per-proc idle, fallback)"`
+
+#### Scenario: Single busy tick does not arm the fallback
+- **WHEN** a TPA process has exactly one tick above the CPU threshold and then goes idle
+- **THEN** the fallback does NOT fire (the streak is below the sustained-busy gate)
+
+#### Scenario: Interrupted streak does not arm the fallback
+- **WHEN** a TPA process has 2 busy ticks, 1 idle tick, then 1 more busy tick
+- **THEN** the streak resets at the idle tick and the fallback does NOT fire
+
+#### Scenario: Patched TPA is skipped by fallback
+- **WHEN** a TPA process has been observed writing its `awaiting_input/<pid>` flag at any point in the watcher's lifetime
+- **AND** later the flag is absent and the TPA's CPU pattern would otherwise qualify it for the fallback
+- **THEN** the fallback does NOT fire for that PID (direct signal is exclusive)
 
 #### Scenario: Never-busy TPA does not trigger fallback
 - **WHEN** no awaiting-input flag is present
@@ -85,10 +107,10 @@ absent.
 - **WHEN** no awaiting-input flag is present
 - **AND** a TPA process has been idle for 240 seconds (past the 120s snooze cap)
 - **THEN** the fallback does NOT fire for that PID
-- **AND** it re-arms only if the PID next transitions busy then idle
+- **AND** it re-arms only if the PID next transitions through 3 sustained busy ticks then idle
 
 #### Scenario: Fallback retriggers after re-busy cycle
-- **WHEN** a snoozed PID is observed busy (CPU >= 5%) at any subsequent tick
+- **WHEN** a snoozed PID is observed busy for 3 consecutive ticks at any subsequent ticks
 - **AND** then goes idle past the threshold
 - **THEN** the fallback fires `approval_needed` with the fresh idle time
 

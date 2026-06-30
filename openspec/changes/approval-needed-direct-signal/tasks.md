@@ -22,6 +22,8 @@
 - [x] 2.4 Switch `StateMachine.compute()` from `per_process_max_idle_seconds` to `per_process_pending_approval_idle`
 - [x] 2.5 Keep `per_process_max_idle_seconds` as a thin compatibility shim (not deleted, but unused by the state machine)
 - [x] 2.6 Evict dead PIDs from both `_PER_PID_LAST_BUSY` and `_PER_PID_EVER_BUSY` at each call
+- [x] 2.7 Add `_PER_PID_BUSY_STREAK` + `_PER_PID_SUSTAINED_BUSY_TICKS=3` so a single CPU blip (GC, redraw) does not promote a PID into `_PER_PID_EVER_BUSY` (sustained-busy gate)
+- [x] 2.8 Add `_PER_PID_EVER_WROTE_FLAG` populated by `tpa_pids_awaiting_input()`; the fallback SHALL skip any PID in this set (patched-TPA short-circuit) and drop entries on dead-PID eviction
 
 ## 3. Squid-side: kill-switch visibility
 
@@ -45,7 +47,10 @@
 - [x] 5.2 Create `tests/test_per_proc_approval.py` with 6 tests (never-busy filter, busy-then-idle fires, snooze cap, re-arm after re-busy, max across multi-PID, raw-idle below threshold)
 - [x] 5.3 Add 2 tests to `tests/test_why_cli.py` for the kill-switch CLI surfacing (human + JSON)
 - [x] 5.4 Verify all new tests fail before implementation (red phase)
-- [x] 5.5 Verify full suite is 282/282 passing after implementation (was 269 before this change)
+- [x] 5.5 Verify full suite is 282/282 passing after the direct-signal change (was 269 before this change)
+- [x] 5.6 Create `tests/test_fallback_hardening.py` with 6 tests (single-blip ignored, 3-sustained-ticks qualify, streak resets on idle, patched-TPA skipped, unpatched still uses fallback, dead patched PID evicted from trust set)
+- [x] 5.7 Update 4 existing tests in `test_per_proc_approval.py` to send 3 busy ticks instead of 1 (matches the new sustained-busy contract)
+- [x] 5.8 Verify full suite is 288/288 passing after fallback hardening
 
 ## 6. End-to-end validation
 
