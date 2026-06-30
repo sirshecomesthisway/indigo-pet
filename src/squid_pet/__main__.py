@@ -157,9 +157,9 @@ def _run_why(json_output: bool = False) -> None:
     except Exception:
         procs = []
     # Prime per-PID CPU sampling so the second call gives a real reading.
-    _ = watcher.per_process_max_idle_seconds(procs) if procs else 0.0
+    _ = watcher.per_process_pending_approval_idle(procs) if procs else 0.0
     _t.sleep(0.3)
-    per_proc_idle = (watcher.per_process_max_idle_seconds(procs)
+    per_proc_idle = (watcher.per_process_pending_approval_idle(procs)
                      if procs else 0.0)
     approval_alert = {
         "enabled": bool(_cfg.get("approval_alert_enabled", True)),

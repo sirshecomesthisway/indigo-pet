@@ -185,7 +185,73 @@ def aggregate_cpu(procs: list[psutil.Process]) -> float:
 # never fires. Track each PID's last-busy timestamp so approval can fire
 # whenever ANY single TPA has been quiet past threshold.
 _PER_PID_LAST_BUSY: dict[int, float] = {}
+_PER_PID_EVER_BUSY: set[int] = set()
 _PER_PID_BUSY_CPU_THRESHOLD = 5.0  # %, per-process (lower than aggregate)
+# Pink-2026-06-29 follow-up: once a TPA has been waving for SNOOZE_WINDOW_SEC
+# without becoming busy again (Pink "saw it and chose to defer"), drop it
+# from the eligible set. It only re-fires after the TPA cycles busy -> idle
+# again (= Pink replied and got a new response).
+_PENDING_APPROVAL_SNOOZE_SEC = 120.0  # 2 minutes
+
+
+def per_process_pending_approval_idle(
+    procs: list[psutil.Process],
+) -> float:
+    """Idle duration for the most-stale TPA that is genuinely awaiting input.
+
+    Stricter than `per_process_max_idle_seconds` -- a PID is only ELIGIBLE
+    for approval-wave consideration when:
+
+    1. It has been observed BUSY at least once (cpu >= threshold).
+       Filters out CPs that were opened and never used.
+    2. It is currently idle.
+    3. Idle duration <= SNOOZE_WINDOW. Past that, Pink has clearly seen
+       the wave and is choosing to defer -- the wave should quiet down
+       until the TPA cycles busy -> idle again (= she replied).
+
+    Returns the MAX idle across eligible PIDs (so a single waiting TPA
+    fires regardless of what others are doing), or 0.0 if nothing is
+    eligible. Threshold filtering (10s default) lives in the caller --
+    we return raw idle so the caller stays in charge of policy.
+    """
+    now = time.time()
+    live_pids: set[int] = set()
+    max_idle = 0.0
+    for p in procs:
+        try:
+            pid = p.pid
+            cpu = p.cpu_percent(interval=None)
+            live_pids.add(pid)
+            if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
+                # Busy now -- record both the timestamp and the ever-busy fact.
+                _PER_PID_LAST_BUSY[pid] = now
+                _PER_PID_EVER_BUSY.add(pid)
+            else:
+                # Idle now. Two cases:
+                #   a) Never observed busy -> skip entirely (not eligible).
+                #      Don't even seed LAST_BUSY -- we have no anchor point.
+                #   b) Observed busy at some point -> compute idle and apply
+                #      snooze window.
+                if pid not in _PER_PID_EVER_BUSY:
+                    continue
+                last = _PER_PID_LAST_BUSY.get(pid)
+                if last is None:
+                    continue
+                idle = now - last
+                if idle > _PENDING_APPROVAL_SNOOZE_SEC:
+                    # Snoozed -- wait for the next busy cycle to re-arm.
+                    continue
+                if idle > max_idle:
+                    max_idle = idle
+        except (psutil.NoSuchProcess, psutil.AccessDenied,
+                AttributeError, TypeError):
+            continue
+    # Evict dead PIDs from both caches
+    dead = set(_PER_PID_LAST_BUSY.keys()) - live_pids
+    for pid in dead:
+        del _PER_PID_LAST_BUSY[pid]
+        _PER_PID_EVER_BUSY.discard(pid)
+    return round(max_idle, 1)
 
 
 def per_process_max_idle_seconds(procs: list[psutil.Process]) -> float:
@@ -607,7 +673,16 @@ class StateMachine:
             procs = find_tpa_processes()
         except Exception:
             procs = []
-        per_proc_idle = per_process_max_idle_seconds(procs) if procs else 0.0
+        # 2026-06-29 follow-up: switched from per_process_max_idle_seconds
+        # ("longest idle") to per_process_pending_approval_idle ("longest
+        # idle that ACTUALLY represents pending approval"). The new function
+        # filters out:
+        #   * CPs never observed busy (opened-and-abandoned windows)
+        #   * CPs idle past the snooze window (Pink saw it, deferred)
+        # The wave re-fires automatically when a snoozed TPA cycles
+        # busy -> idle (Pink replied -> new LLM response -> awaiting input).
+        per_proc_idle = (per_process_pending_approval_idle(procs)
+                         if procs else 0.0)
         if tpa_running_now and per_proc_idle > 0:
             try:
                 from . import config as _cfg

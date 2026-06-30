@@ -113,5 +113,5 @@ def approval_alert_enabled() -> bool:
 def toggle_approval_alert() -> bool:
     """Flip the approval-alert flag. Returns new value."""
     new = not approval_alert_enabled()
-    set_("approval_alert_enabled", new)
+    set("approval_alert_enabled", new)
     return new

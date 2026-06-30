@@ -551,12 +551,28 @@
 
     function startAttentionWave() {
       if (_attentionTimer !== null) return;     // already running
+      // attention_needed takes PRIME above all other rhythms (Pink's design).
+      // Force-clear every override layer that could mask the wave:
+      //   - mood (drowsy / sleeping / stretch)
+      //   - sub-state (walking / looking-around)
+      // Notify backend so the mood layer stays consistent with what's on screen.
+      if (_mood === "drowsy" || _mood === "sleeping" || _mood === "stretch") {
+        console.log(`[squid] attention_needed forcing wake from ${_mood}`);
+        _mood = "";
+        notifyMoodToBackend("");
+      }
+      if (pet.dataset.substate) {
+        console.log(`[squid] attention_needed clearing sub-state ${pet.dataset.substate}`);
+        pet.dataset.substate = "";
+        const wrapper = document.getElementById("pet-wrapper");
+        if (wrapper) wrapper.dataset.substate = "";
+      }
       _attentionIdx = 0;
       setSpriteSrcDirect(ATTENTION_FRAMES[_attentionIdx]);
       _attentionTimer = setInterval(() => {
-        // If a higher-priority layer (mood / sub-state / blink) hijacked
-        // the sprite, defer to it -- skip this tick, try again next.
-        if (_mood || pet.dataset.substate) return;
+        // No deferrals. attention_needed is the highest-priority state.
+        // If something else tried to swap the sprite mid-wave, we win
+        // the next tick by swapping right back to the next frame.
         _attentionIdx = (_attentionIdx + 1) % ATTENTION_FRAMES.length;
         setSpriteSrcDirect(ATTENTION_FRAMES[_attentionIdx]);
       }, ATTENTION_FRAME_MS);
