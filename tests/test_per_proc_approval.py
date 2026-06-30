@@ -31,12 +31,18 @@ from squid_pet import watcher
 def _clear_per_pid_state():
     """Each test gets a fresh per-PID dict."""
     watcher._PER_PID_LAST_BUSY.clear()
-    if hasattr(watcher, "_PER_PID_EVER_BUSY"):
-        watcher._PER_PID_EVER_BUSY.clear()
+    watcher._PER_PID_EVER_BUSY.clear()
+    if hasattr(watcher, "_PER_PID_BUSY_STREAK"):
+        watcher._PER_PID_BUSY_STREAK.clear()
+    if hasattr(watcher, "_PER_PID_EVER_WROTE_FLAG"):
+        watcher._PER_PID_EVER_WROTE_FLAG.clear()
     yield
     watcher._PER_PID_LAST_BUSY.clear()
-    if hasattr(watcher, "_PER_PID_EVER_BUSY"):
-        watcher._PER_PID_EVER_BUSY.clear()
+    watcher._PER_PID_EVER_BUSY.clear()
+    if hasattr(watcher, "_PER_PID_BUSY_STREAK"):
+        watcher._PER_PID_BUSY_STREAK.clear()
+    if hasattr(watcher, "_PER_PID_EVER_WROTE_FLAG"):
+        watcher._PER_PID_EVER_WROTE_FLAG.clear()
 
 
 def _proc(pid: int, cpu: float) -> MagicMock:
@@ -66,9 +72,13 @@ def test_pending_approval_ignores_never_busy_pid():
 
 
 def test_pending_approval_fires_after_busy_then_idle():
-    """A TPA that WAS busy and is NOW idle past threshold = pending approval."""
+    """A TPA that WAS busy and is NOW idle past threshold = pending approval.
+
+    Updated 2026-06-30: requires N=3 sustained busy ticks before the PID
+    is counted as ever-busy (filters GC blips)."""
     p = _proc(pid=2002, cpu=20.0)            # busy
-    watcher.per_process_pending_approval_idle([p])
+    for _ in range(3):
+        watcher.per_process_pending_approval_idle([p])
     # Now goes idle
     p.cpu_percent.return_value = 0.0
     # Backdate LAST_BUSY so 30s have elapsed
@@ -81,7 +91,8 @@ def test_pending_approval_snoozes_after_window():
     """After SNOOZE_WINDOW_SEC of idle, the PID drops out -- Pink has
     clearly seen the wave and chosen to defer. No further waving."""
     p = _proc(pid=3003, cpu=20.0)
-    watcher.per_process_pending_approval_idle([p])         # mark busy
+    for _ in range(3):
+        watcher.per_process_pending_approval_idle([p])         # mark busy
     p.cpu_percent.return_value = 0.0
     # Idle for FOUR minutes -- well past the 2-min snooze cap
     watcher._PER_PID_LAST_BUSY[3003] = time.time() - 240.0
@@ -96,15 +107,17 @@ def test_pending_approval_re_fires_when_tpa_becomes_busy_again():
     transitions busy -> idle again (Pink replied, got new response),
     the wave should re-fire."""
     p = _proc(pid=4004, cpu=20.0)
-    watcher.per_process_pending_approval_idle([p])
+    for _ in range(3):
+        watcher.per_process_pending_approval_idle([p])
     p.cpu_percent.return_value = 0.0
     # Snoozed (4 min idle)
     watcher._PER_PID_LAST_BUSY[4004] = time.time() - 240.0
     assert watcher.per_process_pending_approval_idle([p]) == 0.0  # snoozed
 
-    # Pink replies -> TPA runs again
+    # Pink replies -> TPA runs again, sustained
     p.cpu_percent.return_value = 25.0
-    watcher.per_process_pending_approval_idle([p])         # bump LAST_BUSY=now
+    for _ in range(3):
+        watcher.per_process_pending_approval_idle([p])         # bump LAST_BUSY=now
     # New response, TPA goes idle
     p.cpu_percent.return_value = 0.0
     watcher._PER_PID_LAST_BUSY[4004] = time.time() - 15.0
@@ -119,7 +132,8 @@ def test_pending_approval_max_across_multiple_eligible_pids():
     multi-TPA rule that drove the original per_proc design)."""
     p_short = _proc(pid=5005, cpu=20.0)
     p_long  = _proc(pid=5006, cpu=20.0)
-    watcher.per_process_pending_approval_idle([p_short, p_long])
+    for _ in range(3):
+        watcher.per_process_pending_approval_idle([p_short, p_long])
     for p in (p_short, p_long):
         p.cpu_percent.return_value = 0.0
     watcher._PER_PID_LAST_BUSY[5005] = time.time() - 15.0
@@ -134,7 +148,8 @@ def test_pending_approval_ignores_pid_below_threshold_window():
     enforced by the caller -- but we still report the raw idle time
     accurately so the caller can decide."""
     p = _proc(pid=6006, cpu=20.0)
-    watcher.per_process_pending_approval_idle([p])
+    for _ in range(3):
+        watcher.per_process_pending_approval_idle([p])
     p.cpu_percent.return_value = 0.0
     watcher._PER_PID_LAST_BUSY[6006] = time.time() - 3.0
     idle = watcher.per_process_pending_approval_idle([p])

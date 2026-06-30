@@ -187,6 +187,18 @@ def aggregate_cpu(procs: list[psutil.Process]) -> float:
 _PER_PID_LAST_BUSY: dict[int, float] = {}
 _PER_PID_EVER_BUSY: set[int] = set()
 _PER_PID_BUSY_CPU_THRESHOLD = 5.0  # %, per-process (lower than aggregate)
+# Pink-2026-06-30: A single tick over the CPU threshold isn't proof of
+# real activity -- Python GC, prompt_toolkit redraws, and OS bookkeeping
+# routinely produce one-tick blips. Require N consecutive busy ticks
+# before promoting a PID into _PER_PID_EVER_BUSY. A real LLM call sustains
+# CPU for many seconds; a blip does not. Streak resets on any idle tick.
+_PER_PID_BUSY_STREAK: dict[int, int] = {}
+_PER_PID_SUSTAINED_BUSY_TICKS = 3
+# Pink-2026-06-30: Once a PID has been observed writing its awaiting_input
+# flag (= we know it has the sitecustomize.py patch), the DIRECT signal is
+# authoritative for that PID forever. Skip the CPU fallback entirely --
+# no GC blip can falsely fire approval_needed for a patched TPA.
+_PER_PID_EVER_WROTE_FLAG: set[int] = set()
 # Pink-2026-06-29 follow-up: once a TPA has been waving for SNOOZE_WINDOW_SEC
 # without becoming busy again (Pink "saw it and chose to defer"), drop it
 # from the eligible set. It only re-fires after the TPA cycles busy -> idle
@@ -229,12 +241,19 @@ def tpa_pids_awaiting_input() -> list[int]:
         path = os.path.join(_AWAITING_INPUT_DIR, name)
         if psutil.pid_exists(pid):
             alive.append(pid)
+            # Pink-2026-06-30: This PID has proven it speaks the new
+            # protocol. Trust the direct signal exclusively from now on;
+            # skip the CPU fallback for this PID forever.
+            _PER_PID_EVER_WROTE_FLAG.add(pid)
         else:
             # Crashed TPA -- evict the stale flag so we don't lie forever.
             try:
                 os.unlink(path)
             except OSError:
                 pass
+            # Also drop from the trust set so a future PID reusing this
+            # number isn't accidentally trusted as patched.
+            _PER_PID_EVER_WROTE_FLAG.discard(pid)
     return sorted(alive)
 
 
@@ -266,16 +285,29 @@ def per_process_pending_approval_idle(
             pid = p.pid
             cpu = p.cpu_percent(interval=None)
             live_pids.add(pid)
+            # Pink-2026-06-30: PATCHED-TPA SHORT-CIRCUIT.
+            # If this PID has ever written its awaiting_input flag, we
+            # KNOW it has the sitecustomize.py patch. The direct signal
+            # is the only path of truth for it -- skip the CPU fallback
+            # entirely so GC blips can't false-fire approval_needed.
+            if pid in _PER_PID_EVER_WROTE_FLAG:
+                continue
             if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
-                # Busy now -- record both the timestamp and the ever-busy fact.
+                # Busy this tick. Bump the consecutive-busy streak; only
+                # promote to _PER_PID_EVER_BUSY once we've seen N sustained
+                # busy ticks. A real LLM call easily sustains 3 seconds;
+                # a Python GC blip or prompt-toolkit redraw does not.
                 _PER_PID_LAST_BUSY[pid] = now
-                _PER_PID_EVER_BUSY.add(pid)
+                _PER_PID_BUSY_STREAK[pid] = _PER_PID_BUSY_STREAK.get(pid, 0) + 1
+                if _PER_PID_BUSY_STREAK[pid] >= _PER_PID_SUSTAINED_BUSY_TICKS:
+                    _PER_PID_EVER_BUSY.add(pid)
             else:
-                # Idle now. Two cases:
-                #   a) Never observed busy -> skip entirely (not eligible).
-                #      Don't even seed LAST_BUSY -- we have no anchor point.
-                #   b) Observed busy at some point -> compute idle and apply
-                #      snooze window.
+                # Idle now. Streak resets -- the next busy must rebuild it.
+                _PER_PID_BUSY_STREAK[pid] = 0
+                # Two cases for the rest:
+                #   a) Never observed sustained-busy -> skip (not eligible).
+                #   b) Observed sustained-busy at some point -> compute
+                #      idle and apply snooze window.
                 if pid not in _PER_PID_EVER_BUSY:
                     continue
                 last = _PER_PID_LAST_BUSY.get(pid)
@@ -290,11 +322,12 @@ def per_process_pending_approval_idle(
         except (psutil.NoSuchProcess, psutil.AccessDenied,
                 AttributeError, TypeError):
             continue
-    # Evict dead PIDs from both caches
+    # Evict dead PIDs from all caches
     dead = set(_PER_PID_LAST_BUSY.keys()) - live_pids
     for pid in dead:
         del _PER_PID_LAST_BUSY[pid]
         _PER_PID_EVER_BUSY.discard(pid)
+        _PER_PID_BUSY_STREAK.pop(pid, None)
     return round(max_idle, 1)
 
 
