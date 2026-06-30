@@ -193,6 +193,50 @@ _PER_PID_BUSY_CPU_THRESHOLD = 5.0  # %, per-process (lower than aggregate)
 # again (= Pink replied and got a new response).
 _PENDING_APPROVAL_SNOOZE_SEC = 120.0  # 2 minutes
 
+# Pink-2026-06-29 v2: DIRECT signal from TPA itself. TPA's sitecustomize.py
+# touches `~/.tpa/awaiting_input/<pid>` whenever its interactive
+# prompt is awaiting user input. Presence of an alive-PID file = TPA is
+# asking for input RIGHT NOW. Stops the CPU-heuristic guessing entirely.
+_AWAITING_INPUT_DIR = os.path.join(
+    os.path.expanduser("~"), ".tpa", "awaiting_input"
+)
+
+
+def tpa_pids_awaiting_input() -> list[int]:
+    """Return PIDs of TPA processes currently sitting at the prompt.
+
+    Each TPA, via sitecustomize.py, writes a file `<dir>/<pid>` on entry
+    to its prompt loop and deletes it on exit. We scan the dir and
+    keep only files whose PIDs are still alive. Dead-PID files are
+    EVICTED so a crashed TPA doesn't leave a stuck-on signal.
+
+    Returns sorted list (deterministic for tests). Missing dir or any
+    OS error -> [] (signal is best-effort; never crash the tick).
+    """
+    if not os.path.isdir(_AWAITING_INPUT_DIR):
+        return []
+    alive: list[int] = []
+    try:
+        names = os.listdir(_AWAITING_INPUT_DIR)
+    except OSError:
+        return []
+    for name in names:
+        # Filenames must be all-digit PIDs. Skip anything else (e.g.
+        # .DS_Store, README, accidental editor swap files).
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        path = os.path.join(_AWAITING_INPUT_DIR, name)
+        if psutil.pid_exists(pid):
+            alive.append(pid)
+        else:
+            # Crashed TPA -- evict the stale flag so we don't lie forever.
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return sorted(alive)
+
 
 def per_process_pending_approval_idle(
     procs: list[psutil.Process],
@@ -656,63 +700,65 @@ class StateMachine:
         self._last_state = st.state
 
         # ── APPROVAL-NEEDED ALERT ──────────────────────────────────
-        # TPA still running but state machine idle past threshold =
-        # probably waiting for user input. Fire banner + sticky bubble.
-        #
-        # 2026-06-29 (Pink): use PER-PROCESS idle, not aggregate. With
-        # multiple TPA consoles open, aggregate agent_idle_seconds stays 0 as
-        # long as ANY TPA is working -- which masks the one that's actually
-        # waiting for approval. per_process_max_idle_seconds returns the
-        # LONGEST idle time across all running CPs, so we fire whenever
-        # any single console has been quiet past threshold regardless of
-        # what the others are doing. attention_needed takes prime above
-        # all other rhythms per Pink's design.
+        # Priority order (highest first):
+        #   1. DIRECT signal: TPA's sitecustomize.py touches
+        #      ~/.tpa/awaiting_input/<pid> when its prompt is
+        #      awaiting input. Presence of an alive-PID flag = TPA is
+        #      ASKING FOR INPUT RIGHT NOW. No CPU guessing.
+        #   2. FALLBACK: per_process_pending_approval_idle for TPA
+        #      versions that don't have the signal yet (or have it
+        #      disabled). CPU heuristic with snooze cap.
         tpa_running_now = (self._tpa_detector.tpa_running
                           if self._tpa_detector else False)
         try:
             procs = find_tpa_processes()
         except Exception:
             procs = []
-        # 2026-06-29 follow-up: switched from per_process_max_idle_seconds
-        # ("longest idle") to per_process_pending_approval_idle ("longest
-        # idle that ACTUALLY represents pending approval"). The new function
-        # filters out:
-        #   * CPs never observed busy (opened-and-abandoned windows)
-        #   * CPs idle past the snooze window (Pink saw it, deferred)
-        # The wave re-fires automatically when a snoozed TPA cycles
-        # busy -> idle (Pink replied -> new LLM response -> awaiting input).
         per_proc_idle = (per_process_pending_approval_idle(procs)
                          if procs else 0.0)
-        if tpa_running_now and per_proc_idle > 0:
-            try:
-                from . import config as _cfg
-                _enabled = bool(_cfg.get("approval_alert_enabled", True))
-                _threshold = float(_cfg.get("approval_alert_threshold_sec", 10.0))
-                _sound = str(_cfg.get("approval_alert_sound", "Glass") or "")
-                _text = str(_cfg.get("approval_alert_text", "your turn"))
-            except Exception:
-                _enabled, _threshold, _sound, _text = True, 10.0, "Glass", "your turn"
+        try:
+            from . import config as _cfg
+            _enabled = bool(_cfg.get("approval_alert_enabled", True))
+            _threshold = float(_cfg.get("approval_alert_threshold_sec", 10.0))
+            _sound = str(_cfg.get("approval_alert_sound", "Glass") or "")
+            _text = str(_cfg.get("approval_alert_text", "your turn"))
+        except Exception:
+            _enabled, _threshold, _sound, _text = True, 10.0, "Glass", "your turn"
 
-            if _enabled and per_proc_idle >= _threshold:
-                # OVERRIDE whatever the cascade picked. approval_needed
-                # is highest priority -- it interrupts working/thinking/etc.
-                # because it's the only state that requires Pink to ACT.
-                st.state = "approval_needed"
-                st.message = _text
-                st.state_reason = (
-                    "approval needed (" + str(int(per_proc_idle)) + "s per-proc idle)"
+        # Direct signal beats everything. No threshold, no snooze --
+        # TPA explicitly said "I'm waiting on you".
+        awaiting_pids = tpa_pids_awaiting_input() if _enabled else []
+        fired_reason: str | None = None
+        if awaiting_pids:
+            fired_reason = ("awaiting_input flag from TPA pid(s) "
+                            + ",".join(str(p) for p in awaiting_pids))
+        elif (tpa_running_now and per_proc_idle > 0
+              and _enabled and per_proc_idle >= _threshold):
+            fired_reason = ("approval needed ("
+                            + str(int(per_proc_idle))
+                            + "s per-proc idle, fallback)")
+
+        if fired_reason is not None:
+            # OVERRIDE whatever the cascade picked. approval_needed is
+            # the only state that REQUIRES Pink to act, so it wins.
+            st.state = "approval_needed"
+            st.message = _text
+            st.state_reason = fired_reason
+            # Fire OS notification ONCE per idle cycle
+            if not self._approval_alert_fired:
+                self._approval_alert_fired = True
+                self._approval_alert_at = now
+                _sound_label = _sound if _sound else "off"
+                print(
+                    "[squid-pet] approval alert fired ("
+                    + fired_reason + ", sound=" + _sound_label + ")",
+                    flush=True,
                 )
-                # Fire OS notification ONCE per idle cycle
-                if not self._approval_alert_fired:
-                    self._approval_alert_fired = True
-                    self._approval_alert_at = now
-                    _sound_label = _sound if _sound else "off"
-                    print(
-                        "[squid-pet] approval alert fired "
-                        "(per_proc_idle=" + str(per_proc_idle) + "s, "
-                        "sound=" + _sound_label + ")",
-                        flush=True,
-                    )
+        else:
+            # No alert is fired this tick. Reset the OS-notification latch
+            # so the next genuine alert (after Pink replies + new response)
+            # gets a fresh ping.
+            self._approval_alert_fired = False
         # ── FORCE-STATE OVERRIDE (test/demo) ─────────────────────────
         # If ~/.squid-pet/force_state exists with a non-empty state name,
         # use it directly. Lets Pink test any state visually or take demo
