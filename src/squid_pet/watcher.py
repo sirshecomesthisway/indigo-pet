@@ -205,6 +205,20 @@ _PER_PID_EVER_WROTE_FLAG: set[int] = set()
 # again (= Pink replied and got a new response).
 _PENDING_APPROVAL_SNOOZE_SEC = 120.0  # 2 minutes
 
+# Pink-2026-06-30 v3: DIRECT-SIGNAL snooze. The awaiting_input flag is
+# authoritative but relentless -- once written, TPA keeps it there for the
+# entire duration of its idle prompt. Without a snooze, Squid would wave
+# forever. Same principle as the fallback snooze: if Pink has seen the
+# flag for N seconds and hasn't replied, she's chosen to defer -- quiet
+# down until the TPA cycles busy again (which happens the moment she
+# actually types something and TPA starts responding).
+_PENDING_APPROVAL_DIRECT_SNOOZE_SEC = 300.0  # 5 minutes
+
+# Pink-2026-06-30 v3: birth time of each awaiting_input flag. Populated
+# when we first see the flag for a PID, cleared when the flag disappears
+# (Pink replied) or the PID dies. Enables the direct-signal snooze above.
+_PER_PID_FLAG_FIRST_SEEN: dict[int, float] = {}
+
 # Pink-2026-06-29 v2: DIRECT signal from TPA itself. TPA's sitecustomize.py
 # touches `~/.tpa/awaiting_input/<pid>` whenever its interactive
 # prompt is awaiting user input. Presence of an alive-PID file = TPA is
@@ -285,25 +299,32 @@ def per_process_pending_approval_idle(
             pid = p.pid
             cpu = p.cpu_percent(interval=None)
             live_pids.add(pid)
-            # Pink-2026-06-30: PATCHED-TPA SHORT-CIRCUIT.
-            # If this PID has ever written its awaiting_input flag, we
-            # KNOW it has the sitecustomize.py patch. The direct signal
-            # is the only path of truth for it -- skip the CPU fallback
-            # entirely so GC blips can't false-fire approval_needed.
-            if pid in _PER_PID_EVER_WROTE_FLAG:
-                continue
+            # Pink-2026-06-30 v3: BUSY TRACKING for ALL CPs, patched or not.
+            # We need _PER_PID_EVER_BUSY populated for patched CPs too --
+            # the direct-signal path uses it as an "has this TPA ever been
+            # engaged?" gate to suppress startup false-fires. Previously
+            # patched CPs skipped this block entirely (short-circuit went
+            # HERE) and _PER_PID_EVER_BUSY stayed empty for them.
             if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
-                # Busy this tick. Bump the consecutive-busy streak; only
-                # promote to _PER_PID_EVER_BUSY once we've seen N sustained
-                # busy ticks. A real LLM call easily sustains 3 seconds;
-                # a Python GC blip or prompt-toolkit redraw does not.
                 _PER_PID_LAST_BUSY[pid] = now
                 _PER_PID_BUSY_STREAK[pid] = _PER_PID_BUSY_STREAK.get(pid, 0) + 1
                 if _PER_PID_BUSY_STREAK[pid] >= _PER_PID_SUSTAINED_BUSY_TICKS:
                     _PER_PID_EVER_BUSY.add(pid)
             else:
-                # Idle now. Streak resets -- the next busy must rebuild it.
                 _PER_PID_BUSY_STREAK[pid] = 0
+            # Pink-2026-06-30: PATCHED-TPA SHORT-CIRCUIT for fallback firing.
+            # If this PID has ever written its awaiting_input flag, we
+            # KNOW it has the sitecustomize.py patch. The direct signal
+            # is the only path of truth for it -- skip the CPU FALLBACK
+            # so GC blips can't false-fire approval_needed. Busy tracking
+            # above still runs so _PER_PID_EVER_BUSY stays accurate.
+            if pid in _PER_PID_EVER_WROTE_FLAG:
+                continue
+            if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
+                # Already tracked above -- skip fallback-idle computation.
+                pass
+            else:
+                # Streak was already reset above.
                 # Two cases for the rest:
                 #   a) Never observed sustained-busy -> skip (not eligible).
                 #   b) Observed sustained-busy at some point -> compute
@@ -329,6 +350,53 @@ def per_process_pending_approval_idle(
         _PER_PID_EVER_BUSY.discard(pid)
         _PER_PID_BUSY_STREAK.pop(pid, None)
     return round(max_idle, 1)
+
+
+def filter_eligible_awaiting_pids(awaiting_pids: list[int]) -> list[int]:
+    """Filter direct-signal awaiting_input PIDs down to those that deserve
+    a flag-wave right now.
+
+    Two gates:
+
+    1. **ENGAGEMENT GATE.** The PID must have been observed sustained-busy
+       at least once (i.e. present in _PER_PID_EVER_BUSY). Otherwise it's
+       a freshly-launched TPA that wrote its flag at startup but Pink has
+       never actually engaged with -- waving for it is a false fire.
+
+    2. **DIRECT-SIGNAL SNOOZE.** Once we've been aware of the flag for
+       _PENDING_APPROVAL_DIRECT_SNOOZE_SEC without the flag disappearing,
+       Pink has clearly seen the wave and consciously deferred. Quiet
+       down until the flag disappears (= she typed) and reappears (= TPA
+       finished her request and is now waiting for the next).
+
+    Also maintains _PER_PID_FLAG_FIRST_SEEN: records birth time for any
+    new flag, evicts entries whose flag has gone away.
+    """
+    now = time.time()
+    live_awaiting = set(awaiting_pids)
+
+    # Evict first-seen entries whose flag has disappeared (Pink replied
+    # or TPA crashed -- either way the snooze clock resets).
+    for pid in [p for p in _PER_PID_FLAG_FIRST_SEEN.keys()
+                if p not in live_awaiting]:
+        del _PER_PID_FLAG_FIRST_SEEN[pid]
+
+    eligible: list[int] = []
+    for pid in awaiting_pids:
+        # Record birth time on first sighting.
+        first_seen = _PER_PID_FLAG_FIRST_SEEN.setdefault(pid, now)
+
+        # Gate 1: engagement. Skip fresh-startup CPs.
+        if pid not in _PER_PID_EVER_BUSY:
+            continue
+
+        # Gate 2: snooze. Skip stale-defer.
+        if now - first_seen > _PENDING_APPROVAL_DIRECT_SNOOZE_SEC:
+            continue
+
+        eligible.append(pid)
+
+    return eligible
 
 
 def per_process_max_idle_seconds(procs: list[psutil.Process]) -> float:
@@ -760,7 +828,13 @@ class StateMachine:
 
         # Direct signal beats everything. No threshold, no snooze --
         # TPA explicitly said "I'm waiting on you".
-        awaiting_pids = tpa_pids_awaiting_input() if _enabled else []
+        awaiting_pids_raw = tpa_pids_awaiting_input() if _enabled else []
+        # Pink-2026-06-30 v3: apply engagement gate + direct-signal snooze.
+        # The raw flag list is the "TPA claims to be waiting" set; the
+        # eligible list is the "Pink should be nudged about it right now"
+        # set. Difference matters at TPA startup (fresh flag, never engaged)
+        # and after Pink has already seen the wave and deferred.
+        awaiting_pids = filter_eligible_awaiting_pids(awaiting_pids_raw)
         fired_reason: str | None = None
         if awaiting_pids:
             fired_reason = ("awaiting_input flag from TPA pid(s) "
