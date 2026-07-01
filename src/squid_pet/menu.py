@@ -118,6 +118,7 @@ class _MenuTarget(NSObject):
     def toggleMute_(self, s): self.api._menu_toggle_mute()
     def toggleLLMBubbles_(self, s): self.api._menu_toggle_llm_bubbles()
     def toggleApprovalAlert_(self, s): self.api._menu_toggle_approval_alert()
+    def calmSquid_(self, s): self.api._menu_calm_squid()
 
     # Easter eggs
     def sprintPerimeter_(self, s): self.api._menu_sprint_perimeter()
@@ -245,6 +246,18 @@ def _populate_menu(menu, target, api) -> None:
         else f"{EMO_BELL}  'Your turn' alerts (off)"
     )
     _add(bub, alert_label, target, "toggleApprovalAlert:", checked=alert_on)
+    # Pink-2026-06-30 v3: manual "calm Squid" -- immediately snoozes
+    # every in-flight awaiting_input wave. Grayed out when nothing to
+    # calm so the affordance is honest.
+    try:
+        can_calm = bool(api.is_squid_waving())
+    except Exception:
+        can_calm = False
+    calm_label = (
+        "\U0001F92B  Calm Squid (dismiss wave)" if can_calm
+        else "\U0001F92B  Calm Squid (nothing to dismiss)"
+    )
+    _add(bub, calm_label, target, "calmSquid:", enabled=can_calm)
     bub_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         f"{EMO_SPARKLE}  Bubbles", None, ""
     )

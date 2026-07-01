@@ -352,6 +352,51 @@ def per_process_pending_approval_idle(
     return round(max_idle, 1)
 
 
+def snooze_all_awaiting_now() -> int:
+    """Pink-2026-06-30 v3: MANUAL "calm Squid" action for the right-click menu.
+
+    Reuses the direct-signal snooze mechanic: for every PID currently in
+    _PER_PID_FLAG_FIRST_SEEN, backdate its birth time past the snooze
+    window so filter_eligible_awaiting_pids will drop it on the next tick.
+
+    The natural re-arm still works: when Pink replies (flag disappears)
+    the entry is evicted, and when TPA hits its next prompt (flag
+    reappears) the birth time is fresh -- so waves come back for
+    genuinely new work.
+
+    Also snoozes PIDs whose flag we haven't yet recorded (rare edge
+    case: menu clicked in the same tick as a new flag appearing).
+
+    Returns the number of PIDs snoozed, so the menu can show a hint.
+    """
+    now = time.time()
+    stale = now - _PENDING_APPROVAL_DIRECT_SNOOZE_SEC - 1.0
+
+    # Also cover any live flag we might have missed observing yet (the
+    # scan of the awaiting dir is cheap enough to do inline).
+    live = set(tpa_pids_awaiting_input())
+    for pid in live:
+        _PER_PID_FLAG_FIRST_SEEN[pid] = stale
+
+    # Backdate any PIDs we're already tracking (belt-and-braces).
+    count = 0
+    for pid in list(_PER_PID_FLAG_FIRST_SEEN.keys()):
+        _PER_PID_FLAG_FIRST_SEEN[pid] = stale
+        count += 1
+    return count
+
+
+def count_currently_waving_pids() -> int:
+    """Menu helper: how many TPA PIDs are actively waving right now
+    (i.e. have a flag AND would pass the eligibility filter)?
+    Used to enable/disable the 'Calm Squid' menu item."""
+    try:
+        raw = tpa_pids_awaiting_input()
+    except Exception:
+        return 0
+    return len(filter_eligible_awaiting_pids(raw))
+
+
 def filter_eligible_awaiting_pids(awaiting_pids: list[int]) -> list[int]:
     """Filter direct-signal awaiting_input PIDs down to those that deserve
     a flag-wave right now.

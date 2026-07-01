@@ -245,3 +245,110 @@ def test_direct_signal_filter_engagement_gate_alone():
     assert eligible == [], (
         f"never-engaged PID must be filtered by engagement gate; got {eligible}"
     )
+
+
+
+# ── NEW: manual calm-Squid (right-click menu button) ─────────────────
+
+def test_manual_snooze_immediately_filters_current_flag(tmp_awaiting_dir):
+    """Pink-2026-06-30 v3: MANUAL de-escalate. When Pink clicks
+    'Calm Squid' from the right-click menu, every currently-waving PID
+    must be filtered out on the very next tick, without waiting for
+    the 5-min auto-snooze window."""
+    my_pid = os.getpid()
+    # Set up: PID is engaged AND has a live flag AND its flag was just
+    # observed (so auto-snooze would NOT have kicked in yet).
+    (tmp_awaiting_dir / str(my_pid)).write_text(str(time.time()))
+    watcher._PER_PID_EVER_BUSY.add(my_pid)
+    watcher._PER_PID_FLAG_FIRST_SEEN[my_pid] = time.time()
+
+    try:
+        # Baseline: without the manual snooze, this PID should be eligible.
+        eligible_before = watcher.filter_eligible_awaiting_pids([my_pid])
+        assert eligible_before == [my_pid], (
+            "sanity: engaged + fresh flag must be eligible pre-calm; "
+            f"got {eligible_before}"
+        )
+
+        # Click "Calm Squid".
+        n = watcher.snooze_all_awaiting_now()
+        assert n >= 1, f"snooze should report at least 1 PID; got {n}"
+
+        # Now the same PID must be filtered out.
+        eligible_after = watcher.filter_eligible_awaiting_pids([my_pid])
+        assert eligible_after == [], (
+            f"post-calm should filter out {my_pid}; got {eligible_after}"
+        )
+    finally:
+        watcher._PER_PID_EVER_BUSY.discard(my_pid)
+        watcher._PER_PID_FLAG_FIRST_SEEN.pop(my_pid, None)
+
+
+def test_manual_snooze_reports_zero_when_no_waves(tmp_awaiting_dir):
+    """No waves in flight -> snooze_all_awaiting_now() returns 0 so the
+    menu can show 'nothing to calm' feedback. tmp_awaiting_dir keeps
+    us out of the real ~/.tpa/awaiting_input which may have
+    stale flags from other TPA sessions."""
+    watcher._PER_PID_FLAG_FIRST_SEEN.clear()
+    # tmp_awaiting_dir exists but is empty -- no PIDs are waving.
+    n = watcher.snooze_all_awaiting_now()
+    assert n == 0, f"empty state should report 0 snoozed; got {n}"
+
+
+def test_manual_snooze_rearms_when_flag_disappears_and_reappears(
+    tmp_awaiting_dir,
+):
+    """The manual snooze must NOT be sticky. After Pink calms the wave
+    and TPA later hits a NEW prompt (flag disappears then reappears with
+    a fresh birth time), the wave must fire again for the new request."""
+    my_pid = os.getpid()
+    flag = tmp_awaiting_dir / str(my_pid)
+    flag.write_text(str(time.time()))
+    watcher._PER_PID_EVER_BUSY.add(my_pid)
+    # Register the flag birth-time by observing it once.
+    watcher.filter_eligible_awaiting_pids([my_pid])
+
+    try:
+        # Calm it.
+        watcher.snooze_all_awaiting_now()
+        assert watcher.filter_eligible_awaiting_pids([my_pid]) == []
+
+        # Pink replies -> TPA removes the flag. filter observes empty
+        # awaiting list -> evicts FIRST_SEEN.
+        flag.unlink()
+        watcher.filter_eligible_awaiting_pids([])
+        assert my_pid not in watcher._PER_PID_FLAG_FIRST_SEEN, (
+            "flag disappearance must evict FIRST_SEEN (re-arm snooze)"
+        )
+
+        # TPA finishes the reply and hits its next prompt -> flag reappears.
+        flag.write_text(str(time.time()))
+        eligible = watcher.filter_eligible_awaiting_pids([my_pid])
+        assert eligible == [my_pid], (
+            "post-calm re-arm: fresh flag should fire again; "
+            f"got {eligible}"
+        )
+    finally:
+        watcher._PER_PID_EVER_BUSY.discard(my_pid)
+        watcher._PER_PID_FLAG_FIRST_SEEN.pop(my_pid, None)
+
+
+def test_count_currently_waving_pids_matches_filter(tmp_awaiting_dir):
+    """count_currently_waving_pids() is what the menu uses to decide
+    if 'Calm Squid' should be enabled. It must equal the length of
+    the filtered eligible list for the currently-scanned awaiting dir."""
+    my_pid = os.getpid()
+    (tmp_awaiting_dir / str(my_pid)).write_text(str(time.time()))
+    watcher._PER_PID_EVER_BUSY.add(my_pid)
+
+    try:
+        raw = watcher.tpa_pids_awaiting_input()
+        assert my_pid in raw, "sanity: awaiting scan should see our PID"
+        c = watcher.count_currently_waving_pids()
+        assert c == len(watcher.filter_eligible_awaiting_pids(raw)), (
+            f"count ({c}) must equal eligible-filter len"
+        )
+        assert c >= 1
+    finally:
+        watcher._PER_PID_EVER_BUSY.discard(my_pid)
+        watcher._PER_PID_FLAG_FIRST_SEEN.pop(my_pid, None)

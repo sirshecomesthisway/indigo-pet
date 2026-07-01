@@ -938,6 +938,43 @@ class PetApi:
         """Exposed so menu can show checkbox state."""
         return config.is_muted()
 
+    # Pink-2026-06-30 v3: manual de-escalate (right-click menu)
+
+    def is_squid_waving(self) -> bool:
+        """Menu helper: is there at least one TPA currently waving that
+        we could calm right now? Used to enable/disable 'Calm Squid'."""
+        from . import watcher as _w
+        try:
+            return _w.count_currently_waving_pids() > 0
+        except Exception:
+            return False
+
+    def _menu_calm_squid(self) -> None:
+        """Menu action: manually snooze all in-flight awaiting_input
+        waves. Reuses the direct-signal snooze mechanic -- backdates
+        flag first-seen times past the snooze window so the eligibility
+        filter drops them on the next tick. Auto re-arm still works:
+        waves come back for genuinely new work (flag disappears when
+        Pink replies, reappears when TPA hits the next prompt with a
+        fresh birth-time clock)."""
+        from . import watcher as _w
+        try:
+            n = _w.snooze_all_awaiting_now()
+        except Exception as e:
+            print(f"[squid-pet] calm squid failed: {e}", flush=True)
+            self._emit_hint("calm failed")
+            return
+        if n == 0:
+            self._emit_hint("nothing to calm")
+        else:
+            self._emit_hint(
+                f"shh -- calmed {n} wave" + ("s" if n != 1 else "")
+            )
+        print(
+            f"[squid-pet] manual de-escalate: snoozed {n} awaiting PID(s)",
+            flush=True,
+        )
+
     def _menu_sprint_perimeter(self) -> None:
         """Funny: sprint through all 4 corners CW. Background thread."""
         if self._wanderer is None:
