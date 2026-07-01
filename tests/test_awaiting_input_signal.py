@@ -254,7 +254,7 @@ def test_manual_snooze_immediately_filters_current_flag(tmp_awaiting_dir):
     """Pink-2026-06-30 v3: MANUAL de-escalate. When Pink clicks
     'Calm Squid' from the right-click menu, every currently-waving PID
     must be filtered out on the very next tick, without waiting for
-    the 5-min auto-snooze window."""
+    the 2-min auto-snooze window."""
     my_pid = os.getpid()
     # Set up: PID is engaged AND has a live flag AND its flag was just
     # observed (so auto-snooze would NOT have kicked in yet).

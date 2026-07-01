@@ -212,7 +212,7 @@ _PENDING_APPROVAL_SNOOZE_SEC = 120.0  # 2 minutes
 # flag for N seconds and hasn't replied, she's chosen to defer -- quiet
 # down until the TPA cycles busy again (which happens the moment she
 # actually types something and TPA starts responding).
-_PENDING_APPROVAL_DIRECT_SNOOZE_SEC = 300.0  # 5 minutes
+_PENDING_APPROVAL_DIRECT_SNOOZE_SEC = 120.0  # 2 minutes (Pink 2026-06-30: 5 min felt too long)
 
 # Pink-2026-06-30 v3: birth time of each awaiting_input flag. Populated
 # when we first see the flag for a PID, cleared when the flag disappears
