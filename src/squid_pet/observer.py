@@ -106,6 +106,7 @@ OBSERVER_SYSTEM_PROMPT = (
 #   concerned    = clipped distress
 #   back_to_idle = breath of relief
 #   waking       = guttural fog-clearing
+#   approval_needed = short attention-grab (Squid waving her flag)
 #
 # Interaction signatures:
 #   poke / like / sprint / sprint_end / drowsy
@@ -124,6 +125,10 @@ BUBBLE_LINES: dict[str, LineSpec] = {
     "concerned":    ["eep", "hmmnn", "urk", "!?"],
     "back_to_idle": ["pheww", "hhh", "*flops*", "*sigh*"],
     "waking":       ["mmf...", "nhg", "wh-", "*stretches*"],
+
+    # TPA is waving flag -- awaiting Pink's input (Pink 2026-07-02)
+    "approval_needed": ["your turn!", "psst!!", "yoo??", "input?",
+                        "heyy!!", "you? you!", "peek", "hi hi!"],
 
     # interactions
     "poke":         ["boop?", "hi", "?", "hm?"],
@@ -150,6 +155,11 @@ BUBBLE_LINES: dict[str, LineSpec] = {
 #   If from_set is a set/frozenset, only those old_states fire.
 # ----------------------------------------------------------------------
 STATE_TRIGGERS: list[tuple[str, Optional[frozenset[str]], str]] = [
+    # TPA is waving flag -- awaiting Pink's input (Pink 2026-07-02).
+    # Fires on any transition INTO approval_needed. Rule-based lines
+    # from BUBBLE_LINES["approval_needed"]; LLM enrich may overwrite.
+    ("approval_needed", None, "approval_needed"),
+
     # New thinking turn (covers idle -> thinking, but NOT working -> thinking
     # since working IS already a kind of thinking)
     ("thinking",    frozenset({"idle", "sleeping", "drowsy", "celebrating", "concerned"}), "thinking"),

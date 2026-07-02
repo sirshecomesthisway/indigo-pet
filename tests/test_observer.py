@@ -30,6 +30,7 @@ from squid_pet.observer import (
 REQUIRED_KEYS = {
     "thinking", "working", "grooving", "celebrating", "concerned",
     "back_to_idle", "waking",
+    "approval_needed",  # Pink 2026-07-02: flag-wave bubble
     "poke", "sprint", "sprint_end", "drowsy",
     "like", "sleeping",
 }
@@ -95,6 +96,28 @@ def test_any_to_working_fires_working_line(obs):
         result = obs.on_state_change(source, "working")
         assert result is not None, f"{source} -> working should fire"
         assert result in BUBBLE_LINES["working"]
+
+
+def test_any_to_approval_needed_fires_bubble(obs):
+    """Flag-wave (approval_needed) fires from any prior state.
+
+    Pink 2026-07-02: Squid should say what she wants when waving.
+    """
+    for source in ["idle", "thinking", "working", "celebrating",
+                   "concerned", "grooving", "drowsy"]:
+        result = obs.on_state_change(source, "approval_needed")
+        assert result is not None, f"{source} -> approval_needed should fire"
+        assert result in BUBBLE_LINES["approval_needed"]
+
+
+def test_approval_needed_to_approval_needed_is_silent(obs):
+    """Steady-state ticks don't re-fire the wave-bubble."""
+    assert obs.on_state_change("approval_needed", "approval_needed") is None
+
+
+def test_approval_needed_muted_returns_none(muted_obs):
+    """Muted user gets no wave-bubble either."""
+    assert muted_obs.on_state_change("idle", "approval_needed") is None
 
 
 def test_concerned_to_idle_fires_back_to_idle(obs):
