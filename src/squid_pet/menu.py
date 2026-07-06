@@ -179,6 +179,19 @@ def _populate_menu(menu, target, api) -> None:
     both right-click open (fresh menu) and status-bar reopen (delegate-driven)."""
     menu.setAutoenablesItems_(False)
 
+    # ============ TOP: Calm Squid (only rendered when actively waving) ============
+    # Pink-2026-07-06: promoted from Bubbles submenu to top level for
+    # discoverability. Only appears when there's actually something to
+    # calm, so the top-level menu stays uncluttered when Squid is idle.
+    # The Bubbles submenu entry stays as a stable, always-present affordance.
+    try:
+        _cs_is_waving = bool(api.is_squid_waving())
+    except Exception:
+        _cs_is_waving = False
+    if _cs_is_waving:
+        _add(menu, "\U0001F92B  Calm Squid (dismiss wave)", target, "calmSquid:")
+        menu.addItem_(NSMenuItem.separatorItem())
+
     # ============ TOP: Hide/Show (the killer feature) ============
     hidden = bool(getattr(api, "_hidden", False))
     hide_label = (
