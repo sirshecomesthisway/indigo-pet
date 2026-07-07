@@ -41,6 +41,10 @@ WANDER_MAX_DURATION_SEC = 3.0          # hard cap — never walk longer than thi
 WANDER_TICK_HZ = 30                    # smoothness
 EDGE_MARGIN_PX = 12                    # keep this far from visibleFrame left/right/top
 BOTTOM_MARGIN_PX = -40                 # feet AT visible-frame bottom (auto-hide Dock)
+TOP_MARGIN_PX    = 0                   # head hugs menu bar exactly (0 = touch, negative = tuck under).
+                                       # Was implicitly -EDGE_MARGIN_PX (12px gap); split out so top
+                                       # doesnt inherit the same margin as left/right. Menu bar is
+                                       # opaque so hugging it is fine. Pink 2026-07-07.
 LOOK_AROUND_DURATION_SEC = 1.4         # how long mid-walk look-around lasts
 LOOK_AROUND_PROBABILITY = 0.45         # chance of pause-to-look mid-walk
 WIN_W = 200                            # window width (must match window.py)
@@ -193,7 +197,7 @@ class WanderController:
         min_x = vx + EDGE_MARGIN_PX
         max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
         min_y = vy + BOTTOM_MARGIN_PX
-        max_y = vy + vh - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
+        max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         if max_x <= min_x or max_y <= min_y:
             return
         tx, ty = self._pick_target_for_band(band, ox, oy,
@@ -355,7 +359,7 @@ class WanderController:
         min_x = vx + EDGE_MARGIN_PX
         max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
         min_y = vy + BOTTOM_MARGIN_PX
-        max_y = vy + vh - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
+        max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         d_left = max(0, x - min_x)
         d_right = max(0, max_x - x)
         d_bottom = max(0, y - min_y)
@@ -462,7 +466,7 @@ class WanderController:
             min_x = vx + EDGE_MARGIN_PX
             max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
             min_y = vy + EDGE_MARGIN_PX
-            max_y = vy + vh - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
+            max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
             corners = [
                 (min_x, min_y),  # 0 BL  -> 0deg
                 (min_x, max_y),  # 1 TL  -> 90deg
