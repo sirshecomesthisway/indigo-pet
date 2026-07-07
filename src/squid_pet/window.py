@@ -72,7 +72,11 @@ def _get_ns_window():
 CHAR_LEFT_IN_WIN   = 51     # SPRITE_LEFT(10) + min_x(21) + 20px rotation padding (CSS rotate up to ±14deg)
 CHAR_RIGHT_IN_WIN  = 190    # SPRITE_LEFT(10) + max_x(160) + 20px rotation padding (CSS rotate up to ±14deg)
 CHAR_BOTTOM_IN_WIN = 8      # WINDOW_H(300) - SPRITE_TOP(120) - worst max_y(172) [DROWSY — was missed in prior analysis]
-CHAR_TOP_IN_WIN    = 165    # WINDOW_H(300) - SPRITE_TOP(120) - worst min_y(15)  [thinking]
+CHAR_TOP_IN_WIN    = 145    # WINDOW_H(300) - SPRITE_TOP(120) - typical min_y(35, idle).
+                            # Was 165 (thinking/flag-wave worst-case) but that left her
+                            # head 20-40px below menu bar in idle. Trade-off: flag tips
+                            # (attention_needed) clip ~34px behind menu bar. Menu bar is
+                            # opaque so it is a clean cut, not a visual glitch. Pink 2026-07-07.
 
 
 def clamp_origin_to_screen(ox, oy):

@@ -12,7 +12,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 import pytest
 
-from squid_pet.wanderer import WanderController
+from squid_pet.wanderer import WanderController, CHAR_TOP_IN_WIN, EDGE_MARGIN_PX
 
 
 @pytest.fixture
@@ -190,8 +190,11 @@ def test_refresh_edge_picks_up_new_position(monkeypatch):
     """After a 'drag' (origin changes externally), refresh_edge should
     re-read origin and update the edge tracker without needing a walk."""
     edge_calls = []
-    # Frame (0,0,1000,800) with WIN_W=200, WIN_H=220, EDGE_MARGIN=12, BOTTOM_MARGIN=-40
-    # -> valid origin range: x in [12, 788], y in [-40, 568]
+    # Frame (0,0,1000,800) with WIN_W=200, EDGE_MARGIN=12, BOTTOM_MARGIN=-40
+    # -> valid origin range: x in [12, 788], y in [-40, max_y]
+    # where max_y = 800 - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX  (symbolic; survives
+    # tuning of CHAR_TOP_IN_WIN — Pink 2026-07-07 head-hug fix bumped it 165->145).
+    _MAX_Y = 800 - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
     current_origin = [788.0, -40.0]  # start: bottom-right corner (both d=0)
     wc = WanderController(
         get_state=lambda: "idle",
@@ -214,11 +217,11 @@ def test_refresh_edge_picks_up_new_position(monkeypatch):
     assert e2 == "left", f"after drag to (12,250), expected left, got {e2!r}"
     assert edge_calls[-1] == "left"
 
-    # Drag her to mid TOP edge: (400, 568)
+    # Drag her to mid TOP edge (y == max_y so d_top=0 wins).
     current_origin[0] = 400.0
-    current_origin[1] = 568.0
+    current_origin[1] = float(_MAX_Y)
     e3 = wc.refresh_edge()
-    assert e3 == "top", f"after drag to (400,568), expected top, got {e3!r}"
+    assert e3 == "top", f"after drag to (400,{_MAX_Y}), expected top, got {e3!r}"
     assert edge_calls[-1] == "top"
 
 

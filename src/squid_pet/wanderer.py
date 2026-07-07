@@ -51,7 +51,7 @@ WIN_H = 300                            # window height (MUST match window.WINDOW
                                        # actual max_y, causing edge classifier to flap in/out of the band).
                                        # See kennel drawer (constant-duplication anti-pattern). Future:
                                        # consolidate into squid_pet.geometry module.
-CHAR_TOP_IN_WIN = 165                  # opaque-pixel top of character within window (cocoa y-up from window bottom)
+CHAR_TOP_IN_WIN = 145                  # opaque-pixel top of character within window (cocoa y-up from window bottom)
                                        # MIRRORS window.CHAR_TOP_IN_WIN — see window.py:65-75 for derivation.
                                        # Used to clamp max_y so character reaches menu bar (window has 135px
                                        # transparent headroom above sprite for hearts/emotes). Fixed 2026-07-07:
