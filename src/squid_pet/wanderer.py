@@ -51,6 +51,12 @@ WIN_H = 300                            # window height (MUST match window.WINDOW
                                        # actual max_y, causing edge classifier to flap in/out of the band).
                                        # See kennel drawer (constant-duplication anti-pattern). Future:
                                        # consolidate into squid_pet.geometry module.
+CHAR_TOP_IN_WIN = 165                  # opaque-pixel top of character within window (cocoa y-up from window bottom)
+                                       # MIRRORS window.CHAR_TOP_IN_WIN — see window.py:65-75 for derivation.
+                                       # Used to clamp max_y so character reaches menu bar (window has 135px
+                                       # transparent headroom above sprite for hearts/emotes). Fixed 2026-07-07:
+                                       # was using WIN_H, stranding Squid ~147px below menu bar. (Pink report.)
+                                       # Future: consolidate into squid_pet.geometry module.
 EDGE_BAND_PX = 60                      # within this distance of an edge counts as "on" it
 CORNER_BAND_PX = 120                   # within this distance of TWO edges counts as "at a corner"
                                        # (more generous than EDGE_BAND_PX to absorb dock/menubar clamp drift)
@@ -187,7 +193,7 @@ class WanderController:
         min_x = vx + EDGE_MARGIN_PX
         max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
         min_y = vy + BOTTOM_MARGIN_PX
-        max_y = vy + vh - WIN_H - EDGE_MARGIN_PX
+        max_y = vy + vh - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
         if max_x <= min_x or max_y <= min_y:
             return
         tx, ty = self._pick_target_for_band(band, ox, oy,
@@ -349,7 +355,7 @@ class WanderController:
         min_x = vx + EDGE_MARGIN_PX
         max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
         min_y = vy + BOTTOM_MARGIN_PX
-        max_y = vy + vh - WIN_H - EDGE_MARGIN_PX
+        max_y = vy + vh - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
         d_left = max(0, x - min_x)
         d_right = max(0, max_x - x)
         d_bottom = max(0, y - min_y)
@@ -456,7 +462,7 @@ class WanderController:
             min_x = vx + EDGE_MARGIN_PX
             max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
             min_y = vy + EDGE_MARGIN_PX
-            max_y = vy + vh - WIN_H - EDGE_MARGIN_PX
+            max_y = vy + vh - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
             corners = [
                 (min_x, min_y),  # 0 BL  -> 0deg
                 (min_x, max_y),  # 1 TL  -> 90deg
