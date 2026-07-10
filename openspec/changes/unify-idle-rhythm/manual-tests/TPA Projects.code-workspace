@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "../../../../.."
+		},
+		{
+			"path": "../../../../../../.tpa"
+		}
+	],
+	"settings": {
+		"diffEditor.codeLens": true
+	}
+}

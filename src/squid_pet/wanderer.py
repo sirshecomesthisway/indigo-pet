@@ -314,8 +314,9 @@ class WanderController:
         d_right = max(0, max_x - ox)
         d_bottom = max(0, oy - min_y)
         d_top = max(0, max_y - oy)
-        edges = [("bottom", d_bottom, 0), ("left", d_left, 1),
-                 ("right", d_right, 2),   ("top", d_top, 3)]
+        # Priority: bottom(0) > top(1) > left(2) > right(3).
+        edges = [("bottom", d_bottom, 0), ("top", d_top, 1),
+                 ("left", d_left, 2),     ("right", d_right, 3)]
         edges.sort(key=lambda x: (x[1], x[2]))
         nearest_edge, nearest_dist, _ = edges[0]
 
@@ -351,7 +352,7 @@ class WanderController:
 
     # ── edge tracking (for frontend sprite rotation) ───────────────────
     def _compute_edge_at(self, x: float, y: float) -> str:
-        """Edge that (x,y) sits on with bottom>left>right>top priority."""
+        """Edge that (x,y) sits on with bottom>top>left>right priority."""
         frame = self._get_frame()
         if frame is None:
             return ""
@@ -364,8 +365,11 @@ class WanderController:
         d_right = max(0, max_x - x)
         d_bottom = max(0, y - min_y)
         d_top = max(0, max_y - y)
-        edges = [("bottom", d_bottom, 0), ("left", d_left, 1),
-                 ("right", d_right, 2),   ("top", d_top, 3)]
+        # Priority: bottom(0) > top(1) > left(2) > right(3).
+        # Top must beat left/right so she flips upside-down at top corners
+        # (otherwise left/right always win the tiebreak and she never rotates 180deg).
+        edges = [("bottom", d_bottom, 0), ("top", d_top, 1),
+                 ("left", d_left, 2),     ("right", d_right, 3)]
         edges.sort(key=lambda e: (e[1], e[2]))
         nearest, nearest_d, _ = edges[0]
         return nearest if nearest_d <= EDGE_BAND_PX else ""

@@ -313,6 +313,32 @@
     }
     #bubble.show-in  { animation: bubble-pop-in   150ms ease-out forwards; }
     #bubble.show-out { animation: bubble-fade-out 400ms ease-in  forwards; }
+
+    /* ─── TOP-EDGE overrides: bubble + tail below sprite ─── */
+    body[data-edge="top"] #bubble {
+      bottom: auto;
+      top: 62%;           /* mirror of normal bottom: 62% */
+    }
+    body[data-edge="top"] #bubble::after {
+      bottom: auto;
+      top: -6px;
+      border-bottom: none;
+      border-top: 3px solid #1f1418;
+    }
+    body[data-edge="top"] #bubble::before {
+      bottom: auto;
+      top: -12px;
+      border-bottom: none;
+      border-top: 3px solid #ecead9;
+      border-left: 3px solid #1f1418;
+      border-right: 3px solid #1f1418;
+    }
+    /* Hint also flips below */
+    body[data-edge="top"] #hint {
+      bottom: auto;
+      top: 4px;
+    }
+
   </style>
 </head>
 <body>
@@ -349,7 +375,7 @@
           h.style.top = (centerY + HEART_Y_OFFSET_PX) + 'px';
           // Center on the (left, top) anchor: subtract half width / height
           h.style.marginLeft = '-19px';   // half of 38px
-          h.style.marginTop = '-17px';    // half of 35px (round down)
+          h.style.marginTop = (_currentEdge === "top") ? '17px' : '-17px';
           h.style.animationDelay = (i * HEART_STAGGER_MS) + 'ms';
           h.addEventListener('animationend', () => h.remove(), { once: true });
           container.appendChild(h);
@@ -497,6 +523,7 @@
         wrapperEl.style.transform = `rotate(${deg}deg)`;
       }
       pet.dataset.edge = edge;
+      document.body.dataset.edge = edge;
       console.log(`[squid] edge -> ${edge || "(none)"} rotate ${deg}deg (wrapper)`);
     }
 
@@ -951,7 +978,8 @@ document.addEventListener("dblclick", async (e) => {
         const sprite = document.getElementById('pet');
         if (sprite) {
           const r = sprite.getBoundingClientRect();
-          spawnHearts(r.left + r.width / 2, r.top);
+          spawnHearts(r.left + r.width / 2,
+                    _currentEdge === "top" ? r.bottom : r.top);
         }
         console.log("[squid] dblclick LIKE (heart + wake)");
       } catch (err) {
