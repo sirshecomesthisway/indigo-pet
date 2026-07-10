@@ -982,7 +982,7 @@ document.addEventListener("dblclick", async (e) => {
         if (sprite) {
           const r = sprite.getBoundingClientRect();
           spawnHearts(r.left + r.width / 2,
-                    _currentEdge === "top" ? r.bottom : r.top);
+                    _currentEdge === "top" ? r.bottom - 60 : r.top);
         }
         console.log("[squid] dblclick LIKE (heart + wake)");
       } catch (err) {
