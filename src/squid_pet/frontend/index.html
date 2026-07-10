@@ -314,26 +314,29 @@
     #bubble.show-in  { animation: bubble-pop-in   150ms ease-out forwards; }
     #bubble.show-out { animation: bubble-fade-out 400ms ease-in  forwards; }
 
-    /* ─── TOP-EDGE overrides: bubble + tail below sprite ─── */
+    /* ─── TOP-EDGE overrides: bubble near rotated head at window bottom ─── */
+    /* After 180° rotation around y=210, the head lands at ~y=265 in the
+       300px window. Bubble sits just above the head so the tail bridges
+       the gap. Tail flips to point DOWN toward the head (which visually
+       points toward screen centre). */
     body[data-edge="top"] #bubble {
-      bottom: auto;
-      top: 62%;           /* mirror of normal bottom: 62% */
+      bottom: 4%;           /* ~12px from window bottom, near the rotated head */
     }
     body[data-edge="top"] #bubble::after {
       bottom: auto;
-      top: -6px;
+      top: -6px;            /* tail step 1: above the bubble body */
       border-bottom: none;
       border-top: 3px solid #1f1418;
     }
     body[data-edge="top"] #bubble::before {
       bottom: auto;
-      top: -12px;
+      top: -12px;           /* tail step 2: staircase tip */
       border-bottom: none;
       border-top: 3px solid #ecead9;
       border-left: 3px solid #1f1418;
       border-right: 3px solid #1f1418;
     }
-    /* Hint also flips below */
+    /* Hint also near bottom */
     body[data-edge="top"] #hint {
       bottom: auto;
       top: 4px;

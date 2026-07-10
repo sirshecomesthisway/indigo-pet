@@ -1186,6 +1186,36 @@ def main() -> None:
         except Exception as e:
             print(f"[squid-pet] couldn't dispatch all-spaces: {e}", flush=True)
 
+        # Disable macOS auto-constraint: by default, NSWindow.constrainFrameRect:toScreen:
+        # prevents the window from extending beyond the visible frame. For a desktop pet
+        # that needs to hug the top edge (with 155px of transparent window above the sprite
+        # hiding behind the menu bar), this constraint snaps the window 155px downward
+        # after every walk cycle ends. We override it to return the requested frame as-is.
+        def _disable_constrain():
+            try:
+                import objc
+                from AppKit import NSWindow
+                # Method swizzle: replace constrainFrameRect:toScreen: on the class
+                # with a no-op that returns the requested frame unchanged.
+                orig = NSWindow.instanceMethodForSelector_(b"constrainFrameRect:toScreen:")
+                def _unconstrained(self, frame, screen):
+                    return frame
+                # Register the replacement
+                _unconstrained = objc.selector(
+                    _unconstrained,
+                    selector=b"constrainFrameRect:toScreen:",
+                    signature=orig.signature,
+                )
+                objc.classAddMethod(NSWindow, b"constrainFrameRect:toScreen:", _unconstrained)
+                print("[squid-pet] constrainFrameRect override installed (no auto-snap)", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] constrainFrame override failed: {e}", flush=True)
+        try:
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(_disable_constrain)
+        except Exception as e:
+            print(f"[squid-pet] couldn't dispatch constrainFrame override: {e}", flush=True)
+
         # Snap to saved corner via NSWindow (accurate, no origin issues).
         # MUST run on the main thread — on macOS 14+ NSWindow operations
         # called from a WebKit callback thread silently fail (no exception
