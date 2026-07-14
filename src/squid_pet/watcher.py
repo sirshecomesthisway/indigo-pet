@@ -868,8 +868,15 @@ class StateMachine:
             _threshold = float(_cfg.get("approval_alert_threshold_sec", 10.0))
             _sound = str(_cfg.get("approval_alert_sound", "Glass") or "")
             _text = str(_cfg.get("approval_alert_text", "your turn"))
+            # Pink-2026-07-14: the CPU-heuristic fallback is OFF by default.
+            # It fired approval_needed whenever a TPA went idle at its ordinary
+            # ">>> " prompt after doing work -- i.e. the plain "waiting for
+            # input" state, which Pink does NOT want Squid to wave for. Squid
+            # now waves ONLY on the direct ask_user_question / approval signal.
+            _fallback = bool(_cfg.get("approval_alert_fallback_enabled", False))
         except Exception:
             _enabled, _threshold, _sound, _text = True, 10.0, "Glass", "your turn"
+            _fallback = False
 
         # Direct signal beats everything. No threshold, no snooze --
         # TPA explicitly said "I'm waiting on you".
@@ -884,7 +891,7 @@ class StateMachine:
         if awaiting_pids:
             fired_reason = ("awaiting_input flag from TPA pid(s) "
                             + ",".join(str(p) for p in awaiting_pids))
-        elif (tpa_running_now and per_proc_idle > 0
+        elif (_fallback and tpa_running_now and per_proc_idle > 0
               and _enabled and per_proc_idle >= _threshold):
             fired_reason = ("approval needed ("
                             + str(int(per_proc_idle))

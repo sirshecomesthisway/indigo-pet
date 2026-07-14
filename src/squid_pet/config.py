@@ -49,6 +49,12 @@ DEFAULTS: dict[str, Any] = {
     # entirely (functionally equivalent to llm_bubbles=False but lets
     # you flip the menu toggle without re-enabling network calls).
     "llm_bubbles_daily_cap": 500,
+    # Pink-2026-07-14: CPU-heuristic approval fallback. OFF by default.
+    # When False, Squid waves ONLY on the direct ask_user_question /
+    # approval-prompt signal (Indigo asking Pink questions). When True,
+    # Squid ALSO waves when any TPA goes idle at its ordinary prompt after
+    # being busy -- the old behavior Pink flagged as a false alarm.
+    "approval_alert_fallback_enabled": False,
 }
 
 
