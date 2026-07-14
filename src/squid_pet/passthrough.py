@@ -101,6 +101,7 @@ class PassthroughController:
         self._get_ns_window = get_ns_window_callable
         self._masks = load_alpha_masks()
         self._current_state = "idle"
+        self._current_edge = ""
         self._paused = False
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -112,6 +113,11 @@ class PassthroughController:
         with self._lock:
             if state in self._masks:
                 self._current_state = state
+
+    def set_edge(self, edge: str) -> None:
+        """Track current edge for CSS-transform-aware hit testing."""
+        with self._lock:
+            self._current_edge = edge or ""
 
     def pause(self) -> None:
         """Disable passthrough toggling (called when user is dragging)."""
@@ -248,8 +254,13 @@ class PassthroughController:
                 local_y = win_h - (cy - win_y)   # flip Y (Cocoa→image)
 
                 # Map to sprite-local coords
+                # When edge=="top", CSS applies translateY(-80px) which
+                # shifts the visual sprite up 80px. Adjust hit-test to match.
+                with self._lock:
+                    edge = self._current_edge
+                top_offset = 80 if edge == "top" else 0
                 sprite_x = int(local_x - SPRITE_LEFT)
-                sprite_y = int(local_y - SPRITE_TOP)
+                sprite_y = int(local_y - (SPRITE_TOP - top_offset))
 
                 # Hit test: simple BOUNDING BOX around the character (with generous
                 # halo). Was: dilated alpha mask, but irregular silhouette left

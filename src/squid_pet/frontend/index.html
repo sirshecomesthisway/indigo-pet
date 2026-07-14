@@ -314,29 +314,29 @@
     #bubble.show-in  { animation: bubble-pop-in   150ms ease-out forwards; }
     #bubble.show-out { animation: bubble-fade-out 400ms ease-in  forwards; }
 
-    /* ─── TOP-EDGE overrides: bubble near rotated head at window bottom ─── */
-    /* After 180° rotation around y=210, the head lands at ~y=265 in the
-       300px window. Bubble sits just above the head so the tail bridges
-       the gap. Tail flips to point DOWN toward the head (which visually
-       points toward screen centre). */
+    /* ─── TOP-EDGE overrides: stacking = face → heart → bubble ─── */
+    /* After 180° rotation the face lands at y≈245-275. Heart spawns
+       at y≈235-270 (on the face). Bubble goes to the very bottom of
+       the window (y≈267-300) so it sits BELOW the heart. Tail flips
+       to point UP toward the face/heart above. */
     body[data-edge="top"] #bubble {
-      bottom: 4%;           /* ~12px from window bottom, near the rotated head */
+      bottom: 0;            /* flush with window bottom, below heart zone */
     }
     body[data-edge="top"] #bubble::after {
       bottom: auto;
-      top: -6px;            /* tail step 1: above the bubble body */
+      top: -6px;            /* tail step 1: above bubble body → points UP */
       border-bottom: none;
       border-top: 3px solid #1f1418;
     }
     body[data-edge="top"] #bubble::before {
       bottom: auto;
-      top: -12px;           /* tail step 2: staircase tip */
+      top: -12px;           /* tail step 2: staircase tip pointing UP */
       border-bottom: none;
       border-top: 3px solid #ecead9;
       border-left: 3px solid #1f1418;
       border-right: 3px solid #1f1418;
     }
-    /* Hint also near bottom */
+    /* Hint near top of window (near feet, out of the way) */
     body[data-edge="top"] #hint {
       bottom: auto;
       top: 4px;
@@ -378,7 +378,7 @@
           h.style.top = (centerY + HEART_Y_OFFSET_PX) + 'px';
           // Center on the (left, top) anchor: subtract half width / height
           h.style.marginLeft = '-19px';   // half of 38px
-          h.style.marginTop = (_currentEdge === "top") ? '17px' : '-17px';
+          h.style.marginTop = (_currentEdge === "top") ? '0px' : '-17px';
           h.style.animationDelay = (i * HEART_STAGGER_MS) + 'ms';
           h.addEventListener('animationend', () => h.remove(), { once: true });
           container.appendChild(h);
@@ -523,7 +523,12 @@
       // play freely INSIDE the rotated wrapper frame. No more fighting.
       const wrapperEl = document.getElementById("pet-wrapper");
       if (wrapperEl) {
-        wrapperEl.style.transform = `rotate(${deg}deg)`;
+        // Top edge: shift sprite UP 80px to create room below the rotated
+        // face for hearts + bubble. The 80px of headroom (y=0-120) absorbs
+        // the shift; after rotation the face moves from y≈250 to y≈170,
+        // freeing y≈205-300 for decorations.
+        const yShift = (edge === "top") ? "translateY(-80px) " : "";
+        wrapperEl.style.transform = `${yShift}rotate(${deg}deg)`;
       }
       pet.dataset.edge = edge;
       document.body.dataset.edge = edge;
@@ -982,7 +987,7 @@ document.addEventListener("dblclick", async (e) => {
         if (sprite) {
           const r = sprite.getBoundingClientRect();
           spawnHearts(r.left + r.width / 2,
-                    _currentEdge === "top" ? r.bottom - 60 : r.top);
+                    _currentEdge === "top" ? r.bottom : r.top);
         }
         console.log("[squid] dblclick LIKE (heart + wake)");
       } catch (err) {

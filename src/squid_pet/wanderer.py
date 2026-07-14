@@ -41,7 +41,9 @@ WANDER_MAX_DURATION_SEC = 3.0          # hard cap — never walk longer than thi
 WANDER_TICK_HZ = 30                    # smoothness
 EDGE_MARGIN_PX = 12                    # keep this far from visibleFrame left/right/top
 BOTTOM_MARGIN_PX = -40                 # feet AT visible-frame bottom (auto-hide Dock)
-TOP_MARGIN_PX    = 0                   # head hugs menu bar exactly (0 = touch, negative = tuck under).
+TOP_MARGIN_PX    = 35                  # on top edge she rotates 180deg; drowsy feet (cocoa 172) flip to window top,
+                                       # ~27px above CHAR_TOP_IN_WIN(145). Pull her down 35px so nothing clips the
+                                       # physical screen top. (Was 0="hug menu bar" but that clipped rotated body. Pink 2026-07-12.)
                                        # Was implicitly -EDGE_MARGIN_PX (12px gap); split out so top
                                        # doesnt inherit the same margin as left/right. Menu bar is
                                        # opaque so hugging it is fine. Pink 2026-07-07.

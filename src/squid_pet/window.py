@@ -77,6 +77,8 @@ CHAR_TOP_IN_WIN    = 145    # WINDOW_H(300) - SPRITE_TOP(120) - typical min_y(35
                             # head 20-40px below menu bar in idle. Trade-off: flag tips
                             # (attention_needed) clip ~34px behind menu bar. Menu bar is
                             # opaque so it is a clean cut, not a visual glitch. Pink 2026-07-07.
+TOP_MARGIN_PX      = 35     # MIRRORS wanderer.TOP_MARGIN_PX — pulls top-edge origin down so the
+                            # 180deg-rotated body doesn't clip the physical screen top. Pink 2026-07-12.
 
 
 def clamp_origin_to_screen(ox, oy):
@@ -93,7 +95,7 @@ def clamp_origin_to_screen(ox, oy):
         min_ox = vx - CHAR_LEFT_IN_WIN
         max_ox = vx + vw - CHAR_RIGHT_IN_WIN
         min_oy = vy - CHAR_BOTTOM_IN_WIN
-        max_oy = vy + vh - CHAR_TOP_IN_WIN
+        max_oy = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         return (max(min_ox, min(max_ox, ox)),
                 max(min_oy, min(max_oy, oy)))
     except Exception:
@@ -655,6 +657,9 @@ class PetApi:
         Values: "" (off-edge), "bottom", "left", "right", "top"."""
         with self._lock:
             self._wander_edge = edge or ""
+        # Notify passthrough so hit-test accounts for top-edge CSS offset
+        if self._passthrough:
+            self._passthrough.set_edge(edge or "")
 
     def set_wander_sub_state(self, s: str) -> None:
         with self._lock:
