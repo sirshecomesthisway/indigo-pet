@@ -1112,6 +1112,44 @@ class PetApi:
         _th.Timer(0.4, self.quit).start()
 
     def quit(self) -> None:
+        """Fully stop Squid — and make her *stay* stopped.
+
+        When she's managed by the LaunchAgent, closing the window is NOT
+        enough: pywebview tears the process down with a signal, which launchd
+        counts as a *crash*. Per the plist's ``KeepAlive.Crashed = true`` that
+        triggers an instant respawn — the "she comes back right after she
+        quits" bug. So when the agent is loaded we ``launchctl bootout`` it
+        instead: that deregisters the job from launchd entirely, so KeepAlive
+        no longer applies and she stays dead until ``squid start``.
+
+        In dev mode (no plist installed, e.g. run straight from a terminal)
+        we just close the window like before.
+        """
+        import os as _os
+        import subprocess as _subprocess
+
+        label = "com.pink.squid-pet"
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+        if plist.exists():
+            uid = _os.getuid()
+            try:
+                # Detached so it outlives us. bootout SIGTERMs this process
+                # AND removes the job from launchd's domain, so KeepAlive
+                # cannot resurrect her.
+                _subprocess.Popen(
+                    ["launchctl", "bootout", f"gui/{uid}/{label}"],
+                    stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                print(f"[squid-pet] quit: booting out {label} "
+                      "(won't respawn until 'squid start')", flush=True)
+                return
+            except Exception as e:
+                print(f"[squid-pet] quit: bootout failed ({e}); "
+                      "falling back to window close", flush=True)
+
+        # Dev mode (no LaunchAgent) or bootout failed: just close the window.
         nw = _get_ns_window()
         if nw:
             nw.close()
