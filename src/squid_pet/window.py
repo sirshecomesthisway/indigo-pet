@@ -887,7 +887,25 @@ class PetApi:
 
     def _apply_hide_state(self) -> None:
         """Set the NSWindow alpha to 0 (hidden) or 1.0 (shown).
-        Must run on the AppKit main thread."""
+
+        When hidden we ALSO (a) freeze wandering -- the routine's
+        is_pinned gate now honors self._hidden, so she stops walking
+        the moment she goes invisible -- and (b) force the passthrough
+        controller into always-ignore mode, so the invisible, frozen
+        window can never intercept a click (the "still there but you
+        can't see it" footgun Pink hit 2026-07-16). Restart/unhide
+        restores normal click behavior.
+
+        Must run on the AppKit main thread.
+        """
+        # Make the (now invisible) window fully click-through so it is
+        # truly "not available" while hidden. Guarded -- passthrough is
+        # wired in after startup.
+        try:
+            if self._passthrough is not None:
+                self._passthrough.set_hidden(self._hidden)
+        except Exception as e:
+            print(f"[squid-pet] passthrough hide sync failed: {e}", flush=True)
         try:
             from PyObjCTools import AppHelper
             alpha = 0.0 if self._hidden else 1.0
@@ -1303,7 +1321,7 @@ def main() -> None:
                 # non-idle pauses; mood-gate handles drowsy/sleeping.
                 is_busy=lambda: False,
                 get_mood=api.get_frontend_mood,
-                is_pinned=lambda: api._pinned or _time.time() < api._wander_paused_until,
+                is_pinned=lambda: api._pinned or api._hidden or _time.time() < api._wander_paused_until,
             )
             api._routine = rc
             rc.start()

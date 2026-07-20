@@ -103,6 +103,10 @@ class PassthroughController:
         self._current_state = "idle"
         self._current_edge = ""
         self._paused = False
+        # hide-mode (2026-07-16 Pink/Indigo): when True the window is
+        # invisible AND frozen, so we force always-ignore mouse events
+        # -- the hidden window must never intercept a click.
+        self._hidden = False
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._last_ignore: bool | None = None
@@ -129,6 +133,17 @@ class PassthroughController:
     def resume(self) -> None:
         with self._lock:
             self._paused = False
+
+    def set_hidden(self, hidden: bool) -> None:
+        """Hide Squid: force full click-through while invisible.
+        When hidden the loop stops hit-testing and the window always
+        ignores mouse events so it is truly 'not available'."""
+        with self._lock:
+            self._hidden = bool(hidden)
+        if hidden:
+            # Immediately make the window click-through; don't wait for
+            # the next poll tick.
+            self._apply_ignore(True)
 
     def start(self) -> None:
         t = threading.Thread(target=self._loop, daemon=True, name="squid-passthrough")
@@ -211,7 +226,15 @@ class PassthroughController:
             try:
                 with self._lock:
                     paused = self._paused
+                    hidden = self._hidden
                     state = self._current_state
+
+                if hidden:
+                    # Hidden: keep the invisible window fully
+                    # click-through, skip all hit-testing.
+                    self._apply_ignore(True)
+                    time.sleep(POLL_INTERVAL)
+                    continue
 
                 if paused:
                     time.sleep(POLL_INTERVAL)
