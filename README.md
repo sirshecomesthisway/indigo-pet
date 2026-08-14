@@ -1,34 +1,41 @@
 # Squid Pet — "Squid"
 
-A tiny floating desktop companion that watches TPA and reacts to what's
-happening. Named **Squid** (chosen by Pink Tan, June 2026), nicknamed **Squid**
-because she looks like one.
+A tiny floating desktop companion that watches your AI coding agent and
+reacts to what's happening. Named **Squid** (chosen by Pink Tan, June
+2026), nicknamed **Squid** because she looks like one.
 
-She lives in a transparent, frameless window pinned to a corner of the screen.
-A background watcher reads `~/.tpa/` activity — process CPU, subagent
-files, error logs, shell children, macOS HID idle — and computes her mood every
-800 ms. Her animations are pure CSS keyframes; the Python side drives state +
-window position only.
+She lives in a transparent, frameless window pinned to a corner of the
+screen. A background watcher polls a pluggable set of activity detectors
+— TPA, Claude Code, git, terminal, IDE — every 800 ms and computes
+her mood from whichever ones are enabled and running. Her animations are
+pure CSS keyframes; the Python side drives state + window position only.
+
+Squid started life watching **TPA** (`~/.tpa/` — process
+CPU, subagent files, error logs, shell children) but now watches
+**Claude Code** (the `claude` CLI) just as richly: live tool-subprocess
+detection plus transcript-write recency give the same working/thinking
+distinction TPA gets. Git, terminal, and IDE activity feed a
+simpler busy/idle signal on top. See [Detectors & triggers](#detectors--triggers) below.
 
 ---
 
 ## Install
 
 ```bash
-# Clone + install (requires corporate VPN + your internal GHE SSH key):
+# Clone + install:
 mkdir -p ~/Projects && cd ~/Projects
-git clone git@internal-ghe.example.com:pink/squid-pet.git
+git clone https://github.com/sirshecomesthisway/squid-pet.git
 cd squid-pet && ./install.sh
 ```
 
 > **Where Squid lives:** her source is in `~/Projects/squid-pet/`, runtime state in `~/.squid-pet/`, launcher at `~/.local/bin/squid`, LaunchAgent plist at `~/Library/LaunchAgents/com.pink.squid-pet.plist`. The installer is idempotent — re-running it from `~/Projects/squid-pet/` is the supported update path (or `squid update`). If you cloned somewhere else, the installer detects that and relocates the repo to the canonical location for you (post-e2e-polish 2026-06-27 Fix 5).
 
 That sets up `uv venv`, installs the package from the committed `uv.lock`
-(no dependency resolution — fast), renders the LaunchAgent plist, drops
-`~/.local/bin/squid` on your PATH, writes sensible default settings, and
-boots Squid.
+against public PyPI (no dependency resolution — fast), renders the
+LaunchAgent plist, drops `~/.local/bin/squid` on your PATH, writes
+sensible default settings, and boots Squid.
 
-**Measured on M1 + corporate VPN:**
+**Measured on M1:**
 
 | Scenario | Wall time |
 |---|---|
@@ -37,20 +44,15 @@ boots Squid.
 | Cold install (fresh clone, empty `~/.cache/uv`) | **~3 minutes** |
 
 The slow bit on a true cold install is downloading wheels for `pillow`,
-`psutil`, and the `pyobjc-*` frameworks from internal artifactory
-(~15 MiB total, throughput-bound). Every subsequent install reuses
-uv's wheel cache and the committed lockfile, so resolution + downloads
-both get skipped.
+`psutil`, and the `pyobjc-*` frameworks from PyPI (~15 MiB total,
+throughput-bound). Every subsequent install reuses uv's wheel cache and
+the committed lockfile, so resolution + downloads both get skipped.
 
 If a clean install ever takes more than 5 minutes, run
 `./install.sh --profile` and share the table from
 `/tmp/squid-pet-install-profile-*.txt` — that's a regression worth
 investigating.
 
-> **Why not `curl | bash`?** Our internal GHE repo is private — anonymous
-> curl returns 404. `git clone` uses your existing credentials. Sorry,
-> internal-only constraint.
->
 > **Want the corner/stroll prompts back?** Run `./install.sh --wizard`.
 > Otherwise you get sensible defaults (bottom-right corner, edges stroll,
 > show on all spaces) — edit `~/.squid-pet/settings.json` any time to
@@ -73,8 +75,8 @@ squid uninstall              # keeps your settings + source
 squid uninstall --yes --all  # nukes everything, no prompts
 ```
 
-**Requirements:** macOS 12+, corporate VPN, Homebrew. `uv` is auto-installed
-if missing. Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
+**Requirements:** macOS 12+, Homebrew. `uv` is auto-installed if missing.
+Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
 Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 
 ---
@@ -84,8 +86,8 @@ Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 | State | Trigger | Look |
 |---|---|---|
 | **idle** | Default — nothing else fires | Gentle breathing, occasional blink |
-| **thinking** | TPA CPU busy ≥ 2 ticks, no recent log writes (LLM call) | Head tilt, floating dots, cyan aura |
-| **working** | Sustained CPU + tool activity, OR active shell child | Typing arms, focused eyes, yellow aura |
+| **thinking** | TPA CPU busy with no recent log writes, OR Claude Code wrote a session transcript in the last 20s with no live tool subprocess | Head tilt, floating dots, cyan aura |
+| **working** | Sustained CPU + tool activity, OR active shell child (TPA or Claude Code) | Typing arms, focused eyes, yellow aura |
 | **grooving** | Subagent `.pkl` modified < 30 s ago | Spinning sway, rainbow aura |
 | **celebrating** | Busy → idle transition (task likely complete) | Bounce, confetti, big smile (4 s window) |
 | **concerned** | Recent line in `errors.log` (60 s for hard, 20 s for transient/network) | Tremble, red aura, raised eyes |
@@ -100,16 +102,58 @@ contract.
 
 ---
 
+## Detectors & triggers
+
+Squid reads activity from a pluggable list of detectors
+(`src/squid_pet/detectors.py`), each independently toggleable via
+`~/.squid-pet/settings.json`:
+
+| Detector | Signal | Feeds |
+|---|---|---|
+| `tpa` | TPA process CPU, session-log mtimes, subagent `.pkl`, `errors.log`, `llm_active.flag` | working / thinking / grooving / concerned / celebrating |
+| `claude_code` | `claude` process presence, live tool subprocess, `~/.claude/projects/*/*.jsonl` write recency | working / thinking |
+| `git` | `.git/{HEAD,index,refs/heads/}` mtimes under `project_dirs` | busy / celebrating |
+| `terminal` | any shell with a long-lived non-shell child | busy (off by default — misfires on any dev machine with a long-running foreground process, e.g. an editor or a REPL) |
+| `ide` | VS Code / Cursor / JetBrains CPU + recent file mtimes under `project_dirs` | busy / grooving |
+
+`tpa` and `claude_code` get the full working/thinking distinction
+(same cascade, OR-merged); the rest feed a flatter busy/idle signal.
+Defaults:
+
+```json
+{
+  "triggers": {
+    "tpa": true,
+    "claude_code": true,
+    "git": true,
+    "terminal": false,
+    "ide": true,
+    "project_dirs": ["~/Projects"]
+  }
+}
+```
+
+Edit any flag to `false` to disable that detector entirely — no scans,
+no process iteration, no filesystem walks for that source. Changes are
+picked up live (settings.json is hot-reloaded). Every detector reads
+only metadata (process names, CPU%, file mtimes) — never file contents,
+never network. Full per-detector data-access table: [`docs/PRIVACY.md`](docs/PRIVACY.md).
+Run `squid why` to see exactly which detector fired on the current tick.
+
+---
+
 ## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ watcher.py     (background thread, 1 Hz)                               │
-│   psutil → find tpa procs, aggregate CPU%                       │
+│   detectors.py → pluggable Detector list (tpa, claude_code,     │
+│                  git, terminal, ide) — see "Detectors & triggers"      │
+│   psutil → find tpa / claude procs, aggregate CPU%              │
 │   ioreg  → macOS HID idle                                              │
-│   mtime  → ~/.tpa/{autosaves,subagent_sessions,errors.log,…}    │
+│   mtime  → ~/.tpa/{…}, ~/.claude/projects/*/*.jsonl, .git/…     │
 │   ────────────────────────────────────────────────────                 │
-│   StateMachine.compute() — 9-branch priority cascade                   │
+│   StateMachine.compute() — priority cascade over detector signals      │
 │   ↓                                                                    │
 │   api.update(state)  +  write ~/.squid-pet/state.json (atomic)        │
 └────────────────────────────────────────────────────────────────────────┘
@@ -159,6 +203,7 @@ src/squid_pet/
 ├── __init__.py
 ├── __main__.py              # CLI entry: --check, --watcher-only, default=full
 ├── watcher.py               # state detection + StateMachine (priority cascade)
+├── detectors.py             # pluggable Detector classes (tpa, claude_code, git, terminal, ide)
 ├── window.py                # pywebview window + PetApi (JS bridge)
 ├── routine.py               # RoutineController — IDLE_ROUTINE scheduler
 ├── wanderer.py              # service-mode walks + look-around + sprint
@@ -177,7 +222,8 @@ launchagent/
 └── install.sh
 
 tests/
-└── test_state_machine.py    # 24 unit tests covering all 9 priority branches
+├── test_state_machine.py    # priority-cascade branches + cross-tick memory
+└── test_detectors_*.py      # one file per detector, injected dependencies
 
 openspec/                    # OpenSpec specs + changes (see "Specs" below)
 ```
@@ -190,10 +236,11 @@ openspec/                    # OpenSpec specs + changes (see "Specs" below)
 .venv/bin/pytest
 ```
 
-24 tests, ~0.1 s. Covers every state-machine branch + cross-tick memory
+328 tests, ~20 s. Covers every state-machine branch + cross-tick memory
 (burst-suppression busy_streak, `agent_idle_seconds` tracking, celebration
-transition window). I/O is monkey-patched at module-level so the suite never
-touches psutil / filesystem / ioreg in real life.
+transition window) plus each detector in isolation. I/O is monkey-patched
+or dependency-injected so the suite never touches psutil / filesystem /
+ioreg in real life.
 
 ---
 
@@ -233,6 +280,7 @@ backgrounds.
   "idle_seconds": 3.2,
   "agent_idle_seconds": 12.4,
   "tpa_running": true,
+  "claude_code_running": false,
   "timestamp": 1780819113.12,
   "message": "thinking",
   "concern_reason": "",
