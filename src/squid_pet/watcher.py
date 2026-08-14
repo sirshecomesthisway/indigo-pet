@@ -94,6 +94,7 @@ class PetState:
     idle_seconds: float = 0.0          # macOS HID idle (kbd/mouse system-wide)
     agent_idle_seconds: float = 0.0       # seconds since TPA last left "idle" state
     tpa_running: bool = False
+    claude_code_running: bool = False
     timestamp: float = 0.0
     message: str = ""             # short caption shown under the pet
     concern_reason: str = ""      # short headline of why concerned (for tooltip)
@@ -161,6 +162,34 @@ def find_tpa_processes() -> list[psutil.Process]:
                     matches.append(p)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+    return matches
+
+
+def find_claude_code_processes() -> list[psutil.Process]:
+    """Return all running Claude Code CLI processes.
+
+    NOTE: psutil's Process.name() is NOT reliable for this binary on
+    macOS -- empirically verified (2026-08-14) it returns the versioned
+    install path's basename (e.g. "2.1.227", from
+    ~/.local/share/claude/versions/2.1.227), not "claude". `ps aux`'s
+    `comm` column resolves this differently and shows "claude", which
+    is what led to the wrong assumption during initial development that
+    a name-match would work. `cmdline()[0]` is reliable (`["claude"]`),
+    so this follows the same cmdline-based, lazily-fetched pattern as
+    find_tpa_processes (see its docstring for why cmdline must
+    be fetched per-process rather than via process_iter's bulk prefetch).
+    """
+    matches = []
+    for p in psutil.process_iter(["pid"]):
+        try:
+            cmdline = p.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, SystemError):
+            continue
+        if not cmdline:
+            continue
+        exe = cmdline[0].rsplit("/", 1)[-1]
+        if exe == "claude":
+            matches.append(p)
     return matches
 
 
@@ -772,9 +801,14 @@ class StateMachine:
               f"{enabled_names}", flush=True)
 
     def _refresh_tpa_detector_ref(self) -> None:
-        """Re-point the TPA-detector cache after a detector list swap."""
+        """Re-point the TPA/Claude-Code detector caches after a detector
+        list swap. Both feed the same rich working/thinking cascade in
+        _compute_inner (see claude-code-detector design.md)."""
         self._tpa_detector = next(
             (d for d in self.detectors if d.name == "tpa"), None
+        )
+        self._claude_detector = next(
+            (d for d in self.detectors if d.name == "claude_code"), None
         )
         # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
@@ -937,9 +971,12 @@ class StateMachine:
         return st
 
     def _other_detectors(self):
-        """Iterator over detectors excluding TPA (and excluding disabled)."""
+        """Iterator over detectors excluding TPA and ClaudeCode
+        (both are promoted into the rich branch-4 cascade below instead
+        of the flat OR-fallback -- excluding them here avoids double
+        counting), and excluding disabled detectors."""
         return (d for d in self.detectors
-                if d.name != "tpa" and d.enabled)
+                if d.name not in ("tpa", "claude_code") and d.enabled)
 
     def _compute_inner(self) -> PetState:
         now = time.time()
@@ -977,6 +1014,31 @@ class StateMachine:
             tpa_celebrating = False
             tpa_grooving = False
 
+        claude = self._claude_detector
+        # Trigger one scan if we have a Claude Code detector (populates
+        # claude_code_running for the state.json schema). Mirrors the TPA
+        # block above; see claude-code-detector design.md for why this
+        # detector is promoted into the rich cascade instead of the flat
+        # non-TPA OR-fallback.
+        if claude is not None and claude.enabled:
+            _ = claude.is_busy(now)
+            claude_running = claude.claude_code_running
+            claude_shell_active = claude.shell_active
+            claude_streaming = claude.streaming
+        else:
+            claude_running = False
+            claude_shell_active = False
+            claude_streaming = False
+
+        # Merged signals feeding branch 4 below. tpa_running /
+        # tpa.shell_active / tpa.llm_streaming keep their own TPA-only
+        # meaning for state.json and the TPA-specific sub-branches (4a
+        # concerned, the cpu-heuristic 4c) -- only the branches that
+        # generalize cleanly are broadened.
+        tpa_or_claude_running = running or claude_running
+        shell_active_merged = shell_active or claude_shell_active
+        streaming_merged = llm_streaming or claude_streaming
+
         idle = macos_idle_seconds()
         error_age = file_age_sec(ERRORS_LOG)
 
@@ -1011,6 +1073,7 @@ class StateMachine:
             cpu_percent=round(cpu, 1),
             idle_seconds=round(idle, 1),
             tpa_running=running,
+            claude_code_running=claude_running,
             timestamp=now,
         )
 
@@ -1061,10 +1124,15 @@ class StateMachine:
             st.message = "🤸 subagent" if tpa_grooving else "🤸 creative burst"
             return st
 
-        # ── 4. TPA RUNNING -- richer TPA-specific cascade ──
-        if running:
-            # 4a. CONCERNED -- recent error in TPA log
-            if error_age != float("inf") and cpu < CPU_BUSY_THRESHOLD:
+        # ── 4. TPA OR CLAUDE CODE RUNNING -- richer working/thinking cascade ──
+        # Claude Code is promoted in here (not left in the flat non-TPA
+        # fallback) so it gets the same working/thinking distinction TPA
+        # gets. See claude-code-detector design.md for the merge table.
+        if tpa_or_claude_running:
+            # 4a. CONCERNED -- recent error in TPA log. Stays TPA-only: no
+            # errors.log equivalent exists for Claude Code (explicit
+            # non-goal), so this must not fire from claude_running alone.
+            if running and error_age != float("inf") and cpu < CPU_BUSY_THRESHOLD:
                 reason, severity = parse_last_error(ERRORS_LOG)
                 window = (CONCERN_TRANSIENT_LOOKBACK_SEC
                           if severity == "transient" else CONCERN_LOOKBACK_SEC)
@@ -1084,10 +1152,13 @@ class StateMachine:
                 _tool_win = TOOL_ACTIVE_WINDOW_SEC
                 _work_hold = 25.0
             # 4b. WORKING -- actively running tool / shell command.
-            if shell_active:
+            # Merged: fires from either TPA's or Claude Code's live
+            # tool-subprocess signal.
+            if shell_active_merged:
                 self.working_hold_until = now + _work_hold
                 st.state = "working"
-                st.state_reason = "shell child active"
+                st.state_reason = ("shell child active" if shell_active
+                                    else "shell child active (claude_code)")
                 st.message = "🛠️ running shell"
                 return st
             if sustained_busy and tool_activity_age < _tool_win:
@@ -1096,8 +1167,13 @@ class StateMachine:
                 st.state_reason = f"writing (cpu {int(cpu)}%, tool {int(tool_activity_age)}s ago)"
                 st.message = f"⌨️ writing ({int(cpu)}% cpu)"
                 return st
-            # 4b-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy
-            if now < self.working_hold_until and (sustained_busy or cpu > 5):
+            # 4b-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy.
+            # Merged: without streaming_merged/shell_active_merged here, this
+            # grace window never applied to Claude-only sessions (all TPA
+            # fields default False/0 when TPA isn't running).
+            if now < self.working_hold_until and (
+                sustained_busy or cpu > 5 or streaming_merged or shell_active_merged
+            ):
                 st.state = "working"
                 st.state_reason = f"working hold ({int(self.working_hold_until - now)}s left)"
                 st.message = "✨ working"
@@ -1106,10 +1182,12 @@ class StateMachine:
             # has written ~/.tpa/llm_active.flag while mid-stream. This is
             # the authoritative "LLM is thinking" signal, replacing the CPU
             # heuristic. Runs AFTER 'working' checks because if a tool is actively
-            # executing, that's a more useful state than 'thinking'.
-            if llm_streaming:
+            # executing, that's a more useful state than 'thinking'. Merged with
+            # Claude Code's transcript-write-recency signal (its own heartbeat
+            # equivalent -- see design.md).
+            if streaming_merged:
                 st.state = "thinking"
-                st.state_reason = "llm streaming"
+                st.state_reason = "llm streaming" if llm_streaming else "claude streaming"
                 st.message = "🤔 thinking"
                 return st
             # 4c. THINKING (FALLBACK) -- CPU busy heuristic for TPA installs

@@ -20,7 +20,10 @@ Design goals:
 
 See ``openspec/changes/trigger-broadening/design.md`` for the full
 contract per detector (D1 git, D2 terminal, D3 IDE, D4 settings, D5
-privacy).
+privacy), and ``openspec/changes/claude-code-detector/design.md`` for
+``ClaudeCodeDetector``, which -- unlike git/terminal/IDE -- is promoted
+into the TPA-style working/thinking cascade rather than the flat
+non-TPA fallback.
 """
 from __future__ import annotations
 
@@ -212,6 +215,141 @@ class TPADetector:
             "llm_streaming": self.llm_streaming,
             "llm_flag_age": self.llm_flag_age,
             "celebrate_until": self._celebrate_until,
+        }
+
+
+# ----------------------------------------------------------------------
+# ClaudeCodeDetector -- TPA-equivalent detector for the `claude` CLI
+# ----------------------------------------------------------------------
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+
+class ClaudeCodeDetector:
+    """Detect Claude Code CLI activity, playing the same role
+    TPADetector plays for TPA so engineers whose daily
+    driver is Claude Code get the same working/thinking distinction
+    instead of falling through the flat non-TPA OR-fallback.
+
+    Two independent signals:
+      shell_active -- a live non-shell descendant process under `claude`
+        (reuses watcher.has_active_shell_children). Catches Bash-tool
+        calls; does NOT catch in-process tools like Edit/Write.
+      streaming -- the youngest ~/.claude/projects/*/*.jsonl transcript
+        was written within STREAMING_STALE_SEC. Backstops the gap above
+        (transcript is touched on any turn, tool or plain text), at the
+        cost of coarser granularity.
+
+    No content is ever read from any transcript -- mtime only. See
+    design.md for why (undocumented on-disk format; observed to include
+    non-conversational bookkeeping lines, not just user/assistant turns).
+    """
+    name = "claude_code"
+
+    STREAMING_STALE_SEC = 20.0
+    DISCOVERY_CACHE_SEC = 60.0
+    CANDIDATE_MAX_AGE_SEC = 900.0  # drop transcripts idle >15min from the cache
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        *,
+        find_processes_fn: Callable | None = None,
+        aggregate_cpu_fn: Callable | None = None,
+        has_active_shell_children_fn: Callable | None = None,
+        projects_dir: Path | None = None,
+        glob_fn: Callable | None = None,
+        stat_fn: Callable | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self._find_processes = find_processes_fn
+        self._aggregate_cpu = aggregate_cpu_fn
+        self._has_active_shell_children = has_active_shell_children_fn
+        self._projects_dir = Path(projects_dir) if projects_dir else CLAUDE_PROJECTS_DIR
+        self._glob = glob_fn or (lambda root: root.glob("*/*.jsonl"))
+        self._stat = stat_fn or os.stat
+        self._candidates: list = []
+        self._candidates_at: float = 0.0
+        self._last_scan_ts: float = 0.0
+        self.cpu_percent: float = 0.0
+        self.claude_code_running: bool = False
+        self.shell_active: bool = False
+        self.transcript_age: float = float("inf")
+        self.streaming: bool = False
+
+    def _lazy_defaults(self) -> None:
+        if self._find_processes is None:
+            from . import watcher as _w
+            self._find_processes = _w.find_claude_code_processes
+            self._aggregate_cpu = _w.aggregate_cpu
+            self._has_active_shell_children = _w.has_active_shell_children
+
+    def _discover(self, now: float) -> list:
+        if self._candidates and (now - self._candidates_at) < self.DISCOVERY_CACHE_SEC:
+            return self._candidates
+        found = []
+        try:
+            for f in self._glob(self._projects_dir):
+                try:
+                    mtime = self._stat(str(f)).st_mtime
+                except OSError:
+                    continue
+                if (now - mtime) <= self.CANDIDATE_MAX_AGE_SEC:
+                    found.append(f)
+        except OSError:
+            pass
+        self._candidates = found
+        self._candidates_at = now
+        return self._candidates
+
+    def _newest_transcript_age(self, now: float) -> float:
+        newest_mtime = 0.0
+        for f in self._discover(now):
+            try:
+                mtime = self._stat(str(f)).st_mtime
+            except OSError:
+                continue
+            newest_mtime = max(newest_mtime, mtime)
+        if newest_mtime == 0.0:
+            return float("inf")
+        return max(0.0, now - newest_mtime)
+
+    def _scan(self, now: float) -> None:
+        if now == self._last_scan_ts:
+            return
+        self._lazy_defaults()
+        procs = self._find_processes()
+        self.claude_code_running = bool(procs)
+        self.cpu_percent = round(
+            self._aggregate_cpu(procs) if procs else 0.0, 1
+        )
+        self.shell_active = (
+            self._has_active_shell_children(procs) if procs else False
+        )
+        self.transcript_age = self._newest_transcript_age(now)
+        self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
+        self._last_scan_ts = now
+
+    def is_busy(self, now: float) -> bool:
+        if not self.enabled:
+            return False
+        self._scan(now)
+        return self.shell_active or self.streaming
+
+    def is_celebrating(self, now: float) -> bool:
+        return False  # no reliable signal yet -- documented non-goal
+
+    def is_grooving(self, now: float) -> bool:
+        return False  # no reliable signal yet -- documented non-goal
+
+    def diagnostic(self) -> dict:
+        return {
+            "name": self.name,
+            "enabled": self.enabled,
+            "claude_code_running": self.claude_code_running,
+            "cpu_percent": self.cpu_percent,
+            "shell_active": self.shell_active,
+            "transcript_age": self.transcript_age,
+            "streaming": self.streaming,
         }
 
 
@@ -581,6 +719,7 @@ class IDEDetector:
 # ----------------------------------------------------------------------
 DEFAULT_TRIGGERS = {
     "tpa": True,
+    "claude_code": True,
     "git": True,
     "terminal": False,  # off by default: misfires on any dev machine
     "ide": True,
@@ -601,6 +740,7 @@ def build_detectors(settings: dict | None = None) -> list:
     ide_processes = s.get("ide_processes", DEFAULT_TRIGGERS["ide_processes"])
     detectors = [
         TPADetector(enabled=s.get("tpa", True)),
+        ClaudeCodeDetector(enabled=s.get("claude_code", True)),
         GitDetector(project_dirs=project_dirs, enabled=s.get("git", True)),
         TerminalDetector(enabled=s.get("terminal", False)),
         IDEDetector(

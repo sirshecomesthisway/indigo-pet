@@ -31,6 +31,23 @@ and how to turn any of it off.
 Does NOT read: prompt content, model responses, file contents you edit
 with TPA, chat history, API keys, OneDrive/Confluence data.
 
+### ClaudeCodeDetector — observes the Claude Code CLI
+
+| Reads | What for |
+|-------|----------|
+| `psutil.process_iter()` process name (exact match `claude`) | finds the Claude Code CLI process |
+| CPU% of that process | diagnostic only (`squid why`) — not used to decide state |
+| Non-shell descendant processes of `claude` (same allowlist as TPADetector) | detects a live tool call (e.g. a Bash-tool command) → "working" |
+| `~/.claude/projects/*/*.jsonl` mtime (youngest across all sessions) | detects a recent transcript write → "thinking" (proxy for the LLM generating or a tool call resolving) |
+
+Does NOT read: transcript file contents, prompt/response text, tool call
+arguments or results, session IDs beyond their mtime, `~/.claude/`
+settings or credentials.
+
+Caching: the list of transcript files is cached for 60 seconds (same
+pattern as GitDetector's repo-discovery cache); files untouched for
+15+ minutes are dropped from the cache to keep it small over time.
+
 ### GitDetector — observes git activity
 
 | Reads | What for |
@@ -109,8 +126,9 @@ Edit `~/.squid-pet/settings.json`:
   "stroll_mode": "edges",
   "triggers": {
     "tpa": true,
+    "claude_code": true,
     "git": true,
-    "terminal": true,
+    "terminal": false,
     "ide": true,
     "project_dirs": ["~/Projects", "~/work/repos"],
     "ide_processes": ["Code", "Cursor"]

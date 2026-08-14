@@ -35,12 +35,13 @@ def _write(settings_file: Path, payload: dict) -> None:
 
 
 def test_no_settings_file_yields_defaults(isolated_settings):
-    """Missing settings.json -> defaults (3 enabled: tpa/git/ide,
-    terminal off). And nothing crashes."""
+    """Missing settings.json -> defaults (4 enabled: tpa/
+    claude_code/git/ide, terminal off). And nothing crashes."""
     sm = watcher.StateMachine()
     by_name = {d.name: d.enabled for d in sm.detectors}
     assert by_name == {
-        "tpa": True, "git": True, "terminal": False, "ide": True,
+        "tpa": True, "claude_code": True, "git": True,
+        "terminal": False, "ide": True,
     }
 
 
@@ -139,7 +140,7 @@ def test_corrupt_settings_file_does_not_crash(isolated_settings):
     sm = watcher.StateMachine()  # initial load with corrupt file
     # Should still have built defaults despite bad JSON.
     assert {d.name for d in sm.detectors} == {
-        "tpa", "git", "terminal", "ide",
+        "tpa", "claude_code", "git", "terminal", "ide",
     }
     # And reload on a still-corrupt file shouldn't raise.
     isolated_settings.write_text("still not json :(")
@@ -147,5 +148,5 @@ def test_corrupt_settings_file_does_not_crash(isolated_settings):
     os.utime(isolated_settings, (future, future))
     sm._maybe_reload_settings()  # must not raise
     assert {d.name for d in sm.detectors} == {
-        "tpa", "git", "terminal", "ide",
+        "tpa", "claude_code", "git", "terminal", "ide",
     }
