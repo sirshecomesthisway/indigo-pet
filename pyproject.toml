@@ -29,8 +29,3 @@ packages = ["src/squid_pet"]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 pythonpath = ["src"]
-
-[[tool.uv.index]]
-name = "internal-pypi"
-url = "https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple/"
-default = true

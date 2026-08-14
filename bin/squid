@@ -137,9 +137,7 @@ cmd_update() {
 
     echo "-- reinstalling package"
     if command -v uv >/dev/null 2>&1; then
-        uv pip install -e . \
-            --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
-            --allow-insecure-host pypi.internal.example.com
+        uv pip install -e .
     else
         "$pdir/.venv/bin/pip" install -e .
     fi
