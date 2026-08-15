@@ -4,7 +4,7 @@ For most users, the README's clone-then-install block is what you want:
 
 ```bash
 mkdir -p ~/Projects && cd ~/Projects
-git clone git@internal-ghe.example.com:pink/squid-pet.git
+git clone https://github.com/sirshecomesthisway/squid-pet.git
 cd squid-pet && ./install.sh
 ```
 
@@ -16,13 +16,13 @@ This page is for the paranoid (who want to see every step) and the unlucky
 - `--non-interactive` / `--yes` / `-y` — skip all prompts, take all defaults (good for CI)
 - `--profile` — capture per-stage wall time, print a table at the end, save to `/tmp/squid-pet-install-profile-<UTC>.txt`
 - `SQUID_PROJECT=/path/to/here` — install to non-default location
-- `SQUID_REPO=git@host:user/repo.git` — override non-default remote
+- `SQUID_REPO=git@host:user/repo.git` — override the clone remote (e.g. to install from your own fork)
 
 ## Speed expectations
 
 `install.sh` is lockfile-driven (`uv sync --frozen` against committed
 `uv.lock`), so dependency resolution is skipped entirely. Measured on
-Pink's M1 + corporate VPN, 2026-06-24:
+an M1:
 
 | Scenario | Wall time | What dominates |
 |---|---|---|
@@ -42,14 +42,14 @@ Every install run appends one line to `~/.squid-pet/logs/install-history.log`:
 
 If your latest run is >2x the typical time for its mode (warm/cold), do
 `./install.sh --profile` next time and check which stage exploded. The
-two usual suspects:
+usual suspect:
 
-1. **`install_package` >60 s on warm** → your local `uv.lock` is out of
-   date (you probably edited `pyproject.toml` without running `uv lock`).
-   Fix: `cd ~/Projects/squid-pet && uv lock && git add uv.lock && git commit -m "regen lockfile"`.
-2. **`install_package` >3 min on cold** → internal artifactory is slow
-   today, or your VPN is flaky. Run `./install.sh --profile` again in
-   10 min. If it keeps repeating, ping #mint-support.
+**`install_package` >60 s on warm** → your local `uv.lock` is out of
+date (you probably edited `pyproject.toml` without running `uv lock`).
+Fix: `cd ~/Projects/squid-pet && uv lock && git add uv.lock && git commit -m "regen lockfile"`.
+
+If cold installs are consistently slow, it's almost always plain network
+throughput to PyPI — try again on a faster connection.
 
 ### Maintainer: when to regenerate `uv.lock`
 
@@ -65,8 +65,7 @@ git commit -m "regen uv.lock for <reason>"
 
 This takes ~1 min on a warm uv cache, ~3 min cold. Skipping this step
 will silently let install.sh fall back to the old slow resolver path
-(with a loud `[!!]` warning to anyone running install.sh — they'll
-file an issue at you).
+(with a loud `[!!]` warning to anyone running install.sh).
 
 ## Manual install (step-by-step)
 
@@ -91,25 +90,14 @@ opt into that explicitly).
 brew install uv
 ```
 
-If your shell can't reach `formulae.brew.sh`, prefix with internal proxies:
-
-```bash
-HTTP_PROXY=http://sysproxy.wal-mart.com:8080 \
-HTTPS_PROXY=http://sysproxy.wal-mart.com:8080 \
-brew install uv
-```
-
 ### 3. Clone the repo
 
 ```bash
 mkdir -p ~/Projects
 cd ~/Projects
-git clone https://internal-ghe.example.com/pink/squid-pet.git
+git clone https://github.com/sirshecomesthisway/squid-pet.git
 cd squid-pet
 ```
-
-**Important:** clone via HTTPS, NOT SSH. corporate VPN blocks `github.com:22` so
-`git clone git@internal-ghe.example.com...:` will hang forever.
 
 ### 4. Make the venv
 
@@ -120,9 +108,7 @@ uv venv
 ### 5. Install the package (editable)
 
 ```bash
-uv pip install -e . \
-    --index-url https://pypi.internal.example.com/artifactory/api/pypi/external-pypi/simple \
-    --allow-insecure-host pypi.internal.example.com
+uv pip install -e .
 ```
 
 ### 6. Migrate legacy settings (only if you ever ran the old indigo-pet)
@@ -171,13 +157,21 @@ cat > ~/.squid-pet/settings.json <<EOF
   "show_on_all_spaces": true,
   "triggers": {
     "tpa": true,
+    "claude_code": true,
+    "codex": true,
     "git": true,
-    "terminal": true,
+    "terminal": false,
     "ide": true
   }
 }
 EOF
 ```
+
+Squid reacts to whichever of these tools you actually run — TPA,
+Claude Code, and Codex CLI are all optional; leaving a trigger `true` for
+a tool you don't have installed just means that detector quietly reports
+nothing (no process found), it doesn't error. See the README's
+"Detectors & triggers" section for what each one watches.
 
 ### 10. Boot the LaunchAgent
 
@@ -220,14 +214,6 @@ No system-wide files, no `/etc/`, no `sudo` calls, no rcfiles other than the
 `~/.zshrc` PATH note above (which is suggested, not auto-applied).
 
 ## Troubleshooting
-
-### `git clone` hangs forever
-
-You probably used SSH. corporate VPN blocks `github.com:22`. Use HTTPS:
-
-```bash
-git clone https://internal-ghe.example.com/pink/squid-pet.git
-```
 
 ### `uv: command not found` after install
 
@@ -321,8 +307,7 @@ brew list --installed-on-request | tail -5
 
 ## Reporting bugs
 
-Open an issue at https://internal-ghe.example.com/pink/squid-pet/issues
-or ping Pink in `#squid-pet` on Slack.
+Open an issue at https://github.com/sirshecomesthisway/squid-pet/issues.
 
 Include the output of:
 
