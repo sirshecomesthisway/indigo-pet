@@ -1387,6 +1387,20 @@ def main() -> None:
                 api._wanderer.stop()
         except Exception:
             pass
+        # Any window-close path -- not just the deliberate right-click
+        # Quit item -- must go through the same launchd bootout cleanup
+        # as PetApi.quit(). Cmd+W (the standard macOS close-window
+        # shortcut) fires this same `closing` event despite the window
+        # being frameless, and without bootout launchd still considers
+        # the job "loaded" with no window visible: `squid start` then
+        # refuses ("already running; use restart") even though nothing
+        # looks alive. Skips quit()'s hint-bubble/delay (the window is
+        # already gone by the time this fires, so there's nothing to
+        # show it in).
+        try:
+            api.quit()
+        except Exception as e:
+            print(f"[squid-pet] on_closing: quit cleanup failed ({e})", flush=True)
 
     window.events.loaded += on_loaded
     window.events.closing += on_closing
