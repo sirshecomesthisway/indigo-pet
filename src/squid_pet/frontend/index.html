@@ -462,11 +462,22 @@
       const targetSrc = spriteUrl(state);
       if (!force && state === prevState) return;             // no state change
       if (pet.src.endsWith(targetSrc.split("/").pop())) return;  // already showing this sprite
+      // Single deterministic removal path (2026-08-15 hardening): the old
+      // code raced pet.onload against a 600ms fallback timer, both trying
+      // to remove "swapping". Overlapping setState() calls (routine/
+      // wanderer sub-states fire independently of the 800ms backend poll)
+      // could reassign pet.onload before the earlier image's load event
+      // fired, silently dropping that removal -- and WKWebView is known to
+      // throttle/drop queued timers while occluded (e.g. covered by
+      // another fullscreen app), which could strand "swapping" (opacity:0
+      // via CSS, line ~47) indefinitely with no visible sprite. The CSS
+      // `transition: opacity 200ms ease` already drives the actual fade
+      // declaratively, so JS only needs to toggle the class around the
+      // src swap -- no onload dependency, no second timer.
       pet.classList.add("swapping");
       setTimeout(() => {
         pet.src = targetSrc;
-        pet.onload = () => pet.classList.remove("swapping");
-        setTimeout(() => pet.classList.remove("swapping"), 600);
+        pet.classList.remove("swapping");
       }, 150);
     }
 
