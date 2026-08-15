@@ -115,8 +115,17 @@ class PassthroughController:
     # ── Public API ──
     def set_state(self, state: str) -> None:
         with self._lock:
-            if state in self._masks:
-                self._current_state = state
+            # Backend state "approval_needed" displays sprites/
+            # attention_needed*.png (see frontend/index.html's
+            # spriteUrl()) -- there is no approval_needed.png, so
+            # mirror that remap here too. Without it, `state in
+            # self._masks` is False and _current_state silently keeps
+            # whatever mask preceded the flag-wave, so hit-testing
+            # runs against the wrong sprite's alpha channel while she's
+            # actively waving for attention.
+            mask_key = "attention_needed" if state == "approval_needed" else state
+            if mask_key in self._masks:
+                self._current_state = mask_key
 
     def set_edge(self, edge: str) -> None:
         """Track current edge for CSS-transform-aware hit testing."""
