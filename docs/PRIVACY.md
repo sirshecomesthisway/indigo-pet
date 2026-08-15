@@ -35,18 +35,37 @@ with TPA, chat history, API keys, OneDrive/Confluence data.
 
 | Reads | What for |
 |-------|----------|
-| `psutil.process_iter()` process name (exact match `claude`) | finds the Claude Code CLI process |
+| `psutil.process_iter()` cmdline (basename `claude`) | finds the Claude Code CLI process — `Process.name()` was found unreliable for this binary on macOS, so matching goes through cmdline instead |
 | CPU% of that process | diagnostic only (`squid why`) — not used to decide state |
 | Non-shell descendant processes of `claude` (same allowlist as TPADetector) | detects a live tool call (e.g. a Bash-tool command) → "working" |
+| File mtimes under `project_dirs` (default `~/Projects`), same scan as IDEDetector | detects a very recent write (in-process tools like Edit/Write don't spawn a subprocess, so this catches what shell-child detection misses) → "working" |
 | `~/.claude/projects/*/*.jsonl` mtime (youngest across all sessions) | detects a recent transcript write → "thinking" (proxy for the LLM generating or a tool call resolving) |
 
 Does NOT read: transcript file contents, prompt/response text, tool call
 arguments or results, session IDs beyond their mtime, `~/.claude/`
-settings or credentials.
+settings or credentials, or the contents of any file under `project_dirs`.
 
 Caching: the list of transcript files is cached for 60 seconds (same
 pattern as GitDetector's repo-discovery cache); files untouched for
 15+ minutes are dropped from the cache to keep it small over time.
+
+### CodexDetector — observes the Codex CLI
+
+Same signals and rationale as ClaudeCodeDetector, adapted to Codex's
+on-disk layout:
+
+| Reads | What for |
+|-------|----------|
+| `psutil.process_iter()` cmdline (basename `codex` or `codex-tui`) | finds the native Codex binary — Codex's npm distribution runs a JS shim that spawns this as a child process; the shim itself is not matched |
+| CPU% of that process | diagnostic only (`squid why`) — not used to decide state |
+| Non-shell descendant processes of `codex`/`codex-tui` | detects a live tool call → "working" |
+| File mtimes under `project_dirs`, same scan as IDEDetector | detects a very recent write (catches apply_patch-style edits that don't spawn a subprocess) → "working" |
+| `~/.codex/sessions/**/*.jsonl` mtime (youngest across all sessions, nested by date) | detects a recent transcript write → "thinking" |
+
+Does NOT read: transcript file contents, prompt/response text, tool call
+arguments or results, `~/.codex/history/` prompt-recall content,
+`~/.codex/` auth tokens or config, or the contents of any file under
+`project_dirs`.
 
 ### GitDetector — observes git activity
 
@@ -127,6 +146,7 @@ Edit `~/.squid-pet/settings.json`:
   "triggers": {
     "tpa": true,
     "claude_code": true,
+    "codex": true,
     "git": true,
     "terminal": false,
     "ide": true,
@@ -153,5 +173,4 @@ line at the bottom of `--why` will tell you which signal fired.
 
 ## Questions?
 
-Open an issue at https://internal-ghe.example.com/pink/squid-pet
-or ping Pink in `#squid-pet` (Slack).
+Open an issue at https://github.com/sirshecomesthisway/squid-pet/issues.

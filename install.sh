@@ -152,11 +152,10 @@ clone_or_update() {
         if [ -e "$PROJECT" ] && [ ! -d "$PROJECT/.git" ]; then
             die "$PROJECT exists but is not a git repo. Move it aside first."
         fi
-        # Note: install.sh defaults to HTTPS for the curl-bash flow, but if
-        # the user already cloned via SSH (recommended for internal GHE since
-        # anonymous HTTPS is rejected). post-e2e-polish 2026-06-27 Fix 2: default is now SSH; override with SQUID_REPO=https://... if needed.
+        # Public HTTPS clone by default; override with SQUID_REPO=git@host:you/squid-pet.git
+        # to install from your own fork over SSH.
         git clone "$REPO_URL" "$PROJECT" || \
-            die "git clone failed. Are you on corporate VPN? If using HTTPS, ensure PAT is cached: git config --global credential.helper osxkeychain. Or override: SQUID_REPO=git@internal-ghe.example.com:pink/squid-pet.git. Tried: $REPO_URL"
+            die "git clone failed. Check your network, or override the source with SQUID_REPO=<url>. Tried: $REPO_URL"
         ok "cloned $REPO_URL"
     fi
 }
@@ -250,11 +249,13 @@ first_run_wizard() {
         ok "tpa process not detected -- defaulting triggers.tpa=false (re-enable in settings.json if you install TPA later)"
     fi
 
-    # claude-code-detector: claude_code has no observed misfire risk (see
-    # detectors.py ClaudeCodeDetector), so it defaults on unconditionally --
-    # unlike tpa above, there's no CPU-churn cost to leaving it on
-    # when `claude` isn't running.
+    # claude-code-detector / codex-detector: neither has an observed
+    # misfire risk (see detectors.py's ClaudeCodeDetector/CodexDetector),
+    # so both default on unconditionally -- unlike tpa above,
+    # there's no CPU-churn cost to leaving them on when the tool isn't
+    # running (they just report nothing).
     local claude_default="true"
+    local codex_default="true"
 
     # trigger-broadening 7.3: default project_dirs to ~/Projects (matches the
     # canonical clone location from distribution-installer Phase 5).
@@ -277,6 +278,7 @@ first_run_wizard() {
   "triggers": {
     "tpa": ${tpa_default},
     "claude_code": ${claude_default},
+    "codex": ${codex_default},
     "git": true,
     "terminal": false,
     "ide": true,
@@ -292,18 +294,19 @@ EOF
         read -r -p "  stroll mode [edges] (edges|free|still): " stroll
         read -r -p "  show on all spaces [y]: " spaces
         # trigger-broadening 7.2: trigger prompts (default Y for all)
-        local trig_cp trig_claude trig_git trig_ide trig_term trig_proj
+        local trig_cp trig_claude trig_codex trig_git trig_ide trig_term trig_proj
         read -r -p "  trigger: react to tpa CPU [$tpa_default]: " trig_cp
         read -r -p "  trigger: react to Claude Code activity [$claude_default]: " trig_claude
+        read -r -p "  trigger: react to Codex activity [$codex_default]: " trig_codex
         read -r -p "  trigger: react to git activity (commits, refs) [y]: " trig_git
         read -r -p "  trigger: react to IDE focus (VSCode, IntelliJ) [y]: " trig_ide
         read -r -p "  trigger: react to terminal activity [n]: " trig_term
         # trigger-broadening 7.3: project_dirs prompt
         read -r -p "  project dirs to watch for git activity [$proj_default]: " trig_proj
-        python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" "${trig_cp:-}" "${trig_claude:-}" "${trig_git:-}" "${trig_ide:-}" "${trig_term:-}" "${trig_proj:-}" <<PYEOF2
+        python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" "${trig_cp:-}" "${trig_claude:-}" "${trig_codex:-}" "${trig_git:-}" "${trig_ide:-}" "${trig_term:-}" "${trig_proj:-}" <<PYEOF2
 import json, sys
 fp = sys.argv[1]
-corner, stroll, spaces, trig_cp, trig_claude, trig_git, trig_ide, trig_term, trig_proj = sys.argv[2:11]
+corner, stroll, spaces, trig_cp, trig_claude, trig_codex, trig_git, trig_ide, trig_term, trig_proj = sys.argv[2:12]
 with open(fp) as f: d = json.load(f)
 if corner: d["starting_corner"] = corner
 if stroll: d["stroll_mode"] = stroll
@@ -317,6 +320,8 @@ if trig_cp.strip():
     d["triggers"]["tpa"] = _bool(trig_cp, d["triggers"]["tpa"])
 if trig_claude.strip():
     d["triggers"]["claude_code"] = _bool(trig_claude, d["triggers"]["claude_code"])
+if trig_codex.strip():
+    d["triggers"]["codex"] = _bool(trig_codex, d["triggers"]["codex"])
 if trig_git.strip():
     d["triggers"]["git"] = _bool(trig_git, d["triggers"]["git"])
 if trig_ide.strip():

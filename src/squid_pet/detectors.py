@@ -230,14 +230,22 @@ class ClaudeCodeDetector:
     driver is Claude Code get the same working/thinking distinction
     instead of falling through the flat non-TPA OR-fallback.
 
-    Two independent signals:
+    Three independent signals:
       shell_active -- a live non-shell descendant process under `claude`
         (reuses watcher.has_active_shell_children). Catches Bash-tool
-        calls; does NOT catch in-process tools like Edit/Write.
+        calls only -- NOT in-process tools like Edit/Write, which never
+        spawn a subprocess.
+      file_active -- a file under project_dirs was modified within
+        FILE_ACTIVE_WINDOW_SEC (reuses the same file-mtime scan
+        IDEDetector uses). Catches exactly the Edit/Write/apply_patch
+        gap shell_active misses -- verified against a real bug report
+        (2026-08-14): Squid stayed "thinking" while Claude was actively
+        editing files because only shell_active/streaming existed then.
       streaming -- the youngest ~/.claude/projects/*/*.jsonl transcript
-        was written within STREAMING_STALE_SEC. Backstops the gap above
-        (transcript is touched on any turn, tool or plain text), at the
-        cost of coarser granularity.
+        was written within STREAMING_STALE_SEC. Backstops both signals
+        above (transcript is touched on any turn, tool or plain text),
+        at the cost of coarser granularity -- this is what maps to
+        "thinking" when neither shell_active nor file_active fire.
 
     No content is ever read from any transcript -- mtime only. See
     design.md for why (undocumented on-disk format; observed to include
@@ -248,6 +256,7 @@ class ClaudeCodeDetector:
     STREAMING_STALE_SEC = 20.0
     DISCOVERY_CACHE_SEC = 60.0
     CANDIDATE_MAX_AGE_SEC = 900.0  # drop transcripts idle >15min from the cache
+    FILE_ACTIVE_WINDOW_SEC = 10.0  # a bit more generous than IDEDetector's 5s
 
     def __init__(
         self,
@@ -259,6 +268,8 @@ class ClaudeCodeDetector:
         projects_dir: Path | None = None,
         glob_fn: Callable | None = None,
         stat_fn: Callable | None = None,
+        project_dirs: Iterable[str] | None = None,
+        recent_file_ages_fn: Callable | None = None,
     ) -> None:
         self.enabled = enabled
         self._find_processes = find_processes_fn
@@ -267,12 +278,18 @@ class ClaudeCodeDetector:
         self._projects_dir = Path(projects_dir) if projects_dir else CLAUDE_PROJECTS_DIR
         self._glob = glob_fn or (lambda root: root.glob("*/*.jsonl"))
         self._stat = stat_fn or os.stat
+        raw_dirs = list(project_dirs) if project_dirs is not None else [str(Path.home() / "Projects")]
+        self.project_dirs = [Path(d).expanduser() for d in raw_dirs]
+        self._recent_file_ages = recent_file_ages_fn or (
+            lambda: _scan_recent_file_ages(self.project_dirs, self.FILE_ACTIVE_WINDOW_SEC)
+        )
         self._candidates: list = []
         self._candidates_at: float = 0.0
         self._last_scan_ts: float = 0.0
         self.cpu_percent: float = 0.0
         self.claude_code_running: bool = False
         self.shell_active: bool = False
+        self.file_active: bool = False
         self.transcript_age: float = float("inf")
         self.streaming: bool = False
 
@@ -325,6 +342,7 @@ class ClaudeCodeDetector:
         self.shell_active = (
             self._has_active_shell_children(procs) if procs else False
         )
+        self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
         self._last_scan_ts = now
@@ -333,7 +351,7 @@ class ClaudeCodeDetector:
         if not self.enabled:
             return False
         self._scan(now)
-        return self.shell_active or self.streaming
+        return self.shell_active or self.file_active or self.streaming
 
     def is_celebrating(self, now: float) -> bool:
         return False  # no reliable signal yet -- documented non-goal
@@ -348,6 +366,154 @@ class ClaudeCodeDetector:
             "claude_code_running": self.claude_code_running,
             "cpu_percent": self.cpu_percent,
             "shell_active": self.shell_active,
+            "file_active": self.file_active,
+            "transcript_age": self.transcript_age,
+            "streaming": self.streaming,
+        }
+
+
+# ----------------------------------------------------------------------
+# CodexDetector -- TPA-equivalent detector for the OpenAI Codex CLI
+# ----------------------------------------------------------------------
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+
+
+class CodexDetector:
+    """Detect Codex CLI activity. Same role and shape as
+    ClaudeCodeDetector -- process presence, live tool subprocess, recent
+    project-file writes, and session-transcript write recency -- for
+    engineers whose daily driver is Codex instead of (or alongside)
+    Claude Code / TPA. See ClaudeCodeDetector's docstring for the
+    rationale behind each of the three busy signals; identical here.
+
+    Session transcripts are nested by date --
+    ~/.codex/sessions/YYYY/MM/DD/*.jsonl -- so discovery uses a
+    recursive glob rather than ClaudeCodeDetector's fixed two-level
+    pattern.
+
+    Kept as an independent class rather than sharing a base with
+    ClaudeCodeDetector, matching this module's existing convention
+    (TPADetector/GitDetector/TerminalDetector/IDEDetector each
+    implement the Detector protocol independently despite structural
+    overlap) -- the two can evolve independently (e.g. Codex's
+    ~/.codex/log/codex-tui.log could become its own future signal).
+    """
+    name = "codex"
+
+    STREAMING_STALE_SEC = 20.0
+    DISCOVERY_CACHE_SEC = 60.0
+    CANDIDATE_MAX_AGE_SEC = 900.0
+    FILE_ACTIVE_WINDOW_SEC = 10.0
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        *,
+        find_processes_fn: Callable | None = None,
+        aggregate_cpu_fn: Callable | None = None,
+        has_active_shell_children_fn: Callable | None = None,
+        sessions_dir: Path | None = None,
+        glob_fn: Callable | None = None,
+        stat_fn: Callable | None = None,
+        project_dirs: Iterable[str] | None = None,
+        recent_file_ages_fn: Callable | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self._find_processes = find_processes_fn
+        self._aggregate_cpu = aggregate_cpu_fn
+        self._has_active_shell_children = has_active_shell_children_fn
+        self._sessions_dir = Path(sessions_dir) if sessions_dir else CODEX_SESSIONS_DIR
+        self._glob = glob_fn or (lambda root: root.glob("**/*.jsonl"))
+        self._stat = stat_fn or os.stat
+        raw_dirs = list(project_dirs) if project_dirs is not None else [str(Path.home() / "Projects")]
+        self.project_dirs = [Path(d).expanduser() for d in raw_dirs]
+        self._recent_file_ages = recent_file_ages_fn or (
+            lambda: _scan_recent_file_ages(self.project_dirs, self.FILE_ACTIVE_WINDOW_SEC)
+        )
+        self._candidates: list = []
+        self._candidates_at: float = 0.0
+        self._last_scan_ts: float = 0.0
+        self.cpu_percent: float = 0.0
+        self.codex_running: bool = False
+        self.shell_active: bool = False
+        self.file_active: bool = False
+        self.transcript_age: float = float("inf")
+        self.streaming: bool = False
+
+    def _lazy_defaults(self) -> None:
+        if self._find_processes is None:
+            from . import watcher as _w
+            self._find_processes = _w.find_codex_processes
+            self._aggregate_cpu = _w.aggregate_cpu
+            self._has_active_shell_children = _w.has_active_shell_children
+
+    def _discover(self, now: float) -> list:
+        if self._candidates and (now - self._candidates_at) < self.DISCOVERY_CACHE_SEC:
+            return self._candidates
+        found = []
+        try:
+            for f in self._glob(self._sessions_dir):
+                try:
+                    mtime = self._stat(str(f)).st_mtime
+                except OSError:
+                    continue
+                if (now - mtime) <= self.CANDIDATE_MAX_AGE_SEC:
+                    found.append(f)
+        except OSError:
+            pass
+        self._candidates = found
+        self._candidates_at = now
+        return self._candidates
+
+    def _newest_transcript_age(self, now: float) -> float:
+        newest_mtime = 0.0
+        for f in self._discover(now):
+            try:
+                mtime = self._stat(str(f)).st_mtime
+            except OSError:
+                continue
+            newest_mtime = max(newest_mtime, mtime)
+        if newest_mtime == 0.0:
+            return float("inf")
+        return max(0.0, now - newest_mtime)
+
+    def _scan(self, now: float) -> None:
+        if now == self._last_scan_ts:
+            return
+        self._lazy_defaults()
+        procs = self._find_processes()
+        self.codex_running = bool(procs)
+        self.cpu_percent = round(
+            self._aggregate_cpu(procs) if procs else 0.0, 1
+        )
+        self.shell_active = (
+            self._has_active_shell_children(procs) if procs else False
+        )
+        self.file_active = bool(self._recent_file_ages()) if procs else False
+        self.transcript_age = self._newest_transcript_age(now)
+        self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
+        self._last_scan_ts = now
+
+    def is_busy(self, now: float) -> bool:
+        if not self.enabled:
+            return False
+        self._scan(now)
+        return self.shell_active or self.file_active or self.streaming
+
+    def is_celebrating(self, now: float) -> bool:
+        return False  # no reliable signal yet -- documented non-goal
+
+    def is_grooving(self, now: float) -> bool:
+        return False  # no reliable signal yet -- documented non-goal
+
+    def diagnostic(self) -> dict:
+        return {
+            "name": self.name,
+            "enabled": self.enabled,
+            "codex_running": self.codex_running,
+            "cpu_percent": self.cpu_percent,
+            "shell_active": self.shell_active,
+            "file_active": self.file_active,
             "transcript_age": self.transcript_age,
             "streaming": self.streaming,
         }
@@ -580,6 +746,60 @@ class TerminalDetector:
 
 
 # ----------------------------------------------------------------------
+# Shared file-mtime scan -- used by IDEDetector and by ClaudeCodeDetector/
+# CodexDetector's file-write signal (in-process Edit/Write-style tool
+# calls don't spawn a subprocess, so shell-child detection alone misses
+# them; a recent write under project_dirs is the fallback evidence).
+# ----------------------------------------------------------------------
+_FILE_SCAN_SKIP_DIRS = frozenset({
+    "node_modules", ".venv", "venv", "__pycache__",
+    ".git", ".pytest_cache", "dist", "build",
+})
+
+
+def _scan_recent_file_ages(
+    project_dirs: Iterable[Path],
+    window_sec: float,
+    *,
+    now: float | None = None,
+    walk_fn: Callable | None = None,
+    stat_fn: Callable | None = None,
+    max_depth: int = 5,
+    max_files: int = 200,
+) -> list[float]:
+    """Ages (seconds) of files modified within window_sec across
+    project_dirs. Capped depth/file-count to stay cheap on large trees;
+    skips common junk directories. Read-only: stats mtimes only, never
+    opens a file's contents."""
+    walk_fn = walk_fn or os.walk
+    stat_fn = stat_fn or os.stat
+    now = now if now is not None else time.time()
+    cutoff = now - window_sec
+    ages: list[float] = []
+    for root in project_dirs:
+        root = Path(root)
+        if not root.exists():
+            continue
+        for dirpath, dirnames, filenames in walk_fn(str(root)):
+            dirnames[:] = [d for d in dirnames if d not in _FILE_SCAN_SKIP_DIRS]
+            rel = Path(dirpath).resolve().relative_to(root.resolve()).parts \
+                if Path(dirpath).resolve() != root.resolve() else ()
+            if len(rel) > max_depth:
+                dirnames[:] = []
+                continue
+            for fn in filenames:
+                try:
+                    m = stat_fn(os.path.join(dirpath, fn)).st_mtime
+                except OSError:
+                    continue
+                if m >= cutoff:
+                    ages.append(now - m)
+                    if len(ages) >= max_files:
+                        return ages
+    return ages
+
+
+# ----------------------------------------------------------------------
 # IDEDetector -- psutil for IDE processes + project file mtime cross-check
 # ----------------------------------------------------------------------
 DEFAULT_IDE_PROCESSES = (
@@ -648,31 +868,7 @@ class IDEDetector:
         """Return list of ages (sec) of files modified within ``window_sec``
         across project_dirs. Capped at 200 files and depth 5 to stay cheap.
         Skips junk dirs."""
-        now = time.time()
-        cutoff = now - window_sec
-        ages: list[float] = []
-        SKIP = {"node_modules", ".venv", "venv", "__pycache__",
-                ".git", ".pytest_cache", "dist", "build"}
-        for root in self.project_dirs:
-            if not root.exists():
-                continue
-            for dirpath, dirnames, filenames in os.walk(str(root)):
-                dirnames[:] = [d for d in dirnames if d not in SKIP]
-                rel = Path(dirpath).resolve().relative_to(root.resolve()).parts \
-                    if Path(dirpath).resolve() != root.resolve() else ()
-                if len(rel) > 5:
-                    dirnames[:] = []
-                    continue
-                for fn in filenames:
-                    try:
-                        m = os.stat(os.path.join(dirpath, fn)).st_mtime
-                    except OSError:
-                        continue
-                    if m >= cutoff:
-                        ages.append(now - m)
-                        if len(ages) >= 200:
-                            return ages
-        return ages
+        return _scan_recent_file_ages(self.project_dirs, window_sec)
 
     def _scan(self, now: float) -> None:
         self.cpu_percent = self._aggregate_cpu()
@@ -720,6 +916,7 @@ class IDEDetector:
 DEFAULT_TRIGGERS = {
     "tpa": True,
     "claude_code": True,
+    "codex": True,
     "git": True,
     "terminal": False,  # off by default: misfires on any dev machine
     "ide": True,
@@ -740,7 +937,8 @@ def build_detectors(settings: dict | None = None) -> list:
     ide_processes = s.get("ide_processes", DEFAULT_TRIGGERS["ide_processes"])
     detectors = [
         TPADetector(enabled=s.get("tpa", True)),
-        ClaudeCodeDetector(enabled=s.get("claude_code", True)),
+        ClaudeCodeDetector(project_dirs=project_dirs, enabled=s.get("claude_code", True)),
+        CodexDetector(project_dirs=project_dirs, enabled=s.get("codex", True)),
         GitDetector(project_dirs=project_dirs, enabled=s.get("git", True)),
         TerminalDetector(enabled=s.get("terminal", False)),
         IDEDetector(

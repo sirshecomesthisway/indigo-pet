@@ -95,6 +95,7 @@ class PetState:
     agent_idle_seconds: float = 0.0       # seconds since TPA last left "idle" state
     tpa_running: bool = False
     claude_code_running: bool = False
+    codex_running: bool = False
     timestamp: float = 0.0
     message: str = ""             # short caption shown under the pet
     concern_reason: str = ""      # short headline of why concerned (for tooltip)
@@ -165,19 +166,22 @@ def find_tpa_processes() -> list[psutil.Process]:
     return matches
 
 
-def find_claude_code_processes() -> list[psutil.Process]:
-    """Return all running Claude Code CLI processes.
+def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Process]:
+    """Return processes whose cmdline()[0] basename is in ``names``.
 
-    NOTE: psutil's Process.name() is NOT reliable for this binary on
-    macOS -- empirically verified (2026-08-14) it returns the versioned
-    install path's basename (e.g. "2.1.227", from
-    ~/.local/share/claude/versions/2.1.227), not "claude". `ps aux`'s
-    `comm` column resolves this differently and shows "claude", which
-    is what led to the wrong assumption during initial development that
-    a name-match would work. `cmdline()[0]` is reliable (`["claude"]`),
-    so this follows the same cmdline-based, lazily-fetched pattern as
+    Shared by find_claude_code_processes and find_codex_processes.
+    NOTE: psutil's Process.name() is NOT reliable for these binaries on
+    macOS -- empirically verified (2026-08-14) that it returns the
+    versioned install path's basename for the `claude` CLI (e.g.
+    "2.1.227", from ~/.local/share/claude/versions/2.1.227), not
+    "claude" itself. `ps aux`'s `comm` column resolves this differently
+    and shows the real name, which is what led to the wrong assumption
+    during initial development that a name-match would work.
+    `cmdline()[0]` is reliable, so matching goes through it instead --
+    same lazily-fetched, per-process-try/except pattern as
     find_tpa_processes (see its docstring for why cmdline must
-    be fetched per-process rather than via process_iter's bulk prefetch).
+    be fetched per-process rather than via process_iter's bulk prefetch,
+    which can raise an uncaught SystemError on macOS).
     """
     matches = []
     for p in psutil.process_iter(["pid"]):
@@ -188,9 +192,55 @@ def find_claude_code_processes() -> list[psutil.Process]:
         if not cmdline:
             continue
         exe = cmdline[0].rsplit("/", 1)[-1]
-        if exe == "claude":
+        if exe in names:
             matches.append(p)
     return matches
+
+
+def find_claude_code_processes() -> list[psutil.Process]:
+    """Return all running Claude Code CLI processes (the `claude` binary)."""
+    return _find_processes_by_argv0_basename(frozenset({"claude"}))
+
+
+CODEX_HEADLESS_SUBCOMMANDS = frozenset({
+    "app-server", "exec", "exec-server", "mcp", "mcp-server",
+})
+
+
+def find_codex_processes() -> list[psutil.Process]:
+    """Return all running *interactive* Codex CLI processes.
+
+    Codex's npm distribution ships a JS shim (bin/codex.js under node)
+    that resolves and spawns the platform-native Rust binary as a child
+    process; the shim itself doesn't implement any business logic. We
+    match the native binary's own argv[0] (codex-rs produces both a
+    `codex` CLI binary and a `codex-tui` TUI binary), not the node
+    wrapper -- consistent with how find_claude_code_processes matches
+    the real binary rather than a name-unreliable proxy.
+
+    Excludes headless/server-mode invocations: `codex app-server`
+    (JSON-RPC/stdio server for other programs to drive Codex
+    programmatically -- used by IDE extensions and remote/automation
+    tooling) and `codex exec`/`exec-server`/`mcp`/`mcp-server` (one-shot
+    or embedded automation, no human watching a terminal). Same
+    reasoning as find_tpa_processes skipping --prompt one-shot
+    runs. Empirically motivated (2026-08-15): a third-party tool on the
+    dev machine runs a vendored `codex app-server --listen stdio://` as
+    a background component, which would otherwise make Squid look
+    "aware" of Codex activity that has nothing to do with the user
+    typing into Codex CLI themselves.
+    """
+    matches = _find_processes_by_argv0_basename(frozenset({"codex", "codex-tui"}))
+    interactive = []
+    for p in matches:
+        try:
+            cmdline = p.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, SystemError):
+            continue
+        if len(cmdline) > 1 and cmdline[1] in CODEX_HEADLESS_SUBCOMMANDS:
+            continue
+        interactive.append(p)
+    return interactive
 
 
 def aggregate_cpu(procs: list[psutil.Process]) -> float:
@@ -801,14 +851,18 @@ class StateMachine:
               f"{enabled_names}", flush=True)
 
     def _refresh_tpa_detector_ref(self) -> None:
-        """Re-point the TPA/Claude-Code detector caches after a detector
-        list swap. Both feed the same rich working/thinking cascade in
-        _compute_inner (see claude-code-detector design.md)."""
+        """Re-point the TPA/Claude-Code/Codex detector caches after a
+        detector list swap. All three feed the same rich working/thinking
+        cascade in _compute_inner (see claude-code-detector and
+        codex-detector design docs)."""
         self._tpa_detector = next(
             (d for d in self.detectors if d.name == "tpa"), None
         )
         self._claude_detector = next(
             (d for d in self.detectors if d.name == "claude_code"), None
+        )
+        self._codex_detector = next(
+            (d for d in self.detectors if d.name == "codex"), None
         )
         # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
@@ -971,12 +1025,13 @@ class StateMachine:
         return st
 
     def _other_detectors(self):
-        """Iterator over detectors excluding TPA and ClaudeCode
-        (both are promoted into the rich branch-4 cascade below instead
-        of the flat OR-fallback -- excluding them here avoids double
-        counting), and excluding disabled detectors."""
+        """Iterator over detectors excluding TPA, ClaudeCode, and
+        Codex (all three are promoted into the rich branch-4 cascade
+        below instead of the flat OR-fallback -- excluding them here
+        avoids double counting), and excluding disabled detectors."""
         return (d for d in self.detectors
-                if d.name not in ("tpa", "claude_code") and d.enabled)
+                if d.name not in ("tpa", "claude_code", "codex")
+                and d.enabled)
 
     def _compute_inner(self) -> PetState:
         now = time.time()
@@ -1024,20 +1079,72 @@ class StateMachine:
             _ = claude.is_busy(now)
             claude_running = claude.claude_code_running
             claude_shell_active = claude.shell_active
+            claude_file_active = claude.file_active
             claude_streaming = claude.streaming
         else:
             claude_running = False
             claude_shell_active = False
+            claude_file_active = False
             claude_streaming = False
+
+        codex = self._codex_detector
+        # Same pattern as the Claude Code block -- see codex-detector
+        # design.md.
+        if codex is not None and codex.enabled:
+            _ = codex.is_busy(now)
+            codex_running = codex.codex_running
+            codex_shell_active = codex.shell_active
+            codex_file_active = codex.file_active
+            codex_streaming = codex.streaming
+        else:
+            codex_running = False
+            codex_shell_active = False
+            codex_file_active = False
+            codex_streaming = False
 
         # Merged signals feeding branch 4 below. tpa_running /
         # tpa.shell_active / tpa.llm_streaming keep their own TPA-only
         # meaning for state.json and the TPA-specific sub-branches (4a
         # concerned, the cpu-heuristic 4c) -- only the branches that
         # generalize cleanly are broadened.
-        tpa_or_claude_running = running or claude_running
-        shell_active_merged = shell_active or claude_shell_active
-        streaming_merged = llm_streaming or claude_streaming
+        #
+        # working_evidence_merged covers two kinds of "hard" evidence a
+        # tool is actually running: a live subprocess (shell_active,
+        # Bash-tool-style calls) and a recent project-file write
+        # (file_active, catches in-process Edit/Write/apply_patch calls
+        # that never spawn a subprocess -- see ClaudeCodeDetector's
+        # docstring for the bug report that motivated this signal).
+        any_agent_running = running or claude_running or codex_running
+        working_evidence_merged = (
+            shell_active or claude_shell_active or codex_shell_active
+            or claude_file_active or codex_file_active
+        )
+        streaming_merged = llm_streaming or claude_streaming or codex_streaming
+
+        def _working_reason() -> str:
+            """Which agent's hard evidence (shell/file) earns credit in
+            state_reason, priority order. Only called once
+            working_evidence_merged is already known True."""
+            if shell_active:
+                return "shell child active"
+            if claude_shell_active:
+                return "shell child active (claude_code)"
+            if codex_shell_active:
+                return "shell child active (codex)"
+            if claude_file_active:
+                return "file write detected (claude_code)"
+            if codex_file_active:
+                return "file write detected (codex)"
+            return "shell child active"  # unreachable; keeps mypy/readers happy
+
+        def _streaming_reason() -> str:
+            """Which agent's streaming signal earns credit. Only called
+            once streaming_merged is already known True."""
+            if llm_streaming:
+                return "llm streaming"
+            if claude_streaming:
+                return "claude streaming"
+            return "codex streaming"
 
         idle = macos_idle_seconds()
         error_age = file_age_sec(ERRORS_LOG)
@@ -1074,6 +1181,7 @@ class StateMachine:
             idle_seconds=round(idle, 1),
             tpa_running=running,
             claude_code_running=claude_running,
+            codex_running=codex_running,
             timestamp=now,
         )
 
@@ -1124,14 +1232,16 @@ class StateMachine:
             st.message = "🤸 subagent" if tpa_grooving else "🤸 creative burst"
             return st
 
-        # ── 4. TPA OR CLAUDE CODE RUNNING -- richer working/thinking cascade ──
-        # Claude Code is promoted in here (not left in the flat non-TPA
-        # fallback) so it gets the same working/thinking distinction TPA
-        # gets. See claude-code-detector design.md for the merge table.
-        if tpa_or_claude_running:
+        # ── 4. TPA, CLAUDE CODE, OR CODEX RUNNING -- richer working/thinking
+        # cascade ── Claude Code and Codex are promoted in here (not left
+        # in the flat non-TPA fallback) so they get the same working/
+        # thinking distinction TPA gets. See claude-code-detector and
+        # codex-detector design docs for the merge table.
+        if any_agent_running:
             # 4a. CONCERNED -- recent error in TPA log. Stays TPA-only: no
-            # errors.log equivalent exists for Claude Code (explicit
-            # non-goal), so this must not fire from claude_running alone.
+            # errors.log equivalent exists for Claude Code / Codex
+            # (explicit non-goal), so this must not fire from
+            # claude_running/codex_running alone.
             if running and error_age != float("inf") and cpu < CPU_BUSY_THRESHOLD:
                 reason, severity = parse_last_error(ERRORS_LOG)
                 window = (CONCERN_TRANSIENT_LOOKBACK_SEC
@@ -1151,14 +1261,14 @@ class StateMachine:
             except Exception:
                 _tool_win = TOOL_ACTIVE_WINDOW_SEC
                 _work_hold = 25.0
-            # 4b. WORKING -- actively running tool / shell command.
-            # Merged: fires from either TPA's or Claude Code's live
-            # tool-subprocess signal.
-            if shell_active_merged:
+            # 4b. WORKING -- actively running tool / shell command, or a
+            # project file was just written (catches in-process
+            # Edit/Write/apply_patch calls that never spawn a
+            # subprocess). Merged across TPA, Claude Code, and Codex.
+            if working_evidence_merged:
                 self.working_hold_until = now + _work_hold
                 st.state = "working"
-                st.state_reason = ("shell child active" if shell_active
-                                    else "shell child active (claude_code)")
+                st.state_reason = _working_reason()
                 st.message = "🛠️ running shell"
                 return st
             if sustained_busy and tool_activity_age < _tool_win:
@@ -1168,11 +1278,11 @@ class StateMachine:
                 st.message = f"⌨️ writing ({int(cpu)}% cpu)"
                 return st
             # 4b-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy.
-            # Merged: without streaming_merged/shell_active_merged here, this
-            # grace window never applied to Claude-only sessions (all TPA
-            # fields default False/0 when TPA isn't running).
+            # Merged: without streaming_merged/working_evidence_merged here,
+            # this grace window never applied to Claude/Codex-only sessions
+            # (all TPA fields default False/0 when TPA isn't running).
             if now < self.working_hold_until and (
-                sustained_busy or cpu > 5 or streaming_merged or shell_active_merged
+                sustained_busy or cpu > 5 or streaming_merged or working_evidence_merged
             ):
                 st.state = "working"
                 st.state_reason = f"working hold ({int(self.working_hold_until - now)}s left)"
@@ -1183,11 +1293,11 @@ class StateMachine:
             # the authoritative "LLM is thinking" signal, replacing the CPU
             # heuristic. Runs AFTER 'working' checks because if a tool is actively
             # executing, that's a more useful state than 'thinking'. Merged with
-            # Claude Code's transcript-write-recency signal (its own heartbeat
-            # equivalent -- see design.md).
+            # Claude Code's and Codex's transcript-write-recency signals (their
+            # own heartbeat equivalent -- see design docs).
             if streaming_merged:
                 st.state = "thinking"
-                st.state_reason = "llm streaming" if llm_streaming else "claude streaming"
+                st.state_reason = _streaming_reason()
                 st.message = "🤔 thinking"
                 return st
             # 4c. THINKING (FALLBACK) -- CPU busy heuristic for TPA installs
