@@ -184,42 +184,56 @@ class PassthroughController:
         the webview's NSView can intercept mouse events even when the NSWindow
         is set to ignore them. Applying to both layers is reliable.
         """
-        if ignore == self._last_ignore:
-            return
-        nw = self._get_ns_window()
-        if nw is None:
-            return
-        try:
-            from PyObjCTools import AppHelper
-            ig = bool(ignore)
+        # Guard the check-and-set on _last_ignore with self._lock, same
+        # as every sibling field (_paused, _hidden, _current_state,
+        # _current_edge) -- this was the one unguarded state access in
+        # the class (found in a 2026-08-17 review). Without it, the
+        # poll loop and a caller like pause()/set_hidden() (invoked
+        # from the drag thread or main thread) could both read a stale
+        # _last_ignore concurrently, both pass the equality
+        # short-circuit, and dispatch conflicting main-thread mutations
+        # -- whichever callAfter lands last on AppKit's queue wins the
+        # real window state, but _last_ignore records whichever thread
+        # wrote last in program order, which need not match. A later
+        # genuine state change could then be silently skipped because
+        # the cached value no longer reflects reality.
+        with self._lock:
+            if ignore == self._last_ignore:
+                return
+            nw = self._get_ns_window()
+            if nw is None:
+                return
+            try:
+                from PyObjCTools import AppHelper
+                ig = bool(ignore)
 
-            # ── Cocoa main-thread safety (safe-startup-verification, layer 1)
-            # setIgnoresMouseEvents_ + setUserInteractionEnabled_ MUST run on
-            # the main thread; from a worker thread on macOS 14+ they block
-            # indefinitely (the 2026-06-16 wedge bug). We dispatch via
-            # AppHelper.callAfter here rather than @cocoa_main_thread because
-            # _apply_on_main is a closure over nw / ig / contentView — the
-            # decorator pattern wants a module-level callable. callAfter is
-            # functionally equivalent (decorator wraps it under the hood) and
-            # this site is the only callAfter in the codebase that ISN'T
-            # behind the decorator. If this gets refactored later, lift
-            # _apply_on_main to a method on PassthroughManager + apply
-            # @cocoa_main_thread; tests in test_cocoa_main_thread_hook.py
-            # already prove the dispatch contract.
-            def _apply_on_main():
-                try:
-                    nw.setIgnoresMouseEvents_(ig)
-                    cv = nw.contentView()
-                    if cv is not None:
-                        _propagate_ignore(cv, ig)
-                except Exception as e:
-                    print(f"[squid-pet] _apply_on_main failed: {e}", flush=True)
+                # ── Cocoa main-thread safety (safe-startup-verification, layer 1)
+                # setIgnoresMouseEvents_ + setUserInteractionEnabled_ MUST run on
+                # the main thread; from a worker thread on macOS 14+ they block
+                # indefinitely (the 2026-06-16 wedge bug). We dispatch via
+                # AppHelper.callAfter here rather than @cocoa_main_thread because
+                # _apply_on_main is a closure over nw / ig / contentView — the
+                # decorator pattern wants a module-level callable. callAfter is
+                # functionally equivalent (decorator wraps it under the hood) and
+                # this site is the only callAfter in the codebase that ISN'T
+                # behind the decorator. If this gets refactored later, lift
+                # _apply_on_main to a method on PassthroughManager + apply
+                # @cocoa_main_thread; tests in test_cocoa_main_thread_hook.py
+                # already prove the dispatch contract.
+                def _apply_on_main():
+                    try:
+                        nw.setIgnoresMouseEvents_(ig)
+                        cv = nw.contentView()
+                        if cv is not None:
+                            _propagate_ignore(cv, ig)
+                    except Exception as e:
+                        print(f"[squid-pet] _apply_on_main failed: {e}", flush=True)
 
-            AppHelper.callAfter(_apply_on_main)
-            self._last_ignore = ignore
-            print(f"[squid-pet] passthrough → ignore={ignore}", flush=True)
-        except Exception as e:
-            print(f"[squid-pet] setIgnoresMouseEvents failed: {e}", flush=True)
+                AppHelper.callAfter(_apply_on_main)
+                self._last_ignore = ignore
+                print(f"[squid-pet] passthrough → ignore={ignore}", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] setIgnoresMouseEvents failed: {e}", flush=True)
 
     def _loop(self) -> None:
         try:
@@ -273,9 +287,11 @@ class PassthroughController:
                     self._apply_ignore(True)
                     tick += 1
                     if tick % 100 == 0:
+                        with self._lock:
+                            _ignore_for_log = self._last_ignore
                         print(f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
                               f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
-                              f"OUTSIDE state={state} ignore={self._last_ignore}",
+                              f"OUTSIDE state={state} ignore={_ignore_for_log}",
                               flush=True)
                     time.sleep(POLL_INTERVAL)
                     continue
@@ -315,9 +331,20 @@ class PassthroughController:
                 # Hysteresis to prevent flip-flop near body edges:
                 #   was passthrough? → need alpha > 30 to become interactive
                 #   was interactive? → need alpha <  5 to become passthrough
-                if self._last_ignore is None:
+                # Snapshot _last_ignore under the lock (2026-08-17 fix --
+                # this was previously read unlocked here, racing against
+                # _apply_ignore's write from pause()/set_hidden() on
+                # another thread). A tiny window remains between this
+                # snapshot and the _apply_ignore() call below where
+                # another thread could change the real value first, but
+                # that's benign: _apply_ignore's own check-and-set is
+                # itself locked and always leaves _last_ignore consistent
+                # with whichever write actually won.
+                with self._lock:
+                    _last_ignore_snapshot = self._last_ignore
+                if _last_ignore_snapshot is None:
                     want_ignore = alpha_val <= ALPHA_THRESHOLD
-                elif self._last_ignore:  # currently passthrough
+                elif _last_ignore_snapshot:  # currently passthrough
                     want_ignore = alpha_val <= ALPHA_THRESHOLD
                 else:  # currently interactive
                     want_ignore = alpha_val < 5
@@ -326,10 +353,12 @@ class PassthroughController:
 
                 tick += 1
                 if tick % 100 == 0:  # ~3 seconds
+                    with self._lock:
+                        _ignore_for_log = self._last_ignore
                     print(f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
                           f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
                           f"inside={inside} sprite=({sprite_x},{sprite_y}) "
-                          f"state={state} opaque={opaque} ignore={self._last_ignore}",
+                          f"state={state} opaque={opaque} ignore={_ignore_for_log}",
                           flush=True)
 
             except Exception as e:
