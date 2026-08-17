@@ -95,15 +95,16 @@ SHALL:
 
 The frontend SHALL transition Squid to the `drowsy` state via a slump
 animation when Squid has been in the `idle` state continuously and Code
-Puppy idle time exceeds 240 seconds (raised from 120s on 2026-08-17
-alongside the idle-routine cycle length increase in `routine.py`'s
-`IDLE_ROUTINE`, so drowsy no longer cuts the routine off mid-cycle). The
-drowsy state SHALL persist until either a wake event fires (user
-gesture) or TPA resumes activity.
+Puppy idle time exceeds 300 seconds (raised from 120s on 2026-08-17,
+so the idle-routine cycle in `routine.py`'s `IDLE_ROUTINE` -- which
+stays at its original ~91s-average pacing rather than being slowed
+down -- gets to repeat 2-3+ times before drowsy, instead of cutting it
+off mid-cycle). The drowsy state SHALL persist until either a wake
+event fires (user gesture) or TPA resumes activity.
 
 #### Scenario: Drowsy entry after TPA idle threshold
 - **WHEN** Squid has been in the idle state continuously
-- **AND** agent_idle_seconds exceeds 240
+- **AND** agent_idle_seconds exceeds 300
 - **AND** no user_wake_override is active
 - **THEN** the frontend swaps to the drowsy sprite via the slump animation
 

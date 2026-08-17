@@ -44,10 +44,16 @@ MOOD_POLL_INTERVAL_SEC = 1.0     # how often we re-check the gate while paused
 # ── The heartbeat ───────────────────────────────────────────────────────
 # Each tuple: (action_name, min_duration_s, max_duration_s).
 # Iterated circularly; each tick samples a uniform duration in the band.
-# Total cycle length ≈ 161-238s, averaging ~200s (2026-08-17: stretched
-# ~2.2x from the original ~73-108s/~91s-average cycle -- felt too short).
-# Scaled every phase proportionally to keep the original rest/walk/look
-# rhythm shape; adjust the individual bands to retune the balance.
+# Total cycle length ≈ 73-108s, averaging ~91s.
+#
+# 2026-08-17: briefly stretched every phase ~2.2x (to a ~200s average
+# cycle) to make "the routine feel too short" less noticeable, but that
+# just elongated the gap between actions -- individual walks/rests felt
+# sluggish, which is a worse experience than a snappier, more-frequently-
+# repeating cycle. Reverted to the original pacing here; instead pushed
+# DROWSY_IDLE_SEC out to 300s (frontend/index.html) so the *same* short
+# cycle gets to repeat 2-3+ times before she winds down, rather than
+# making each individual cycle longer.
 #
 # Action vocabulary:
 #   "rest"          : do nothing for the duration (Squid stays still;
@@ -57,12 +63,12 @@ MOOD_POLL_INTERVAL_SEC = 1.0     # how often we re-check the gate while paused
 #   "walk-medium"   : ~120-280px traverse, anywhere in visible frame
 #   "walk-edge"     : walk to a screen-edge point (uses existing picker)
 IDLE_ROUTINE: list[tuple[str, float, float]] = [
-    ("rest",         33.0, 40.0),
-    ("look-around",   3.0,  5.0),
-    ("walk-short",   13.0, 22.0),
-    ("rest",         18.0, 26.0),
-    ("walk-medium",  26.0, 40.0),
-    ("look-around",   2.0,  4.0),
+    ("rest",         15.0, 18.0),
+    ("look-around",   1.5,  2.5),
+    ("walk-short",    6.0, 10.0),
+    ("rest",          8.0, 12.0),
+    ("walk-medium",  12.0, 18.0),
+    ("look-around",   1.0,  2.0),
     ("rest",         44.0, 66.0),
     ("walk-edge",    22.0, 35.0),
 ]

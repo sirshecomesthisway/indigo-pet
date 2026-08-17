@@ -584,15 +584,18 @@
     }
     let _lastWakeSeq = 0;     // tracks backend wake_trigger_seq
     let _blinkCooldownUntil = 0;
-    // 2026-08-17: bumped from 120/180 to 240/300 alongside routine.py's
-    // IDLE_ROUTINE stretch (~91s avg cycle -> ~200s avg cycle, hi-end up
-    // to 238s). At the old 120s threshold, drowsy would cut off the new
-    // routine mid-cycle (around walk-medium) almost every time, so
-    // walk-edge and the routine's back half rarely played out. 240s
-    // comfortably covers the new cycle's worst-case ~238s; the 60s
-    // drowsy->sleeping gap is preserved from the original 120/180 pair.
-    const DROWSY_IDLE_SEC   = 240;   // 4 min idle -> drowsy mood
-    const SLEEPING_IDLE_SEC = 300;   // 5 min idle total (1 min after drowsy) -> sleeping
+    // 2026-08-17: routine.py's IDLE_ROUTINE was briefly stretched ~2.2x
+    // (per-action durations, not more actions) to avoid drowsy cutting
+    // the cycle short -- but that made each individual walk/rest feel
+    // sluggish, a worse experience than a snappy cycle. Reverted
+    // IDLE_ROUTINE to its original ~91s-average pacing and instead
+    // pushed these thresholds out to 300/360, so the SAME short cycle
+    // gets to repeat 2-3+ times (300s / ~91s avg ~= 3.3 laps, and even
+    // worst-case ~108.5s/lap still clears 2 full laps) before winding
+    // down, rather than making one lap take longer. 60s drowsy->sleeping
+    // gap preserved from the original 120/180 pair.
+    const DROWSY_IDLE_SEC   = 300;   // 5 min idle -> drowsy mood
+    const SLEEPING_IDLE_SEC = 360;   // 6 min idle total (1 min after drowsy) -> sleeping
     const BLINK_MIN_SEC     = 6;
     const BLINK_MAX_SEC     = 9;
     const BLINK_DURATION_MS = 120;
@@ -693,9 +696,9 @@
       // in Slack/email/etc. macOS-wide idle is intentionally ignored.
       //
       // Sleep cycle (TPA-idle based):
-      //   0-240s       -> idle.png (mood="")
-      //   240-300s     -> drowsy.png (mood="drowsy")
-      //   300s+        -> sleeping.png (mood="sleeping")
+      //   0-300s       -> idle.png (mood="")
+      //   300-360s     -> drowsy.png (mood="drowsy")
+      //   360s+        -> sleeping.png (mood="sleeping")
       //   on TPA wake   -> stretch.png for 1.5s, then idle.png
       const state = result?.state || "idle";
       const idleSeconds = result?.agent_idle_seconds || 0;

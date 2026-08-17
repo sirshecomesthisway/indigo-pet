@@ -110,10 +110,11 @@ An 8th emotional state, `drowsy`, SHALL be added to the state model. The
 drowsy state SHALL be entered by the frontend (not the backend state
 machine) when:
 - The backend state has been `idle` continuously, AND
-- `agent_idle_seconds` (TPA's user-typed idle time) exceeds 240 seconds
-  (raised from 120s on 2026-08-17 so drowsy doesn't cut off the
-  idle-routine wander cycle mid-way through, after that cycle's average
-  length was stretched from ~91s to ~200s), AND
+- `agent_idle_seconds` (TPA's user-typed idle time) exceeds 300 seconds
+  (raised from 120s on 2026-08-17 so the idle-routine wander cycle
+  -- which stays at its original ~91s-average pacing -- gets to repeat
+  2-3+ times before drowsy, rather than cutting one lengthened lap off
+  mid-way), AND
 - No `user_wake_override` is currently active
 
 The frontend SHALL play a slump animation when entering drowsy, and the
@@ -125,7 +126,7 @@ state to avoid coupling the watcher's state machine to user-gesture timing.
 
 #### Scenario: Enter drowsy after prolonged idle
 - **WHEN** the backend state is `idle`
-- **AND** agent_idle_seconds is 241 or greater
+- **AND** agent_idle_seconds is 301 or greater
 - **AND** user_wake_remaining is 0
 - **THEN** the frontend plays the slump animation
 - **AND** the displayed sprite is the drowsy sprite
@@ -161,11 +162,11 @@ on every wake event. The frontend MAY use this counter to detect
 - **AND** the next get_state response returns user_wake_remaining near 60
 - **AND** the frontend fires the wake-stretch transition
 - **AND** Squid does NOT re-enter drowsy for the next 60 seconds even if
-       agent_idle_seconds remains above 240
+       agent_idle_seconds remains above 300
 
 #### Scenario: Override expires after 60 seconds
 - **WHEN** 60 seconds have elapsed since the last wake gesture
-- **AND** agent_idle_seconds is still above 240
+- **AND** agent_idle_seconds is still above 300
 - **AND** no new gesture has fired
 - **THEN** user_wake_remaining returns 0
 - **AND** the frontend re-enters drowsy on the next poll
