@@ -120,8 +120,13 @@ class WanderController:
         self._trigger_wake_cb = lambda: None
         self._set_sprint_fast_transition_cb = lambda _b: None
 
-        # Sprint state
+        # Sprint state. _sprint_lock guards the check-and-set in
+        # sprint_perimeter() so two rapid double-clicks of the menu item
+        # can't both pass the "not already sprinting" check and spawn
+        # concurrent _do_sprint_perimeter threads racing on window
+        # origin / wrapper-rotation state (found in a 2026-08-17 review).
         self._sprint_mode: bool = False
+        self._sprint_lock = threading.Lock()
 
         # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
         # Restored 2026-06-13 after unify-idle-rhythm regression.
@@ -452,11 +457,32 @@ class WanderController:
             print(f"[squid-pet] clear_wrapper_deg err: {e}", flush=True)
 
     def sprint_perimeter(self) -> None:
-        """Funny one-shot: sprint through all 4 corners CW from nearest."""
+        """Funny one-shot: sprint through all 4 corners CW from nearest.
+
+        No-op if a sprint is already in flight -- the check-and-set is
+        atomic under _sprint_lock and happens here, synchronously,
+        before the thread spawns (not inside the thread after its
+        wake-up sleep), so two rapid double-clicks of the menu item
+        can't both pass the check and race on window origin /
+        wrapper-rotation state.
+        """
+        with self._sprint_lock:
+            if self._sprint_mode:
+                print("[squid-pet] SPRINT: already in flight, ignoring", flush=True)
+                return
+            self._sprint_mode = True
         threading.Thread(target=self._do_sprint_perimeter,
                          daemon=True, name="squid-sprint").start()
 
     def _do_sprint_perimeter(self) -> None:
+        # _sprint_mode was already set True by sprint_perimeter() before
+        # this thread started. This single try/finally is now the ONE
+        # place it gets cleared, covering every exit path (early return
+        # on missing origin/frame, normal completion, and exceptions)
+        # -- previously the flag was set deep inside this function
+        # (after the wake-wait sleep) and the early-return path never
+        # reset it, which would have left it stuck True forever once
+        # sprint_perimeter() started eagerly setting it up front.
         try:
             # Wake from drowsy/sleeping first
             self._trigger_wake()
@@ -485,41 +511,37 @@ class WanderController:
             print(f"[squid-pet] SPRINT v3: corner #{start_idx} "
                   f"from ({ox:.0f},{oy:.0f})", flush=True)
 
-            self._sprint_mode = True
-            try:
-                self._set_sprint_fast_transition(True)
-                sx, sy = corners[start_idx]
-                self._set_origin(sx, sy)
-                base_deg_per_corner = {0: 0, 1: 90, 2: 180, 3: 270}
-                start_deg = base_deg_per_corner[start_idx]
-                self._set_wrapper_deg(start_deg)
-                time.sleep(SPRINT_ROTATION_TRANSITION_SEC + 0.05)
+            self._set_sprint_fast_transition(True)
+            sx, sy = corners[start_idx]
+            self._set_origin(sx, sy)
+            base_deg_per_corner = {0: 0, 1: 90, 2: 180, 3: 270}
+            start_deg = base_deg_per_corner[start_idx]
+            self._set_wrapper_deg(start_deg)
+            time.sleep(SPRINT_ROTATION_TRANSITION_SEC + 0.05)
 
-                prev = (sx, sy)
-                cur_deg = start_deg
-                for leg_i in range(4):
-                    if self._stop.is_set():
-                        break
-                    target_idx = (start_idx + leg_i + 1) % 4
-                    tx, ty = corners[target_idx]
-                    target_deg = cur_deg + 90
-                    facing = "right" if tx > prev[0] else ("left" if tx < prev[0] else "right")
-                    self._set_sub_state(f"walking-{facing}")
-                    self._set_wrapper_deg(target_deg)
-                    print(f"[squid-pet]   leg {leg_i+1}/4 turn -> deg {target_deg}",
-                          flush=True)
-                    time.sleep(SPRINT_ROTATION_TRANSITION_SEC + 0.10)
-                    print(f"[squid-pet]   leg {leg_i+1}/4 walk -> "
-                          f"({tx:.0f},{ty:.0f}) facing={facing}", flush=True)
-                    self._sprint_walk_leg(prev[0], prev[1], tx, ty, facing)
-                    prev = (tx, ty)
-                    cur_deg = target_deg
+            prev = (sx, sy)
+            cur_deg = start_deg
+            for leg_i in range(4):
+                if self._stop.is_set():
+                    break
+                target_idx = (start_idx + leg_i + 1) % 4
+                tx, ty = corners[target_idx]
+                target_deg = cur_deg + 90
+                facing = "right" if tx > prev[0] else ("left" if tx < prev[0] else "right")
+                self._set_sub_state(f"walking-{facing}")
+                self._set_wrapper_deg(target_deg)
+                print(f"[squid-pet]   leg {leg_i+1}/4 turn -> deg {target_deg}",
+                      flush=True)
+                time.sleep(SPRINT_ROTATION_TRANSITION_SEC + 0.10)
+                print(f"[squid-pet]   leg {leg_i+1}/4 walk -> "
+                      f"({tx:.0f},{ty:.0f}) facing={facing}", flush=True)
+                self._sprint_walk_leg(prev[0], prev[1], tx, ty, facing)
+                prev = (tx, ty)
+                cur_deg = target_deg
 
-                self._set_sub_state("")
-                self._clear_wrapper_deg()
-                self._set_sprint_fast_transition(False)
-            finally:
-                self._sprint_mode = False
+            self._set_sub_state("")
+            self._clear_wrapper_deg()
+            self._set_sprint_fast_transition(False)
             print("[squid-pet] SPRINT complete", flush=True)
         except Exception as e:
             print(f"[squid-pet] sprint error: {e}", flush=True)
@@ -528,6 +550,7 @@ class WanderController:
             except Exception: pass
             try: self._set_sprint_fast_transition(False)
             except Exception: pass
+        finally:
             self._sprint_mode = False
 
     def _sprint_walk_leg(self, ox, oy, tx, ty, facing) -> None:
