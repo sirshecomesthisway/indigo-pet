@@ -851,10 +851,13 @@ class StateMachine:
               f"{enabled_names}", flush=True)
 
     def _refresh_tpa_detector_ref(self) -> None:
-        """Re-point the TPA/Claude-Code/Codex detector caches after a
-        detector list swap. All three feed the same rich working/thinking
-        cascade in _compute_inner (see claude-code-detector and
-        codex-detector design docs)."""
+        """Re-point the TPA/Claude-Code/Codex/Git detector caches after a
+        detector list swap. TPA/Claude/Codex feed the same rich
+        working/thinking cascade in _compute_inner (see
+        claude-code-detector and codex-detector design docs); Git is
+        cached here too so PetApi.update()'s LLM-bubble context
+        enrichment (window.py) can read live git-activity signal
+        without walking self.detectors itself on every state change."""
         self._tpa_detector = next(
             (d for d in self.detectors if d.name == "tpa"), None
         )
@@ -863,6 +866,9 @@ class StateMachine:
         )
         self._codex_detector = next(
             (d for d in self.detectors if d.name == "codex"), None
+        )
+        self._git_detector = next(
+            (d for d in self.detectors if d.name == "git"), None
         )
         # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
@@ -1001,6 +1007,7 @@ class StateMachine:
                     + fired_reason + ", sound=" + _sound_label + ")",
                     flush=True,
                 )
+                _fire_approval_notification(_text, _sound)
         else:
             # No alert is fired this tick. Reset the OS-notification latch
             # so the next genuine alert (after Pink replies + new response)
@@ -1331,6 +1338,17 @@ class StateMachine:
 # ────────────────────────────────────────────────────────────────────────
 
 
+def _applescript_escape(s: str) -> str:
+    """Escape a string for safe interpolation inside an AppleScript
+    double-quoted literal. text/sound below come from the user's own
+    ~/.squid-pet/config.json (approval_alert_text/approval_alert_sound)
+    -- local and not attacker-controlled today, but interpolating them
+    unescaped means a stray `"` (or `\\`) in a config value would break
+    out of the string and inject arbitrary AppleScript. Escape rather
+    than trust the source stays benign forever."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _fire_approval_notification(text: str, sound: str) -> None:
     """Fire a macOS notification banner in a background thread.
 
@@ -1343,8 +1361,10 @@ def _fire_approval_notification(text: str, sound: str) -> None:
     def _go():
         try:
             title = "Squid"
-            body = "TPA: " + text
-            sound_clause = ' sound name "' + sound + '"' if sound else ""
+            body = "TPA: " + _applescript_escape(text)
+            sound_clause = (
+                ' sound name "' + _applescript_escape(sound) + '"' if sound else ""
+            )
             script = 'display notification "' + body + '" with title "' + title + '"' + sound_clause
             subprocess.run(
                 ["osascript", "-e", script],

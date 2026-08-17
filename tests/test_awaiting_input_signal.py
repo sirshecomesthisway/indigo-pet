@@ -111,8 +111,14 @@ def test_compute_fires_approval_needed_when_flag_present(
     )
     try:
         # No procs / per-proc idle at all -- direct signal alone fires.
+        # Patch out the actual OS-notification call: compute() firing
+        # approval_needed for the first time now triggers a real
+        # osascript "display notification" (2026-08-17 fix -- this call
+        # was previously wired but never invoked). Without this patch a
+        # real macOS notification banner pops during the test run.
         with patch.object(watcher, "find_tpa_processes",
-                          return_value=[]):
+                          return_value=[]), \
+             patch.object(watcher, "_fire_approval_notification") as mock_notify:
             with patch("squid_pet.config.get") as mg:
                 mg.side_effect = lambda k, default=None: {
                     "approval_alert_enabled": True,
@@ -130,6 +136,7 @@ def test_compute_fires_approval_needed_when_flag_present(
     )
     assert "awaiting_input" in st.state_reason.lower() or \
            "flag" in st.state_reason.lower()
+    mock_notify.assert_called_once_with("your turn", "Glass")
 
 
 # ── NEW: engagement gate (Bug #2 -- fresh-startup false-fire) ─────────
