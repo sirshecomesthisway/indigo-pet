@@ -351,7 +351,7 @@
   <div id="concern-tooltip"></div>
   <div id="hint"></div>
   <div id="bubble"><span></span></div>
-  <div id="debug">state: <span id="d-state">?</span></div>
+  <div id="debug">state: <span id="d-state">?</span> · msg: <span id="d-message">?</span></div>
 
   <script>
     // ====== Hearts-on-poke (hoisted to module scope) ======
@@ -396,6 +396,7 @@
 
     const pet     = document.getElementById("pet");
     const dbgState= document.getElementById("d-state");
+    const dbgMessage = document.getElementById("d-message");
     const hint    = document.getElementById("hint");
 
     let currentState = "";
@@ -846,6 +847,14 @@
           const result = await window.pywebview.api.get_state();
           setState(result?.state || "idle");
           applySubState(result?.sub_state || "");
+          // PetState.message (backend's short per-state caption, e.g.
+          // "🛠️ running shell") was computed every tick but never
+          // read anywhere in the frontend -- surface it in the existing
+          // Ctrl+D debug overlay (2026-08-17 fix) rather than adding new
+          // always-on UI, since #bubble already owns the persistent
+          // "what is she doing" visual and a second competing caption
+          // would just clutter the normal view.
+          if (dbgMessage) dbgMessage.textContent = result?.message || "";
         // Sprint fast-transition: speed up wrapper CSS rotation during sprint.
         const wrapperFast = result?.sprint_fast_transition === true;
         window._sprintActive = wrapperFast;  // drives poll cadence (see scheduleNextPoll)
@@ -862,7 +871,7 @@
           _lastWakeSeq = wakeSeq;
           if (_mood === "drowsy" || _mood === "sleeping") {
             console.log("[squid] wake trigger fired -> stretch");
-            wakeFromDrowsy();
+            wakeUpWithStretch();
           }
         }
 
@@ -881,7 +890,21 @@
       } catch (e) { console.warn("poll failed", e); }
     }
 
+    // Idempotency guard (2026-08-17): boot can wire up TWO independent
+    // callers of startPolling() -- the 'pywebviewready' event listener
+    // AND a 500ms fallback timer (see boot sequence near the bottom of
+    // this file), armed together whenever pywebview.api isn't ready yet
+    // at parse time. If the event fires before the fallback timer, both
+    // eventually call startPolling(). blinkLoop() below self-recurses
+    // forever via setTimeout with no cancellation handle, so a second
+    // call spawned a second permanent blink chain racing the first to
+    // set pet.src -- doubled blink frequency and visual glitches. Same
+    // dual-timer-racing-to-mutate-visual-state class of bug as the
+    // sprite fade-in race fixed earlier.
+    let _pollingStarted = false;
     function startPolling() {
+      if (_pollingStarted) return;
+      _pollingStarted = true;
       if (pollTimer) clearInterval(pollTimer);
       poll();
       // Dynamic poll cadence: fast (80ms) during sprint so wrapper_deg
