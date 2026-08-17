@@ -240,19 +240,23 @@
          external load and no corporate font policy concerns */
       font: 12px/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
       font-weight: 600;
-      /* Fixed width + flexible height (2026-08-17 fix): was max-width
+      /* Capped width + flexible height (2026-08-17 fix): was max-width
          with white-space:nowrap, which let long text overflow the box
          horizontally instead of wrapping -- since the pywebview window
          itself is only 200px wide (WINDOW_WIDTH/WIN_W across window.py/
          wanderer.py/passthrough.py), that overflow got clipped by the
          window's own edge, not just the bubble's border, so long
-         reactions could render partially invisible. 150px content width
-         (+24px padding +6px border +8px notch-shadow = ~188px visual
-         span) comfortably fits inside the 200px window with margin on
-         both sides; wrapping lets height grow to fit instead. */
-      width: 150px;
+         reactions could render partially invisible. max-width (not a
+         literal width) keeps short bubbles shrink-to-fit -- position:
+         fixed + width:auto sizes to content by default -- while text
+         past 150px content width (+24px padding +6px border +8px
+         notch-shadow = ~188px visual span, comfortably inside the
+         200px window with margin both sides) wraps and grows downward
+         instead of sideways. */
+      max-width: 150px;
       white-space: normal;
       overflow-wrap: break-word;
+      text-align: center;
       pointer-events: none;
       opacity: 0;
       z-index: 100;
