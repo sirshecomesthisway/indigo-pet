@@ -42,6 +42,10 @@ STATE_DIR = Path.home() / ".squid-pet"
 STATE_FILE = STATE_DIR / "state.json"
 PID_FILE = STATE_DIR / "pid"
 POSITION_FILE = STATE_DIR / "position.json"
+# Written by window.py's _apply_hide_state() while the "Hide Squid" menu
+# toggle is active; cleared on unhide and on every fresh boot. Presence
+# means "no visible window" is expected and healthy, not a wedge.
+HIDDEN_FLAG = STATE_DIR / "hidden"
 STDOUT_LOG = Path("/tmp/squid-pet.out.log")
 
 LAUNCHD_LABEL = "com.pink.squid-pet"
@@ -198,15 +202,28 @@ def _get_visible_window_for_pid(pid: int) -> Optional[dict]:
 
 
 def check_window_visible(pid_path: Path = PID_FILE,
-                          window_lookup=None) -> CheckResult:
+                          window_lookup=None,
+                          hidden_flag_path: Path = HIDDEN_FLAG) -> CheckResult:
     """Check 4: CGWindowList shows a visible window for our pid.
 
     This is the check that would have caught the 2026-06-16 wedge:
     the pywebview default (100,100) window was technically rendered
     but at the wrong position with alpha=1.0; the issue was that
     every other layer assumed visible = correct.
+
+    Exception: the "Hide Squid" menu toggle is a real, supported
+    feature that sets window alpha=0 on purpose (window.py's
+    _apply_hide_state). Without checking hidden_flag_path first, a
+    healthily-hidden Squid looks identical to a wedged one and this
+    check would false-positive FAIL every time a user hides her.
     """
     name = "window visible"
+    if hidden_flag_path.exists():
+        return CheckResult(
+            name=name, passed=True,
+            diagnostic="Squid is intentionally hidden (Hide Squid menu toggle) "
+                       "-- no window expected",
+        )
     lookup = window_lookup or _get_visible_window_for_pid
     if not pid_path.exists():
         return CheckResult(
@@ -248,6 +265,7 @@ def check_window_in_expected_corner(
     tolerance_px: float = WINDOW_CORNER_TOLERANCE_PX,
     window_lookup=None,
     corner_origin_fn=None,
+    hidden_flag_path: Path = HIDDEN_FLAG,
 ) -> CheckResult:
     """Check 5: window is NOT at the pywebview-default wedge position.
 
@@ -261,8 +279,16 @@ def check_window_in_expected_corner(
     because the wanderer legitimately moves the window all over the
     screen during routine. Comparing to that would false-positive
     constantly. Instead we check for the specific bug signature.
+
+    Same hidden-flag exception as check_window_visible: an intentionally
+    hidden window has no CGWindowList entry to check a position on.
     """
     name = "window not wedged"
+    if hidden_flag_path.exists():
+        return CheckResult(
+            name=name, passed=True,
+            diagnostic="Squid is intentionally hidden -- position check skipped",
+        )
     lookup = window_lookup or _get_visible_window_for_pid
     if not pid_path.exists():
         return CheckResult(

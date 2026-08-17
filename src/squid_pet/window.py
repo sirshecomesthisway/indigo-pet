@@ -35,6 +35,12 @@ EDGE_MARGIN   = 20
 
 POSITION_FILE = Path.home() / ".squid-pet" / "position.json"
 SETTINGS_FILE = Path.home() / ".squid-pet" / "settings.json"
+# Presence == intentionally hidden via the menu bar toggle. Written by
+# _apply_hide_state() so `squid doctor` (a separate CLI process with no
+# access to the live PetApi._hidden in-memory bool) can tell "no visible
+# window because she's healthily hidden" apart from "no visible window
+# because she's wedged/crashed" -- see doctor.py's HIDDEN_FLAG check.
+HIDDEN_FLAG = Path.home() / ".squid-pet" / "hidden"
 CORNERS = ["top-right", "bottom-right", "bottom-left", "top-left"]
 
 
@@ -481,6 +487,13 @@ class PetApi:
         self._menu = None                      # SquidMenu instance (set in on_loaded)
         self._wanderer = None                  # WanderController (set in on_loaded)
         self._routine = None                   # RoutineController (set in on_loaded)
+        # Live StateMachine ref (set by watcher_thread() via
+        # set_state_machine()) -- lets update()'s LLM-bubble context
+        # enrichment read the TPA/Git detectors' current signals. Was
+        # None forever pre-2026-08-17 (a dead self._tpa_detector /
+        # self._git_detector lookup that never matched anything), so
+        # the enrichment always silently used its defaults.
+        self._sm: "watcher.StateMachine | None" = None
         self._frontend_mood: str = ""          # JS mood: ""/drowsy/sleeping/stretch
         # Set when on_loaded fires; the watchdog in main() uses this to
         # detect WKWebView startup hangs and self-terminate within 10s
@@ -540,6 +553,11 @@ class PetApi:
     def set_passthrough(self, p: PassthroughController) -> None:
         self._passthrough = p
 
+    def set_state_machine(self, sm: "watcher.StateMachine") -> None:
+        """Called once by watcher_thread() so update()'s LLM-bubble
+        context enrichment can read the live TPA/Git detector signals."""
+        self._sm = sm
+
     def update(self, state: watcher.PetState) -> None:
         with self._lock:
             prev_state = self._last_state_for_bubble
@@ -568,8 +586,13 @@ class PetApi:
             cpu_pct = 0.0
             tool_age = float("inf")
             try:
-                # TPA detector signals (already scanned this tick)
-                cp = getattr(self, "_tpa_detector", None) or getattr(watcher, "_tpa_detector_singleton", None)
+                # TPA detector signals (already scanned this tick). Read
+                # via the live StateMachine ref (set_state_machine(),
+                # called once from watcher_thread()) -- self._tpa_detector
+                # and watcher._tpa_detector_singleton were never assigned
+                # anywhere, so this enrichment silently no-op'd forever
+                # before 2026-08-17.
+                cp = self._sm._tpa_detector if self._sm is not None else None
                 if cp is not None:
                     llm_streaming = bool(getattr(cp, "llm_streaming", False))
                     cpu_pct = float(getattr(cp, "cpu_percent", 0.0))
@@ -587,7 +610,7 @@ class PetApi:
                 pass
             try:
                 # Git active: GitDetector reads .git/HEAD/index/refs mtimes
-                gd = getattr(self, "_git_detector", None)
+                gd = self._sm._git_detector if self._sm is not None else None
                 if gd is not None:
                     git_active = bool(gd.is_celebrating(state.timestamp) or gd.is_busy(state.timestamp))
             except Exception:
@@ -783,6 +806,16 @@ class PetApi:
     def _menu_snap(self, corner: str) -> None:
         if move_to_corner(corner):
             save_corner(corner)
+            # Refresh edge so sprite rotation + passthrough's edge-aware
+            # hit-test offset match the new position -- same fix
+            # next_corner()/drag's _on_end already apply. Without it,
+            # the window moves but the sprite stays rotated for whatever
+            # edge it was on until the next wander tick happens to run.
+            try:
+                if self._wanderer is not None:
+                    self._wanderer.refresh_edge()
+            except Exception as e:
+                print(f"[squid-pet] menu snap edge-refresh err: {e}", flush=True)
             self._emit_hint(f"📍 {corner}")
 
     def _menu_toggle_pin(self) -> None:
@@ -803,7 +836,13 @@ class PetApi:
         print("[squid-pet] wander resumed", flush=True)
 
     def debug_log(self, msg: str) -> str:
-        """JS-exposed: print arbitrary debug message from frontend to /tmp/squid-pet.log."""
+        """JS-exposed: print arbitrary debug message from frontend.
+
+        Goes to stdout, which launchd redirects to
+        /tmp/squid-pet.out.log per the plist's StandardOutPath (not
+        squid-pet.log -- that path was a doc error, nothing ever wrote
+        there; corrected 2026-08-17 alongside _menu_open_log).
+        """
         print(f"[squid-pet][js] {msg}", flush=True)
         return "logged"
 
@@ -898,6 +937,19 @@ class PetApi:
 
         Must run on the AppKit main thread.
         """
+        # Persist the hidden flag so `squid doctor` (a separate process)
+        # can distinguish "no visible window because healthily hidden"
+        # from "no visible window because wedged" -- best-effort, doctor
+        # degrades to its old (occasionally-false-positive) behavior if
+        # this write fails for any reason.
+        try:
+            if self._hidden:
+                HIDDEN_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                HIDDEN_FLAG.touch()
+            else:
+                HIDDEN_FLAG.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"[squid-pet] hidden-flag write failed: {e}", flush=True)
         # Make the (now invisible) window fully click-through so it is
         # truly "not available" while hidden. Guarded -- passthrough is
         # wired in after startup.
@@ -1027,6 +1079,11 @@ class PetApi:
     def _menu_recenter(self) -> None:
         corner = load_corner()
         if move_to_corner(corner):
+            try:
+                if self._wanderer is not None:
+                    self._wanderer.refresh_edge()
+            except Exception as e:
+                print(f"[squid-pet] recenter edge-refresh err: {e}", flush=True)
             self._emit_hint(f"🎯 recentered → {corner}")
 
     # ─── Mood ───
@@ -1083,11 +1140,18 @@ class PetApi:
             self._emit_hint(f"📊 stats err: {e}")
 
     def _menu_open_log(self) -> None:
-        """Open /tmp/squid-pet.log in Console.app."""
+        """Open /tmp/squid-pet.out.log in Console.app.
+
+        Was pointed at /tmp/squid-pet.log (2026-08-17 fix) -- nothing
+        ever wrote to that path. The plist's StandardOutPath (see
+        launchagent/com.pink.squid-pet.plist.template) redirects our
+        print()-based logging to squid-pet.out.log; doctor.py's
+        STDOUT_LOG and bin/squid's OUT_LOG already point there.
+        """
         try:
             import subprocess
-            subprocess.Popen(["open", "-a", "Console", "/tmp/squid-pet.log"])
-            self._emit_hint("📜 opened squid-pet.log")
+            subprocess.Popen(["open", "-a", "Console", "/tmp/squid-pet.out.log"])
+            self._emit_hint("📜 opened squid-pet.out.log")
         except Exception as e:
             self._emit_hint(f"📜 failed: {e}")
 
@@ -1160,6 +1224,7 @@ class PetApi:
 # ──────────────────────────────────────────────────────────────────
 def watcher_thread(api: PetApi, stop_event: threading.Event) -> None:
     sm = watcher.StateMachine()
+    api.set_state_machine(sm)
     print(f"[squid-pet] watcher thread started", flush=True)
     while not stop_event.is_set():
         try:
@@ -1177,6 +1242,15 @@ def watcher_thread(api: PetApi, stop_event: threading.Event) -> None:
 def main() -> None:
     if not FRONTEND_HTML.exists():
         sys.exit(f"frontend not found: {FRONTEND_HTML}")
+
+    # Clear any stale hidden-flag left by a prior crashed/killed session --
+    # this instance always boots with self._hidden=False, so a leftover
+    # flag would wrongly tell `squid doctor` "no window because hidden"
+    # when the real answer is "no window because this fresh boot wedged".
+    try:
+        HIDDEN_FLAG.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     api = PetApi()
     api.update(watcher.StateMachine().compute())

@@ -139,6 +139,7 @@ def test_window_visible_pass(tmp_path):
     r = doctor.check_window_visible(
         pid_path=pid_file,
         window_lookup=lambda pid: _fake_window(),
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert r.passed
     assert "window at" in r.diagnostic
@@ -150,6 +151,7 @@ def test_window_visible_none_found(tmp_path):
     r = doctor.check_window_visible(
         pid_path=pid_file,
         window_lookup=lambda pid: None,
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert not r.passed
     assert "no visible window" in r.diagnostic
@@ -160,9 +162,40 @@ def test_window_visible_no_pid_file(tmp_path):
     r = doctor.check_window_visible(
         pid_path=tmp_path / "missing",
         window_lookup=lambda pid: _fake_window(),
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert not r.passed
     assert "no pid file" in r.diagnostic
+
+
+def test_window_visible_hidden_flag_present_passes_even_with_no_window(tmp_path):
+    """Regression test (2026-08-17): 'Hide Squid' is a real feature that
+    sets window alpha=0 on purpose. Without the hidden-flag check, this
+    scenario (no CGWindowList entry, pid alive) used to FAIL with a
+    'may be wedged... thread-safety regression' false alarm."""
+    pid_file = tmp_path / "pid"
+    pid_file.write_text(str(os.getpid()))
+    hidden_flag = tmp_path / "hidden"
+    hidden_flag.touch()
+    r = doctor.check_window_visible(
+        pid_path=pid_file,
+        window_lookup=lambda pid: None,  # no window found -- as expected while hidden
+        hidden_flag_path=hidden_flag,
+    )
+    assert r.passed
+    assert "hidden" in r.diagnostic.lower()
+
+
+def test_window_visible_no_hidden_flag_still_fails_normally(tmp_path):
+    """Sanity: absence of the hidden flag must NOT mask a real wedge."""
+    pid_file = tmp_path / "pid"
+    pid_file.write_text(str(os.getpid()))
+    r = doctor.check_window_visible(
+        pid_path=pid_file,
+        window_lookup=lambda pid: None,
+        hidden_flag_path=tmp_path / "hidden",  # does not exist
+    )
+    assert not r.passed
 
 
 # ----------------------------------------------------------------------
@@ -175,6 +208,7 @@ def test_window_not_wedged_pass(tmp_path):
         pid_path=pid_file,
         position_path=tmp_path / "position.json",
         window_lookup=lambda pid: _fake_window(x=1500, y=50),
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert r.passed
     assert "not at" in r.diagnostic
@@ -188,6 +222,7 @@ def test_window_wedged_at_pywebview_default(tmp_path):
         pid_path=pid_file,
         position_path=tmp_path / "position.json",
         window_lookup=lambda pid: _fake_window(x=100, y=100),
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert not r.passed
     assert "wedge" in r.diagnostic
@@ -203,6 +238,7 @@ def test_window_wedged_within_tolerance(tmp_path):
         pid_path=pid_file,
         position_path=tmp_path / "position.json",
         window_lookup=lambda pid: _fake_window(x=105, y=95),
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert not r.passed
 
@@ -214,9 +250,27 @@ def test_window_not_wedged_no_visible_window(tmp_path):
         pid_path=pid_file,
         position_path=tmp_path / "position.json",
         window_lookup=lambda pid: None,
+        hidden_flag_path=tmp_path / "hidden",
     )
     assert not r.passed
     assert "no visible window" in r.diagnostic
+
+
+def test_window_not_wedged_hidden_flag_present_passes(tmp_path):
+    """Same hidden-flag exception as check_window_visible: an
+    intentionally hidden window has no position to check."""
+    pid_file = tmp_path / "pid"
+    pid_file.write_text(str(os.getpid()))
+    hidden_flag = tmp_path / "hidden"
+    hidden_flag.touch()
+    r = doctor.check_window_in_expected_corner(
+        pid_path=pid_file,
+        position_path=tmp_path / "position.json",
+        window_lookup=lambda pid: None,
+        hidden_flag_path=hidden_flag,
+    )
+    assert r.passed
+    assert "hidden" in r.diagnostic.lower()
 
 
 # ----------------------------------------------------------------------
