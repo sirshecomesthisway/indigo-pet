@@ -95,7 +95,7 @@ Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 | **celebrating** | Busy → idle transition (task likely complete) | Bounce, confetti, big smile (4 s window) |
 | **concerned** | Recent line in `errors.log` (60 s for hard, 20 s for transient/network) | Tremble, red aura, raised eyes |
 | **sleeping** | macOS HID idle > 5 min | Closed eyes, Zz floating, dim aura |
-| **drowsy** | TPA idle 120–299 s (frontend-driven) | Slumped sprite, paused routine |
+| **drowsy** | TPA idle 240–299 s (frontend-driven) | Slumped sprite, paused routine |
 | **stretch** | Wake transition (~1.6 s, frontend-driven) | Wake-up stretch animation |
 
 Priority order is fixed (`watcher.py:StateMachine.compute`): sleeping >
