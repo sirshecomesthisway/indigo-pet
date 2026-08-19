@@ -635,8 +635,17 @@ class PetApi:
             d = asdict(self._latest)
             if self._forced_state:
                 d["state"] = self._forced_state
-            # Overlay walking sub_state if active (lets frontend animate legs)
-            if self._wander_sub_state and d.get("state") == "idle":
+            # Overlay walking sub_state if active (lets frontend animate legs).
+            # Gated to state=="idle" for AMBIENT wander sub-states (she
+            # shouldn't visibly wander-walk while working/thinking/etc) --
+            # but "nudge-*" sub-states are exempt (2026-08-19): a nudge hop
+            # can fire in any backend state (see WanderController.
+            # request_nudge's docstring), and without this exemption the
+            # window still physically moved but the frontend never got told
+            # to show the walking-cue, so nudging looked like it silently
+            # did nothing whenever she wasn't idle (e.g. "working").
+            is_nudge = self._wander_sub_state.startswith("nudge-")
+            if self._wander_sub_state and (d.get("state") == "idle" or is_nudge):
                 d["sub_state"] = self._wander_sub_state
             # Edge tells frontend which way to rotate sprite (feet hug screen edge)
             d["edge"] = self._wander_edge
@@ -1396,6 +1405,17 @@ def main() -> None:
             set_edge=api.set_wander_edge,
         )
         api._wanderer = wc  # keep reference so it isn't GC'd
+
+        # Wire the nudge trigger: passthrough's poll loop fires this when
+        # it sees repeated rapid re-entries into her clickable bbox (see
+        # NudgeApproachTracker). Gated the same way wandering itself is --
+        # pinned (⚓) or hidden means "leave her exactly where she is."
+        def _on_repeated_approach(cx, cy):
+            if api._pinned or api._hidden:
+                return
+            wc.request_nudge(cx, cy)
+        pt.set_nudge_callback(_on_repeated_approach)
+
         # Apply persisted stroll mode (restored 2026-06-13)
         try:
             wc.set_stroll_mode(api._stroll_mode)

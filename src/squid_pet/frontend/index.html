@@ -125,10 +125,12 @@
       75%  { transform: translate(-50%, -50%) scaleX(-1) translateY(-3px) rotate( 0deg); }
       100% { transform: translate(-50%, -50%) scaleX(-1) translateY(0px)  rotate(-2deg); }
     }
-    .pet[data-substate="walking-right"] {
+    .pet[data-substate="walking-right"],
+    .pet[data-substate="nudge-right"] {
       animation: walk-bob-right 0.45s ease-in-out infinite !important;
     }
-    .pet[data-substate="walking-left"] {
+    .pet[data-substate="walking-left"],
+    .pet[data-substate="nudge-left"] {
       animation: walk-bob-left 0.45s ease-in-out infinite !important;
     }
   
@@ -503,8 +505,15 @@
     // while she's in drowsy mood (she should stay drowsy, not turn her head).
     function applySubState(sub) {
       sub = sub || "";
-      if (_mood === "drowsy" || _mood === "sleeping" || _mood === "stretch") {
-        // Suppress sub-state animations while drowsy/sleeping/stretching.
+      const isNudge = sub.startsWith("nudge-");
+      if (!isNudge && (_mood === "drowsy" || _mood === "sleeping" || _mood === "stretch")) {
+        // Suppress AMBIENT sub-state animations (wander walk/look-around)
+        // while drowsy/sleeping/stretching -- she should stay resting, not
+        // wander. Nudge hops are exempt (2026-08-19): a nudge is a direct
+        // physical reaction to being bumped, not ambient wandering, and
+        // should still visibly react even while asleep -- this suppression
+        // was silently eating the walking-cue for nudge hops even though
+        // the window itself was still physically moving.
         sub = "";
       }
       pet.dataset.substate = sub;

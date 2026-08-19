@@ -40,6 +40,55 @@ POLL_INTERVAL = 0.03
 
 SPRITES_DIR = Path(__file__).parent / "frontend" / "sprites"
 
+# Nudge trigger: repeated quick re-entries into her clickable bbox within
+# a short window read as "move, you're in the way" rather than a single
+# hover/click/drag attempt. A single entry never reaches the threshold,
+# so a plain hover/click/drag is completely unaffected -- only bouncing
+# the cursor onto her a couple of times fast triggers a nudge.
+NUDGE_APPROACH_THRESHOLD = 2
+NUDGE_WINDOW_SEC = 0.8
+NUDGE_COOLDOWN_SEC = 1.5
+
+
+class NudgeApproachTracker:
+    """Counts fresh transitions into the clickable bbox and decides when
+    that counts as repeated bumping rather than a single interaction
+    attempt.
+
+    Pure logic, no AppKit/threading -- kept separate from
+    PassthroughController so it's unit-testable without a real NSWindow
+    or the background poll thread.
+    """
+
+    def __init__(
+        self,
+        threshold: int = NUDGE_APPROACH_THRESHOLD,
+        window_sec: float = NUDGE_WINDOW_SEC,
+        cooldown_sec: float = NUDGE_COOLDOWN_SEC,
+    ):
+        self._threshold = threshold
+        self._window_sec = window_sec
+        self._cooldown_sec = cooldown_sec
+        self._entries: list[float] = []
+        self._cooldown_until = 0.0
+
+    def on_tick(self, now_interactive: bool, was_interactive: bool, now: float) -> bool:
+        """Call once per poll tick with the freshly-computed interactive
+        state (cursor over an opaque pixel). Returns True exactly on the
+        tick that crosses the approach threshold -- caller should fire
+        the nudge then."""
+        if not (now_interactive and not was_interactive):
+            return False  # not a fresh entry (dwelling or still outside)
+        if now < self._cooldown_until:
+            return False  # cooling down from the last nudge
+        self._entries = [t for t in self._entries if now - t < self._window_sec]
+        self._entries.append(now)
+        if len(self._entries) < self._threshold:
+            return False
+        self._entries.clear()
+        self._cooldown_until = now + self._cooldown_sec
+        return True
+
 
 def load_alpha_masks() -> dict[str, "Image.Image"]:
     """Pre-load alpha channels for all sprites, resized to display size."""
@@ -110,9 +159,19 @@ class PassthroughController:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._last_ignore: bool | None = None
+        # Nudge trigger (repeated-approach detector) -- see set_nudge_callback().
+        self._nudge_callback = None
+        self._nudge_tracker = NudgeApproachTracker()
+        self._was_interactive = False
         print(f"[squid-pet] passthrough: loaded {len(self._masks)} alpha masks", flush=True)
 
     # ── Public API ──
+    def set_nudge_callback(self, cb) -> None:
+        """Register cb(cursor_x, cursor_y), invoked when NudgeApproachTracker
+        detects repeated rapid re-entries into her clickable bbox. cb should
+        be fast/non-blocking (called from the poll thread)."""
+        self._nudge_callback = cb
+
     def set_state(self, state: str) -> None:
         with self._lock:
             # Backend state "approval_needed" displays sprites/
@@ -162,6 +221,19 @@ class PassthroughController:
         self._stop.set()
 
     # ── Internals ──
+    def _track_nudge(self, now_interactive: bool, cx: float, cy: float) -> None:
+        """Feed the current interactive (opaque-hit) state to the approach
+        tracker and fire the nudge callback on threshold. Only called from
+        the poll loop thread, so no lock needed on _was_interactive."""
+        now = time.time()
+        fire = self._nudge_tracker.on_tick(now_interactive, self._was_interactive, now)
+        self._was_interactive = now_interactive
+        if fire and self._nudge_callback is not None:
+            try:
+                self._nudge_callback(cx, cy)
+            except Exception as e:
+                print(f"[squid-pet] nudge callback failed: {e}", flush=True)
+
     def _alpha_at(self, mask, sx: int, sy: int) -> int:
         """MAX alpha in a 5-pixel cross neighborhood (robust to CSS animation jitter)."""
         if mask is None:
@@ -285,6 +357,7 @@ class PassthroughController:
                 if not inside:
                     # Cursor outside: keep window in passthrough so it never blocks anything
                     self._apply_ignore(True)
+                    self._track_nudge(False, cx, cy)
                     tick += 1
                     if tick % 100 == 0:
                         with self._lock:
@@ -350,6 +423,7 @@ class PassthroughController:
                     want_ignore = alpha_val < 5
                 opaque = not want_ignore  # for diagnostics below
                 self._apply_ignore(want_ignore)
+                self._track_nudge(opaque, cx, cy)
 
                 tick += 1
                 if tick % 100 == 0:  # ~3 seconds

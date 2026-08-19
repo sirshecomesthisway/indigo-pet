@@ -80,6 +80,31 @@ SPRINT_ROTATION_TRANSITION_SEC = 0.20
 SPRINT_WAKE_WAIT_SEC = 1.6
 ROTATION_PREAMBLE_SEC = 0.7
 
+# Nudge params -- a single quick hop away from the cursor, triggered by
+# passthrough.NudgeApproachTracker on repeated rapid approaches. Snappier
+# than a normal wander walk (short min duration, no easing preamble) so
+# it reads as a flinch, not a stroll.
+NUDGE_HOP_DISTANCE_PX = 70
+NUDGE_SPEED_PX_PER_SEC = 400
+NUDGE_MIN_DURATION_SEC = 0.25
+# Below this much actual movement, the away-from-cursor hop is considered
+# "stuck" (corner case -- see _do_request_nudge's fallback) rather than a
+# genuine short hop near a wall.
+NUDGE_STUCK_THRESHOLD_PX = 10
+
+# Nudge-streak escalation (2026-08-19): a short hop away from the cursor
+# reads fine for one or two nudges, but if she's being bumped over and
+# over, hopping the same fixed short distance each time barely gets her
+# out of the way and reads as ignoring the user. After more than this
+# many nudges in a row, she gives up on the small hop and flees straight
+# to whichever corner of her wander range is nearest -- fully out of the
+# way instead of a token step. NUDGE_COUNT_RESET_SEC bounds "in a row":
+# individual nudges are already >=NUDGE_COOLDOWN_SEC apart (the tracker's
+# own cooldown), so this just caps how long a lull can be before it no
+# longer counts as the same bout of pestering.
+NUDGE_TO_CORNER_THRESHOLD = 3
+NUDGE_COUNT_RESET_SEC = 6.0
+
 
 def _ease_in_out(t: float) -> float:
     """Smooth ease — slow start, fast middle, slow end."""
@@ -127,6 +152,10 @@ class WanderController:
         # origin / wrapper-rotation state (found in a 2026-08-17 review).
         self._sprint_mode: bool = False
         self._sprint_lock = threading.Lock()
+
+        # Nudge-streak state (see NUDGE_TO_CORNER_THRESHOLD above).
+        self._nudge_count: int = 0
+        self._last_nudge_time: float = 0.0
 
         # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
         # Restored 2026-06-13 after unify-idle-rhythm regression.
@@ -191,6 +220,31 @@ class WanderController:
             return
         t = threading.Thread(target=self._do_look_around, daemon=True,
                              name="squid-look")
+        t.start()
+
+    def request_nudge(self, cursor_x: float, cursor_y: float) -> None:
+        """Fire-and-forget: hop once, away from (cursor_x, cursor_y).
+
+        Called when the passthrough poll loop's NudgeApproachTracker sees
+        2+ rapid re-entries into her clickable bbox within a short window
+        -- read as "move, you're in the way" rather than a hover/click/drag
+        attempt (those resolve on the first entry and never reach that
+        threshold, so they're untouched by this).
+
+        Deliberately does NOT gate on self._get_state() == "idle" like
+        request_walk does -- a nudge is a direct physical reaction to being
+        bumped, not ambient wandering, so it should fire regardless of her
+        current mood/state.
+
+        After more than NUDGE_TO_CORNER_THRESHOLD nudges in a row, this
+        escalates to fleeing to the nearest corner instead of a short hop
+        -- see _flee_to_corner().
+        """
+        if self._sprint_mode:
+            return
+        t = threading.Thread(target=self._do_request_nudge,
+                             args=(cursor_x, cursor_y),
+                             daemon=True, name="squid-nudge")
         t.start()
 
     # ── walk implementation ────────────────────────────────────────────
@@ -308,6 +362,166 @@ class WanderController:
             if self._get_state() != "idle" or self._is_drag_active():
                 break
             time.sleep(0.05)
+        self._set_sub_state("")
+
+    def _project_nudge_to_stroll_mode(self, ox, oy, tx, ty, min_x, max_x, min_y, max_y):
+        """In "edges" stroll mode, a nudge target must stay ON the edge she's
+        currently hugging -- sliding along it, not cutting across open
+        middle space (2026-08-19: a nudge that ignored stroll_mode could
+        walk her clean off the edge into the screen interior). Forces the
+        perpendicular coordinate back to the edge's exact boundary while
+        leaving the along-edge coordinate (tx or ty) as computed.
+
+        No-op in "anywhere" mode, and no-op if she isn't currently
+        classified as being on any edge (e.g. dragged into open space --
+        nothing to stay pinned to)."""
+        if self._stroll_mode != "edges":
+            return tx, ty
+        edge = self._compute_edge_at(ox, oy)
+        if edge == "bottom":
+            return tx, min_y
+        if edge == "top":
+            return tx, max_y
+        if edge == "left":
+            return min_x, ty
+        if edge == "right":
+            return max_x, ty
+        return tx, ty
+
+    def _do_request_nudge(self, cursor_x: float, cursor_y: float) -> None:
+        if self._is_drag_active():
+            return
+        origin = self._get_origin()
+        frame = self._get_frame()
+        if origin is None or frame is None:
+            return
+        ox, oy = origin
+        vx, vy, vw, vh = frame
+        min_x = vx + EDGE_MARGIN_PX
+        max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+        min_y = vy + BOTTOM_MARGIN_PX
+        max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
+        if max_x <= min_x or max_y <= min_y:
+            return
+
+        # Nudge-streak bookkeeping: a lull longer than NUDGE_COUNT_RESET_SEC
+        # means this is a fresh bout of pestering, not a continuation.
+        now = time.time()
+        if now - self._last_nudge_time > NUDGE_COUNT_RESET_SEC:
+            self._nudge_count = 0
+        self._nudge_count += 1
+        self._last_nudge_time = now
+
+        if self._nudge_count > NUDGE_TO_CORNER_THRESHOLD:
+            # Escalate: she's had enough of the small hops. Reset the streak
+            # so it takes another full run of nudges to trigger this again,
+            # rather than corner-fleeing on every nudge from here on.
+            self._nudge_count = 0
+            self._flee_to_corner(ox, oy, min_x, max_x, min_y, max_y)
+            return
+
+        # Direction away from cursor, in Cocoa screen coords (both cursor
+        # and window origin share that space, so a plain vector subtraction
+        # is valid -- no coordinate flip needed).
+        win_center_x = ox + WIN_W / 2
+        win_center_y = oy + CHAR_TOP_IN_WIN / 2
+        dx = win_center_x - cursor_x
+        dy = win_center_y - cursor_y
+        dist = (dx * dx + dy * dy) ** 0.5
+        if dist < 1e-3:
+            # Cursor sits exactly on her center; pick a random direction.
+            angle = random.uniform(0, 2 * math.pi)
+            dx, dy = math.cos(angle), math.sin(angle)
+            dist = 1.0
+        tx = ox + (dx / dist) * NUDGE_HOP_DISTANCE_PX
+        ty = oy + (dy / dist) * NUDGE_HOP_DISTANCE_PX
+        tx = max(min_x, min(max_x, tx))
+        ty = max(min_y, min(max_y, ty))
+        tx, ty = self._project_nudge_to_stroll_mode(ox, oy, tx, ty, min_x, max_x, min_y, max_y)
+
+        # Corner fallback: at a corner she's pinned on BOTH axes at once, so
+        # if the cursor approaches from the screen interior (the common
+        # case), "away from cursor" points further into the corner on both
+        # axes and the clamp above cancels it out entirely -- a silent
+        # no-op nudge. Detect that (near-zero actual movement, checked AFTER
+        # the stroll-mode projection above -- "edges" mode can itself
+        # collapse an otherwise-real move to zero) and fall back to a
+        # direction that's guaranteed open: away from whichever corner
+        # she's pinned against, toward the center of her wander range (not
+        # literally screen center -- the range itself is already inset by
+        # the edge margins/clamps, so its center is always reachable).
+        stuck_dist = ((tx - ox) ** 2 + (ty - oy) ** 2) ** 0.5
+        if stuck_dist < NUDGE_STUCK_THRESHOLD_PX:
+            range_cx = (min_x + max_x) / 2
+            range_cy = (min_y + max_y) / 2
+            fdx = range_cx - ox
+            fdy = range_cy - oy
+            fdist = (fdx * fdx + fdy * fdy) ** 0.5
+            if fdist < 1e-3:
+                angle = random.uniform(0, 2 * math.pi)
+                fdx, fdy = math.cos(angle), math.sin(angle)
+                fdist = 1.0
+            tx = ox + (fdx / fdist) * NUDGE_HOP_DISTANCE_PX
+            ty = oy + (fdy / fdist) * NUDGE_HOP_DISTANCE_PX
+            tx = max(min_x, min(max_x, tx))
+            ty = max(min_y, min(max_y, ty))
+            # "Toward range center" would walk her off the edge in "edges"
+            # stroll mode -- re-project so a cornered fallback still slides
+            # along whichever edge _compute_edge_at picks (bottom>top>
+            # left>right priority, same as the rest of the edge system),
+            # away from the corner, rather than cutting across open middle.
+            tx, ty = self._project_nudge_to_stroll_mode(ox, oy, tx, ty, min_x, max_x, min_y, max_y)
+            print(f"[squid-pet] nudge: stuck in corner, falling back to "
+                  f"away-from-corner direction", flush=True)
+
+        print(f"[squid-pet] nudge: ({ox:.0f},{oy:.0f}) -> ({tx:.0f},{ty:.0f}) "
+              f"away from cursor ({cursor_x:.0f},{cursor_y:.0f})", flush=True)
+        self._animate_hop(ox, oy, tx, ty)
+
+    def _flee_to_corner(self, ox, oy, min_x, max_x, min_y, max_y) -> None:
+        """After NUDGE_TO_CORNER_THRESHOLD+ nudges in a row, skip the small
+        away-from-cursor hop and go straight to whichever corner of her
+        wander range is nearest. Those four points are exactly where two
+        edges meet, so this lands on-edge for free in "edges" stroll mode
+        -- no need for _project_nudge_to_stroll_mode."""
+        corners = [(min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)]
+        tx, ty = min(corners, key=lambda c: (c[0] - ox) ** 2 + (c[1] - oy) ** 2)
+        print(f"[squid-pet] nudge: {NUDGE_TO_CORNER_THRESHOLD}+ nudges in a row, "
+              f"fleeing to nearest corner ({ox:.0f},{oy:.0f}) -> ({tx:.0f},{ty:.0f})",
+              flush=True)
+        self._animate_hop(ox, oy, tx, ty)
+
+    def _animate_hop(self, ox, oy, tx, ty) -> None:
+        """Step-animate the window origin ox,oy -> tx,ty at nudge speed.
+
+        Tags sub_state "nudge-{facing}", NOT "walking-{facing}": a distinct
+        name so the frontend can tell a nudge reaction apart from ambient
+        wander and exempt it from the state=="idle"-only sub_state gate
+        (window.PetApi.get_state) and the drowsy/sleeping/stretch mood
+        suppression (applySubState in index.html) that ambient wander
+        sub-states are deliberately subject to. See both sites for the
+        2026-08-19 fix. Shared by the plain cursor-avoidance hop and the
+        corner-flee escalation -- both are the same kind of flinch, just
+        with a different target.
+        """
+        facing = "left" if tx < ox else "right"
+        self._set_sub_state(f"nudge-{facing}")
+        dist_actual = ((tx - ox) ** 2 + (ty - oy) ** 2) ** 0.5
+        duration = max(NUDGE_MIN_DURATION_SEC, dist_actual / NUDGE_SPEED_PX_PER_SEC)
+        steps = max(4, int(duration * WANDER_TICK_HZ))
+        start_t = time.time()
+        for i in range(steps + 1):
+            if self._stop.is_set() or self._is_drag_active():
+                break
+            t = i / steps
+            e = _ease_in_out(t)
+            cx = ox + (tx - ox) * e
+            cy = oy + (ty - oy) * e
+            self._set_origin(cx, cy)
+            target_t = start_t + (i + 1) / WANDER_TICK_HZ
+            sleep_for = target_t - time.time()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
         self._set_sub_state("")
 
     # ── edge picking (used for band="edge") ────────────────────────────
