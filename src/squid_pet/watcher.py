@@ -1,18 +1,30 @@
 """
-Squid Pet Watcher — observes TPA + macOS activity and emits state.
+Squid Pet Watcher — observes Claude Code / Codex / TPA + macOS
+activity and emits state.
 
 State model:
   - idle         : nothing happening
-  - thinking     : (PRIMARY) CPs sitecustomize patch wrote ~/.tpa/llm_active.flag
-                  while mid-LLM-stream. Authoritative signal that the model is generating.
-                  (FALLBACK) tpa CPU >= cpu_busy_threshold (default 20%) for 4+ consecutive ticks,
-                  no recent tool activity. Only fires when TPA install lacks the heartbeat patch.
-  - working      : tpa has shell child process, OR sustained CPU (>= cpu_busy_threshold for 4+ ticks) with recent autosave/subagent/command_history write
-  - grooving     : subagent file in subagent_sessions/ modified < 30s ago
-  - celebrating  : task just completed (heuristic: CPU was high then dropped to 0)
-  - concerned    : recent error in errors.log
-  - sleeping     : macOS idle > 5 min OR no tpa process
-  - reviewing    : (V2 — needs permission prompt detection)
+  - thinking     : Claude Code / Codex transcript written recently (streaming)
+  - working      : Claude Code / Codex has a live shell child, or a project
+                   file was just written
+  - celebrating  : any detector's busy signal just dropped to idle (sticky
+                   window), or GitDetector saw a fresh commit
+  - sleeping     : macOS idle > 5 min
+
+  TPA (a separate CLI coding agent) is no longer watched as a
+  general activity source -- Pink-2026-08-22: it was never actually
+  installed/run on this machine, so TPADetector's busy/thinking/
+  working/celebrating/grooving/concerned role never fired anything in
+  practice and was removed. "grooving" (TPA subagent) and "concerned"
+  (TPA errors.log) had no equivalent for Claude Code / Codex and are
+  presently unreachable via natural detection (still settable via the
+  ~/.squid-pet/force_state debug override for testing/demos).
+
+  The TPA-specific approval_needed/flag-wave machinery below (direct
+  ~/.tpa/awaiting_input/<pid> signal + CPU-idle fallback) is
+  UNTOUCHED and still fully TPA-driven -- kept pending a Claude-Code-
+  native replacement (e.g. a Notification hook writing an equivalent
+  flag file).
 
 State is written to ~/.squid-pet/state.json every 1s, frontend polls it.
 """
@@ -32,13 +44,6 @@ import psutil
 # ────────────────────────────────────────────────────────────────────────
 # Configuration
 # ────────────────────────────────────────────────────────────────────────
-CODE_PUPPY_HOME = Path.home() / ".tpa"
-PROMPT_LOG = CODE_PUPPY_HOME / "logs" / "prompt_timestamps.log"
-ERRORS_LOG = CODE_PUPPY_HOME / "logs" / "errors.log"
-AUTOSAVES_DIR = CODE_PUPPY_HOME / "autosaves"       # live session .pkl (THE signal)
-COMMAND_HISTORY = CODE_PUPPY_HOME / "command_history.txt"  # user-typed commands
-SUBAGENT_DIR = CODE_PUPPY_HOME / "subagent_sessions"
-
 STATE_DIR = Path.home() / ".squid-pet"
 STATE_FILE = STATE_DIR / "state.json"
 
@@ -49,18 +54,17 @@ IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
 # being a static sticker on the screen all afternoon.
 AUTO_WAKE_AFTER_SLEEPING_SEC = 600   # 10 min asleep → wake for one rhythm cycle
 AUTO_WAKE_DURATION_SEC = 180         # 3 min awake window (roughly one full IDLE_ROUTINE pass)
-CPU_BUSY_THRESHOLD = 20.0           # % (Fix 10 2026-06-27: 15.0 -> 20.0)
-TOOL_ACTIVE_WINDOW_SEC = 20        # post-e2e-polish 2026-06-27 Fix 6: was 8s; bumped to 20s. ANY tool-activity file touched within N sec -> working. Override via config tool_active_window_sec (hot-reloadable).
-SUBAGENT_ACTIVE_WINDOW_SEC = 30    # subagent file touched within last N sec → grooving
-# Names of transient CLI tools that indicate ACTIVE tool use.
+# Names of transient CLI tools that indicate ACTIVE tool use. Shared by
+# has_active_shell_children() for Claude Code / Codex's shell_active signal.
 # Excludes shells (bash/sh/zsh) because shells are always the wrapper —
 # we want to detect the actual TOOL inside the shell (grep, git, etc).
-# Excludes runtime hosts (python/node/npm/pip) because tpa itself
-# is python and playwright keeps a long-lived node process.
+# Excludes runtime hosts (python/node/npm/pip) because agentic CLIs
+# themselves are often python/node and playwright keeps a long-lived
+# node process.
 # post-e2e-polish 2026-06-27 Fix 8: widened from a narrow CLI whitelist
 # (which missed bash/python/node etc.) to ALSO include the bash/sh wrapper
-# tpa spawns AND common language interpreters used in agentic tool
-# calls. Without this, `python -m my_tool` or `npm test` ran under TPA look
+# and common language interpreters used in agentic tool calls. Without
+# this, `python -m my_tool` or `npm test` running under the agent looks
 # like nothing is happening and Squid drops to "thinking" mid-tool.
 SHELL_CHILD_NAMES = (
     # search/file CLIs
@@ -71,16 +75,13 @@ SHELL_CHILD_NAMES = (
     "gcloud", "aws", "az", "docker", "helm", "terraform",
     # build tooling
     "make", "cmake", "pytest", "uv", "pip", "cargo", "go", "mvn", "gradle",
-    # language interpreters (most TPA tool calls run these)
+    # language interpreters (most agentic tool calls run these)
     "python", "python3", "node", "npm", "npx", "ruby", "deno", "bun",
-    # the shell wrapper itself -- if bash is alive under TPA, a tool is running
+    # the shell wrapper itself -- if bash is alive under the agent, a tool is running
     "bash", "sh", "zsh", "fish",
     # misc
     "sleep", "tee", "xargs", "env",
 )
-CELEBRATE_DURATION_SEC = 20        # post-e2e-polish 2026-06-27 Fix 1: was 4
-CONCERN_LOOKBACK_SEC = 60          # hard errors stay concerned this long
-CONCERN_TRANSIENT_LOOKBACK_SEC = 20  # network/timeout errors auto-clear faster
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -562,158 +563,19 @@ def per_process_max_idle_seconds(procs: list[psutil.Process]) -> float:
         del _PER_PID_LAST_BUSY[pid]
     return round(max_idle, 1)
 
-def file_age_sec(p: Path) -> float:
-    """Seconds since file was modified. Returns large number if missing."""
-    try:
-        return time.time() - p.stat().st_mtime
-    except (FileNotFoundError, OSError):
-        return float("inf")
-
-
-def newest_file_age_in_dir(d: Path, pattern: str = "*") -> float:
-    """Find youngest file in dir matching pattern, return its age in seconds."""
-    try:
-        files = list(d.glob(pattern))
-        if not files:
-            return float("inf")
-        return time.time() - max(f.stat().st_mtime for f in files)
-    except (FileNotFoundError, OSError):
-        return float("inf")
-
-
-def newest_session_log_age() -> float:
-    """Age of the most recently modified tpa session log."""
-    return newest_file_age_in_dir(CODE_PUPPY_HOME / "logs", "log_*.txt")
-
-
 # ────────────────────────────────────────────────────────────────────────
 # State machine
 # ────────────────────────────────────────────────────────────────────────
 
 # ────────────────────────────────────────────────────────────────────────
-# Error log parsing — extracts the last meaningful exception and classifies
-# it as transient (network/timeout — usually self-heals) vs hard (real crash).
-# ────────────────────────────────────────────────────────────────────────
-
-# Patterns that suggest a transient/network problem (auto-recovers, less alarming).
-_TRANSIENT_HINTS = (
-    "TimeoutError", "ConnectionError", "ConnectError", "APIConnectionError",
-    "ReadTimeout", "ConnectTimeout", "RemoteProtocolError",
-    "Connection error", "Cancelled via cancel scope", "deadline exceeded",
-    "ModelAPIError",
-)
-# Patterns that suggest a real code/logic problem (need your attention).
-_HARD_HINTS = (
-    "TypeError", "ValueError", "AttributeError", "KeyError", "IndexError",
-    "NameError", "SyntaxError", "AssertionError", "RuntimeError",
-    "ImportError", "ModuleNotFoundError", "ZeroDivisionError",
-)
-
-# Friendlier display labels for noisy class names.
-_DISPLAY_LABELS = {
-    "TimeoutError": "⏱ timeout",
-    "ConnectionError": "🌐 network",
-    "ConnectError": "🌐 network",
-    "APIConnectionError": "🌐 API connection",
-    "ReadTimeout": "⏱ read timeout",
-    "ConnectTimeout": "⏱ connect timeout",
-    "ModelAPIError": "🤖 LLM API error",
-    "RemoteProtocolError": "🌐 protocol error",
-    "TypeError": "💥 TypeError",
-    "ValueError": "💥 ValueError",
-    "AttributeError": "💥 AttributeError",
-    "KeyError": "💥 KeyError",
-    "ImportError": "💥 ImportError",
-    "ModuleNotFoundError": "💥 missing module",
-    "SyntaxError": "💥 SyntaxError",
-    "RuntimeError": "💥 RuntimeError",
-}
-
-
-def parse_last_error(errors_log: Path, lookback_bytes: int = 32_000) -> tuple[str, str]:
-    """Read the tail of errors.log and return (reason, severity).
-
-    severity is "transient" if any transient hint matches, else "hard" if a
-    hard hint matches, else "transient" by default (don't over-alarm).
-    reason is a friendly short string for the tooltip.
-    """
-    try:
-        size = errors_log.stat().st_size
-        if size == 0:
-            return ("", "")
-        with open(errors_log, "rb") as f:
-            f.seek(max(0, size - lookback_bytes))
-            tail = f.read().decode("utf-8", errors="ignore")
-    except Exception:
-        return ("", "")
-
-    # Walk through lines bottom-up looking for the most recent recognizable error.
-    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
-    transient_match = None
-    hard_match = None
-    for ln in reversed(lines):
-        for hint in _HARD_HINTS:
-            if hint in ln and not hard_match:
-                hard_match = hint
-                break
-        for hint in _TRANSIENT_HINTS:
-            if hint in ln and not transient_match:
-                transient_match = hint
-                break
-        if hard_match and transient_match:
-            break
-
-    if hard_match:
-        return (_DISPLAY_LABELS.get(hard_match, f"💥 {hard_match}"), "hard")
-    if transient_match:
-        return (_DISPLAY_LABELS.get(transient_match, f"⚠ {transient_match}"), "transient")
-    return ("⚠ unknown error", "hard")
-
-
-
-
-# ────────────────────────────────────────────────────────────────────────
 # Live tool-activity detection
-# Captures EITHER:
-#   • Recent write to autosaves/*.pkl  → main agent ran a tool (write_file,
-#     edit, search, etc.) — tpa autosaves on every turn.
-#   • Recent write to subagent_sessions/*.pkl → subagent fired.
-#   • Recent write to command_history.txt → user typed/submitted a prompt.
-#   • Live child shell process under tpa → shell command in flight.
-# Combined, these reliably distinguish "writing code / running shell"
-# (working) from "thinking" (LLM call, CPU only).
 # ────────────────────────────────────────────────────────────────────────
-
-def most_recent_tool_activity_age() -> float:
-    """Return seconds since the most recent tool-activity file was touched.
-    Returns float('inf') if no signal found.
-    """
-    now = time.time()
-    best = float("inf")
-    candidates = []
-    try:
-        if AUTOSAVES_DIR.exists():
-            candidates += list(AUTOSAVES_DIR.glob("*.pkl"))
-        if SUBAGENT_DIR.exists():
-            candidates += list(SUBAGENT_DIR.glob("*.pkl"))
-        if COMMAND_HISTORY.exists():
-            candidates.append(COMMAND_HISTORY)
-    except Exception:
-        return best
-    for f in candidates:
-        try:
-            age = now - f.stat().st_mtime
-            if age < best:
-                best = age
-        except Exception:
-            continue
-    return best
-
 
 def has_active_shell_children(procs) -> bool:
-    """True if any tpa process has an actively-running CLI tool
-    underneath it (at ANY depth — so we catch tpa → bash → grep,
-    not just direct children).
+    """True if any of the given processes has an actively-running CLI
+    tool underneath it (at ANY depth — so we catch agent → bash → grep,
+    not just direct children). Shared by ClaudeCodeDetector and
+    CodexDetector for their shell_active signal.
 
     Strict exact-name match against SHELL_CHILD_NAMES (which excludes
     shells and language runtimes — they're the wrapper, not the tool).
@@ -740,62 +602,20 @@ def has_active_shell_children(procs) -> bool:
     return False
 
 
-def latest_shell_child_cmdline(procs) -> list[str] | None:
-    """Return the cmdline of the most-recently-started shell child of any
-    tpa process. Used by observer to enrich the 'working' bubble
-    with the actual tool name (e.g. ['pytest', 'tests/', '-v']).
-
-    Returns None if no shell child is active, or on any psutil error.
-    The 'most recent' selection means an in-progress long-running pytest
-    won't get overshadowed by a 100ms `git status` that fires mid-test.
-    Actually wait, opposite: if pytest is running and a `git status` also
-    runs, we'd surface git status. That's fine -- ephemeral commands
-    finish fast so the bubble naturally rolls back to pytest's text on
-    the next tick.
-    """
-    if not procs:
-        return None
-    try:
-        candidates = []
-        for p in procs:
-            try:
-                for ch in p.children(recursive=True):
-                    try:
-                        name = (ch.name() or "").lower()
-                        if name in SHELL_CHILD_NAMES:
-                            candidates.append((ch.create_time(), ch))
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        if not candidates:
-            return None
-        # Pick the most recently started -- gives "running git push"
-        # priority over a long-running pytest in the rare overlap case.
-        candidates.sort(key=lambda t: t[0], reverse=True)
-        _, ch = candidates[0]
-        try:
-            return ch.cmdline()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return None
-    except Exception:
-        return None
-
-
 class StateMachine:
     """
     Computes the pet's emotional state each tick by querying a list of
-    pluggable detectors (TPA, Git, Terminal, IDE -- see detectors.py).
+    pluggable detectors (ClaudeCode, Codex, Git, Terminal, IDE -- see
+    detectors.py).
 
-    The 9-state priority cascade is preserved: sleeping > celebrating >
-    no-TPA-idle > grooving > concerned > working > thinking > post-busy
-    celebrate > idle. TPA-specific richer states (working/thinking/concerned)
-    are still gated on the TPA detector's signals; non-TPA detectors can
-    fire celebrating/grooving/thinking via the generic OR fallback at
-    the bottom of the cascade.
+    Priority cascade: sleeping > celebrating > grooving > working >
+    thinking > idle. Claude Code / Codex are promoted into the rich
+    working/thinking cascade; other detectors fire celebrating/grooving/
+    thinking via the generic OR fallback at the bottom of the cascade.
 
-    State.json schema is preserved -- cpu_percent and tpa_running
-    are populated from the TPADetector's public attrs.
+    tpa_running in state.json is still populated (a lightweight
+    direct process check, not a detector) because the approval_needed
+    alert below still keys off it -- see that block's docstring.
     """
 
     # Settings file path (centralised so tests can monkey-patch).
@@ -851,16 +671,13 @@ class StateMachine:
               f"{enabled_names}", flush=True)
 
     def _refresh_tpa_detector_ref(self) -> None:
-        """Re-point the TPA/Claude-Code/Codex/Git detector caches after a
-        detector list swap. TPA/Claude/Codex feed the same rich
+        """Re-point the Claude-Code/Codex/Git detector caches after a
+        detector list swap. Claude/Codex feed the same rich
         working/thinking cascade in _compute_inner (see
         claude-code-detector and codex-detector design docs); Git is
         cached here too so PetApi.update()'s LLM-bubble context
         enrichment (window.py) can read live git-activity signal
         without walking self.detectors itself on every state change."""
-        self._tpa_detector = next(
-            (d for d in self.detectors if d.name == "tpa"), None
-        )
         self._claude_detector = next(
             (d for d in self.detectors if d.name == "claude_code"), None
         )
@@ -890,28 +707,6 @@ class StateMachine:
         self._approval_alert_fired: bool = False
         self._approval_alert_at: float = 0.0
 
-
-    # --- Back-compat proxies to the TPADetector state. -----------
-    # External callers (tests, the upcoming `squid why` CLI) can query
-    # "is the TPA detector currently busy" without poking into the
-    # detector list themselves.
-    @property
-    def was_busy(self) -> bool:
-        return self._tpa_detector._was_busy if self._tpa_detector else False
-
-    @was_busy.setter
-    def was_busy(self, value: bool) -> None:
-        if self._tpa_detector is not None:
-            self._tpa_detector._was_busy = bool(value)
-
-    @property
-    def busy_streak(self) -> int:
-        return self._tpa_detector._busy_streak if self._tpa_detector else 0
-
-    @busy_streak.setter
-    def busy_streak(self, value: int) -> None:
-        if self._tpa_detector is not None:
-            self._tpa_detector._busy_streak = int(value)
 
     _AGENT_ACTIVE_STATES = frozenset({
         "thinking", "working", "grooving", "celebrating", "concerned"
@@ -948,12 +743,11 @@ class StateMachine:
         #   2. FALLBACK: per_process_pending_approval_idle for TPA
         #      versions that don't have the signal yet (or have it
         #      disabled). CPU heuristic with snooze cap.
-        tpa_running_now = (self._tpa_detector.tpa_running
-                          if self._tpa_detector else False)
         try:
             procs = find_tpa_processes()
         except Exception:
             procs = []
+        tpa_running_now = bool(procs)
         per_proc_idle = (per_process_pending_approval_idle(procs)
                          if procs else 0.0)
         try:
@@ -1032,49 +826,28 @@ class StateMachine:
         return st
 
     def _other_detectors(self):
-        """Iterator over detectors excluding TPA, ClaudeCode, and
-        Codex (all three are promoted into the rich branch-4 cascade
-        below instead of the flat OR-fallback -- excluding them here
-        avoids double counting), and excluding disabled detectors."""
+        """Iterator over detectors excluding ClaudeCode and Codex (both
+        are promoted into the rich branch-4 cascade below instead of the
+        flat OR-fallback -- excluding them here avoids double counting),
+        and excluding disabled detectors."""
         return (d for d in self.detectors
-                if d.name not in ("tpa", "claude_code", "codex")
+                if d.name not in ("claude_code", "codex")
                 and d.enabled)
 
     def _compute_inner(self) -> PetState:
         now = time.time()
-        cp = self._tpa_detector
 
-        # Trigger one scan if we have a TPA detector (populates cpu_percent +
-        # tpa_running for the state.json schema).
-        if cp is not None and tpa.enabled:
-            _ = tpa.is_busy(now)
-            # If TPA isn't running, any leftover was_busy edge from a prior
-            # session is stale -- clear it so we don't celebrate spuriously
-            # next time TPA starts.
-            if not tpa.tpa_running:
-                tpa._was_busy = False
-                tpa._celebrate_until = 0.0
-            cpu = tpa.cpu_percent
-            running = tpa.tpa_running
-            shell_active = tpa.shell_active
-            tool_activity_age = tpa.tool_activity_age
-            subagent_age = tpa.subagent_age
-            sustained_busy = tpa.sustained_busy
-            llm_streaming = tpa.llm_streaming
-            llm_flag_age = tpa.llm_flag_age
-            tpa_celebrating = tpa.is_celebrating(now)
-            tpa_grooving = tpa.is_grooving(now)
-        else:
-            cpu = 0.0
-            running = False
-            shell_active = False
-            tool_activity_age = float("inf")
-            subagent_age = float("inf")
-            sustained_busy = False
-            llm_streaming = False
-            llm_flag_age = float("inf")
-            tpa_celebrating = False
-            tpa_grooving = False
+        # TPA is no longer a general activity detector (see module
+        # docstring) -- `running` is still tracked for the state.json
+        # schema and because approval_needed (in compute()) still keys
+        # off it. A lightweight direct process check replaces the old
+        # TPADetector scan; no busy/thinking/celebrating role.
+        try:
+            tpa_procs = find_tpa_processes()
+        except Exception:
+            tpa_procs = []
+        running = bool(tpa_procs)
+        cpu = round(aggregate_cpu(tpa_procs), 1) if tpa_procs else 0.0
 
         claude = self._claude_detector
         # Trigger one scan if we have a Claude Code detector (populates
@@ -1109,11 +882,9 @@ class StateMachine:
             codex_file_active = False
             codex_streaming = False
 
-        # Merged signals feeding branch 4 below. tpa_running /
-        # tpa.shell_active / tpa.llm_streaming keep their own TPA-only
-        # meaning for state.json and the TPA-specific sub-branches (4a
-        # concerned, the cpu-heuristic 4c) -- only the branches that
-        # generalize cleanly are broadened.
+        # Merged signals feeding branch 4 below. TPA no longer
+        # participates -- `running` is schema/approval-only now (see
+        # _compute_inner's opening comment).
         #
         # working_evidence_merged covers two kinds of "hard" evidence a
         # tool is actually running: a live subprocess (shell_active,
@@ -1121,19 +892,17 @@ class StateMachine:
         # (file_active, catches in-process Edit/Write/apply_patch calls
         # that never spawn a subprocess -- see ClaudeCodeDetector's
         # docstring for the bug report that motivated this signal).
-        any_agent_running = running or claude_running or codex_running
+        any_agent_running = claude_running or codex_running
         working_evidence_merged = (
-            shell_active or claude_shell_active or codex_shell_active
+            claude_shell_active or codex_shell_active
             or claude_file_active or codex_file_active
         )
-        streaming_merged = llm_streaming or claude_streaming or codex_streaming
+        streaming_merged = claude_streaming or codex_streaming
 
         def _working_reason() -> str:
             """Which agent's hard evidence (shell/file) earns credit in
             state_reason, priority order. Only called once
             working_evidence_merged is already known True."""
-            if shell_active:
-                return "shell child active"
             if claude_shell_active:
                 return "shell child active (claude_code)"
             if codex_shell_active:
@@ -1147,14 +916,11 @@ class StateMachine:
         def _streaming_reason() -> str:
             """Which agent's streaming signal earns credit. Only called
             once streaming_merged is already known True."""
-            if llm_streaming:
-                return "llm streaming"
             if claude_streaming:
                 return "claude streaming"
             return "codex streaming"
 
         idle = macos_idle_seconds()
-        error_age = file_age_sec(ERRORS_LOG)
 
         # Other-detector signals (computed lazily to avoid wasted scans
         # when we exit the cascade early).
@@ -1206,129 +972,74 @@ class StateMachine:
                 st.state = "sleeping"
                 st.state_reason = f"idle {int(idle // 60)}m"
                 st.message = f"💤 idle {int(idle // 60)}m"
-                # Stale: user is away, clear any leftover busy edge so we
-                # don't fire a celebrate as soon as they come back.
-                if cp is not None:
-                    tpa._was_busy = False
                 return st
             # else: inside wake window -- fall through to evaluate other states
         else:
             self._sleeping_since = 0.0
             self._force_awake_until = 0.0
 
-        # Edge: TPA detector just newly armed its own celebrate window this
-        # tick -- propagate to the StateMachine's celebrate_until (so the
-        # sticky window survives even if the detector's value gets reset)
-        # and use the distinctive "done!" message for this single tick.
-        tpa_edge_fired = False
-        if cp is not None and tpa._celebrate_until > self.celebrate_until:
-            self.celebrate_until = tpa._celebrate_until
-            tpa_edge_fired = True
-
-        # ── 2. CELEBRATING ── sticky post-CPU-drop, or any detector says so
-        if now < self.celebrate_until or tpa_celebrating or other_celebrating():
+        # ── 2. CELEBRATING ── sticky post-busy-drop (armed by Claude Code /
+        # Codex / Git's own celebrate edge), or any other detector says so.
+        if now < self.celebrate_until or other_celebrating():
             st.state = "celebrating"
-            st.state_reason = "post-busy: done" if tpa_edge_fired else "celebrating"
-            st.message = "🎉 done!" if tpa_edge_fired else "🎉 nice!"
+            st.state_reason = "celebrating"
+            st.message = "🎉 nice!"
             return st
 
-        # ── 3. GROOVING ── TPA subagent active, or any detector says so
-        if tpa_grooving or other_grooving():
+        # ── 3. GROOVING ── any detector says so (currently no detector
+        # implements real grooving logic -- kept as an extensibility hook).
+        if other_grooving():
             st.state = "grooving"
-            st.state_reason = "subagent active" if tpa_grooving else "creative burst"
-            st.message = "🤸 subagent" if tpa_grooving else "🤸 creative burst"
+            st.state_reason = "creative burst"
+            st.message = "🤸 creative burst"
             return st
 
-        # ── 4. TPA, CLAUDE CODE, OR CODEX RUNNING -- richer working/thinking
-        # cascade ── Claude Code and Codex are promoted in here (not left
-        # in the flat non-TPA fallback) so they get the same working/
-        # thinking distinction TPA gets. See claude-code-detector and
-        # codex-detector design docs for the merge table.
+        # ── 4. CLAUDE CODE OR CODEX RUNNING -- richer working/thinking
+        # cascade. See claude-code-detector and codex-detector design
+        # docs for the merge table.
         if any_agent_running:
-            # 4a. CONCERNED -- recent error in TPA log. Stays TPA-only: no
-            # errors.log equivalent exists for Claude Code / Codex
-            # (explicit non-goal), so this must not fire from
-            # claude_running/codex_running alone.
-            if running and error_age != float("inf") and cpu < CPU_BUSY_THRESHOLD:
-                reason, severity = parse_last_error(ERRORS_LOG)
-                window = (CONCERN_TRANSIENT_LOOKBACK_SEC
-                          if severity == "transient" else CONCERN_LOOKBACK_SEC)
-                if error_age < window:
-                    st.state = "concerned"
-                    st.concern_reason = reason or " recent error"
-                    st.concern_severity = severity or "hard"
-                    st.state_reason = f"error: {(reason or 'recent error')[:40]}"
-                    st.message = st.concern_reason
-                    return st
-            # post-e2e-polish 2026-06-27 Fix 6+7: config-driven windows
+            # post-e2e-polish 2026-06-27 Fix 7: config-driven hold window
             try:
                 from . import config as _cfg
-                _tool_win = float(_cfg.get('tool_active_window_sec', TOOL_ACTIVE_WINDOW_SEC))
                 _work_hold = float(_cfg.get('working_hold_sec', 25))
             except Exception:
-                _tool_win = TOOL_ACTIVE_WINDOW_SEC
                 _work_hold = 25.0
-            # 4b. WORKING -- actively running tool / shell command, or a
+            # 4a. WORKING -- actively running tool / shell command, or a
             # project file was just written (catches in-process
             # Edit/Write/apply_patch calls that never spawn a
-            # subprocess). Merged across TPA, Claude Code, and Codex.
+            # subprocess). Merged across Claude Code and Codex.
             if working_evidence_merged:
                 self.working_hold_until = now + _work_hold
                 st.state = "working"
                 st.state_reason = _working_reason()
                 st.message = "🛠️ running shell"
                 return st
-            if sustained_busy and tool_activity_age < _tool_win:
-                self.working_hold_until = now + _work_hold
-                st.state = "working"
-                st.state_reason = f"writing (cpu {int(cpu)}%, tool {int(tool_activity_age)}s ago)"
-                st.message = f"⌨️ writing ({int(cpu)}% cpu)"
-                return st
-            # 4b-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy.
-            # Merged: without streaming_merged/working_evidence_merged here,
-            # this grace window never applied to Claude/Codex-only sessions
-            # (all TPA fields default False/0 when TPA isn't running).
+            # 4a-prime: STICKY WORKING -- LLM-gen gap, recent work + still busy.
             if now < self.working_hold_until and (
-                sustained_busy or cpu > 5 or streaming_merged or working_evidence_merged
+                streaming_merged or working_evidence_merged
             ):
                 st.state = "working"
                 st.state_reason = f"working hold ({int(self.working_hold_until - now)}s left)"
                 st.message = "✨ working"
                 return st
-            # 4c-prime. REAL THINKING (Fix 10b 2026-06-27) -- TPA's sitecustomize
-            # has written ~/.tpa/llm_active.flag while mid-stream. This is
-            # the authoritative "LLM is thinking" signal, replacing the CPU
-            # heuristic. Runs AFTER 'working' checks because if a tool is actively
-            # executing, that's a more useful state than 'thinking'. Merged with
-            # Claude Code's and Codex's transcript-write-recency signals (their
-            # own heartbeat equivalent -- see design docs).
+            # 4b. THINKING -- Claude Code's / Codex's transcript-write-
+            # recency signal (their heartbeat equivalent -- see design docs).
             if streaming_merged:
                 st.state = "thinking"
                 st.state_reason = _streaming_reason()
                 st.message = "🤔 thinking"
                 return st
-            # 4c. THINKING (FALLBACK) -- CPU busy heuristic for TPA installs
-            # without the sitecustomize patch. Less reliable; prone to TUI-render
-            # false positives even with the 20% threshold from Fix 10.
-            if sustained_busy:
-                st.state = "thinking"
-                st.state_reason = f"cpu busy proxy ({int(cpu)}%)"
-                st.message = "🤔 thinking"
-                return st
-            # 4d. Post-busy celebrate -- TPADetector handles
-            #     this via its own celebrate_until; surfaced via
-            #     tpa_celebrating above. Nothing to do here.
 
-        # ── 5. NON-TPA DETECTORS -- generic busy fallback ──
+        # ── 5. OTHER DETECTORS -- generic busy fallback ──
         if other_busy():
             st.state = "thinking"
-            st.state_reason = "non-cp detector busy"
+            st.state_reason = "non-agent detector busy"
             st.message = "🤔 working"
             return st
 
         # ── 6. Default -- idle/watching ──
         st.state = "idle"
-        st.state_reason = "cp idle, listening" if running else "no signals"
+        st.state_reason = "tpa running, no signals from it" if running else "no signals"
         st.message = "👂 listening" if running else "👀 watching"
         return st
 

@@ -39,14 +39,51 @@ from typing import Callable, Optional
 WANDER_SPEED_PX_PER_SEC = 110          # walking speed
 WANDER_MAX_DURATION_SEC = 3.0          # hard cap — never walk longer than this
 WANDER_TICK_HZ = 30                    # smoothness
-EDGE_MARGIN_PX = 12                    # keep this far from visibleFrame left/right/top
-BOTTOM_MARGIN_PX = -40                 # feet AT visible-frame bottom (auto-hide Dock)
-TOP_MARGIN_PX    = 35                  # on top edge she rotates 180deg; drowsy feet (cocoa 172) flip to window top,
-                                       # ~27px above CHAR_TOP_IN_WIN(145). Pull her down 35px so nothing clips the
-                                       # physical screen top. (Was 0="hug menu bar" but that clipped rotated body. Pink 2026-07-12.)
-                                       # Was implicitly -EDGE_MARGIN_PX (12px gap); split out so top
-                                       # doesnt inherit the same margin as left/right. Menu bar is
-                                       # opaque so hugging it is fine. Pink 2026-07-07.
+EDGE_MARGIN_PX = -51                   # walk-TARGET selection margin for left/right. Set NEGATIVE
+                                       # 2026-08-18 so the wander-target picker's own boundary is at
+                                       # or past window.CHAR_LEFT_IN_WIN/CHAR_RIGHT_IN_WIN -- the
+                                       # ALREADY-TRUSTED hard clamp that's applied on every origin-set
+                                       # (drag/corner-snap/wander alike) and has never had a clipping
+                                       # complaint. That lets her actually walk all the way to
+                                       # whichever boundary the hard clamp permits (tentacles
+                                       # touching) instead of wander stopping short of it.
+                                       # -51 specifically: exactly matches CHAR_LEFT_IN_WIN(51), so
+                                       # LEFT's target reaches its hard clamp exactly. For RIGHT (hard
+                                       # clamp CHAR_RIGHT_IN_WIN=190, i.e. only needs -10 to reach),
+                                       # -51 overshoots the target past the clamp, so the clamp -- not
+                                       # this margin -- ends up positioning her there too. This is a
+                                       # SHARED single constant for both sides (see min_x/max_x below)
+                                       # so it can't be tuned independently per side.
+                                       # SAFETY CONSTRAINT (do not violate without re-checking): must
+                                       # stay >= -70, or the edge classifier's own right-side distance
+                                       # check (CHAR_RIGHT_IN_WIN - WIN_W - EDGE_MARGIN_PX <=
+                                       # EDGE_BAND_PX) fails and she stops being recognized as "on the
+                                       # right edge" while sitting at the hard-clamped position, so
+                                       # rotation never triggers there. See
+                                       # test_edge_margin_keeps_edge_classification_working.
+BOTTOM_MARGIN_PX = -45                 # feet AT visible-frame bottom (auto-hide Dock). MUST match
+                                       # (or exceed) window.CHAR_BOTTOM_IN_WIN, same pairing as
+                                       # EDGE_MARGIN_PX/CHAR_LEFT_IN_WIN above -- was -40 against the
+                                       # OLD CHAR_BOTTOM_IN_WIN=8, which meant wander's own target
+                                       # already reached that clamp fine. 2026-08-18:
+                                       # CHAR_BOTTOM_IN_WIN was corrected 8 -> 45 (the old value was
+                                       # based on a sprite-extent number that direct measurement
+                                       # disproved -- see window.CHAR_BOTTOM_IN_WIN), which made the
+                                       # hard clamp TIGHTER than wander's stale -40 target. Bumped to
+                                       # -45 to match and actually reach the new, correct boundary.
+TOP_MARGIN_PX    = 50                   # Binary-search step. CONFIRMED broken (nearly/fully
+                                       # invisible, screenshot evidence): <=35. CONFIRMED safe
+                                       # (fully visible, Pink 2026-08-18): 65, 100. 50 is the midpoint
+                                       # of the now-narrowed (35,65) range -- NOT derived from
+                                       # transform math (that's what broke things twice), just
+                                       # bisection. Pink wants her tentacles actually TOUCHING the top
+                                       # edge, i.e. as low as this range allows without clipping.
+                                       # If 50 is visible: next step down is ~42 (midpoint of 35-50).
+                                       # If 50 clips: next step up is ~57 (midpoint of 50-65).
+                                       # Keep halving the gap either way -- don't jump. (Was 0, then
+                                       # 35 [broken], then briefly 10 [broken], then 155 [safe, too
+                                       # far], then 100 [safe], then 65 [safe]. Pink 2026-07-12,
+                                       # 2026-08-18.)
 LOOK_AROUND_DURATION_SEC = 1.4         # how long mid-walk look-around lasts
 LOOK_AROUND_PROBABILITY = 0.45         # chance of pause-to-look mid-walk
 WIN_W = 200                            # window width (must match window.py)
@@ -92,18 +129,19 @@ NUDGE_MIN_DURATION_SEC = 0.25
 # genuine short hop near a wall.
 NUDGE_STUCK_THRESHOLD_PX = 10
 
-# Nudge-streak escalation (2026-08-19): a short hop away from the cursor
-# reads fine for one or two nudges, but if she's being bumped over and
-# over, hopping the same fixed short distance each time barely gets her
-# out of the way and reads as ignoring the user. After more than this
-# many nudges in a row, she gives up on the small hop and flees straight
-# to whichever corner of her wander range is nearest -- fully out of the
-# way instead of a token step. NUDGE_COUNT_RESET_SEC bounds "in a row":
-# individual nudges are already >=NUDGE_COOLDOWN_SEC apart (the tracker's
-# own cooldown), so this just caps how long a lull can be before it no
-# longer counts as the same bout of pestering.
-NUDGE_TO_CORNER_THRESHOLD = 3
-NUDGE_COUNT_RESET_SEC = 6.0
+# How long a corner-stuck escape direction stays "sticky" (2026-08-21,
+# Pink report follow-up): repeated real-world pushes from roughly the
+# same side never land at EXACTLY the same cursor y each time -- a few
+# pixels of natural jitter flips dy's sign push to push. Recomputing the
+# escape direction fresh every single stuck hop from that noisy sign
+# made her wobble up/down the edge instead of making steady progress
+# (verified via a repeated-push simulation with +/-3px jitter: without
+# stickiness she bounced 605->535->465->395->465->535->605->... instead
+# of ever reaching the far corner). Reusing the same escape direction for
+# this many seconds after it's first picked means one noisy push can't
+# reverse a bout of stuck hops already in progress -- only a real lull
+# (implying a fresh situation) lets it re-decide.
+STUCK_ESCAPE_STICKY_SEC = 3.0
 
 
 def _ease_in_out(t: float) -> float:
@@ -153,9 +191,14 @@ class WanderController:
         self._sprint_mode: bool = False
         self._sprint_lock = threading.Lock()
 
-        # Nudge-streak state (see NUDGE_TO_CORNER_THRESHOLD above).
-        self._nudge_count: int = 0
-        self._last_nudge_time: float = 0.0
+        # Corner-stuck escape stickiness (see STUCK_ESCAPE_STICKY_SEC above
+        # and _corner_escape_target's docstring).
+        self._corner_escape_cache: tuple[float, float] | None = None
+        self._corner_escape_cache_time: float = 0.0
+
+        # Hop/flee animation generation counter (see _bump_nudge_generation).
+        self._nudge_generation: int = 0
+        self._nudge_generation_lock = threading.Lock()
 
         # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
         # Restored 2026-06-13 after unify-idle-rhythm regression.
@@ -236,16 +279,71 @@ class WanderController:
         bumped, not ambient wandering, so it should fire regardless of her
         current mood/state.
 
-        After more than NUDGE_TO_CORNER_THRESHOLD nudges in a row, this
-        escalates to fleeing to the nearest corner instead of a short hop
-        -- see _flee_to_corner().
-        """
+        This is always just the short hop now (2026-08-21) -- escalating
+        all the way to a corner is a separate, independent trigger, see
+        request_flee_to_corner().
+
+        Preempts any hop/flee animation already in flight (2026-08-21,
+        Pink report: rapid continuous nudging produced only tiny net
+        movement) -- see _bump_nudge_generation()."""
         if self._sprint_mode:
             return
+        my_gen = self._bump_nudge_generation()
         t = threading.Thread(target=self._do_request_nudge,
-                             args=(cursor_x, cursor_y),
+                             args=(cursor_x, cursor_y, my_gen),
                              daemon=True, name="squid-nudge")
         t.start()
+
+    def request_flee_to_corner(self, cursor_x: float, cursor_y: float) -> None:
+        """Fire-and-forget: flee straight to whichever corner of her
+        wander range is away from (cursor_x, cursor_y) -- skip the small
+        hop entirely.
+
+        Called when the passthrough poll loop's CornerFleeApproachTracker
+        sees CORNER_FLEE_THRESHOLD consecutive fresh re-entries into her
+        clickable bbox (2026-08-21) -- independent of, and a separate
+        trigger from, the short-hop nudge above: a short hop reads fine
+        for an occasional bump, but once the cursor keeps landing on her
+        over and over, hopping the same fixed short distance each time
+        barely gets her out of the way and reads as ignoring the user.
+
+        Deliberately does NOT gate on self._get_state() == "idle", same
+        reasoning as request_nudge.
+
+        Preempts any hop/flee animation already in flight, same as
+        request_nudge -- see _bump_nudge_generation()."""
+        if self._sprint_mode:
+            return
+        my_gen = self._bump_nudge_generation()
+        t = threading.Thread(target=self._do_request_flee_to_corner,
+                             args=(cursor_x, cursor_y, my_gen),
+                             daemon=True, name="squid-corner-flee")
+        t.start()
+
+    def _bump_nudge_generation(self) -> int:
+        """Claim the next hop/flee "generation" number and return it.
+
+        request_nudge and request_flee_to_corner both fire straight from
+        the passthrough poll thread with NO gating on her current state
+        (deliberately -- see their docstrings), and each spawns its own
+        daemon thread to animate the hop/flee over several ticks. Nothing
+        previously stopped two of these from running concurrently: nudge
+        quickly enough (2026-08-21, Pink report) that a new trigger fires
+        before the previous hop/flee animation finished, and the two
+        threads raced writing the window origin -- each computed its
+        target from its OWN stale snapshot of "where she is", so they
+        fought each other and the net visible movement was tiny instead
+        of one clean escape.
+
+        Every hop/flee animation loop (_animate_hop) checks this counter
+        on every step and bails out the instant a NEWER request bumps
+        it -- so firing a new nudge/flee always immediately preempts
+        whatever hop/flee was previously in flight instead of racing it,
+        matching "she should react to wherever the cursor last pushed her
+        from, right now" rather than finishing a now-stale reaction."""
+        with self._nudge_generation_lock:
+            self._nudge_generation += 1
+            return self._nudge_generation
 
     # ── walk implementation ────────────────────────────────────────────
     def _do_request_walk(self, band: str) -> None:
@@ -388,7 +486,119 @@ class WanderController:
             return max_x, ty
         return tx, ty
 
-    def _do_request_nudge(self, cursor_x: float, cursor_y: float) -> None:
+    def _corner_escape_target(self, ox, oy, cursor_x, cursor_y, min_x, max_x, min_y, max_y):
+        """"Edges" stroll mode only: where she should head to get away from
+        the cursor while staying edge-pinned, given she's at or near a
+        corner. Slide along whichever axis still has room (the other axis
+        is already pinned at its away-from-cursor boundary), or -- if
+        she's genuinely pinned on BOTH axes already (a true corner dead
+        end, nowhere left in a straight line) -- turn 90 degrees and flee
+        along whichever axis is NOT the dominant push direction, sliding
+        to the far end of the edge she's already on.
+
+        Returns an absolute (tx, ty) target. Shared by _flee_to_corner
+        (jump straight there) and _do_request_nudge's corner-stuck
+        fallback (lerp a short hop toward it) -- both need the exact same
+        "which way is actually open" reasoning, just at different scales.
+
+        Root-caused 2026-08-21 (Pink report): the small hop's stuck
+        fallback used to ignore all this and just retarget "toward range
+        center" projected via _compute_edge_at's fixed bottom>top>
+        left>right priority -- at a top-right corner that always resolves
+        to "top", so every stuck hop slid LEFT along the top edge
+        regardless of which direction she was actually being pushed from.
+        The very next push (still from the same side) then had real room
+        again since she was no longer exactly cornered, hopping her back
+        RIGHT onto the corner -- an endless left-right ping-pong that
+        never turned the corner, instead of sliding down the right edge
+        like a cornered nudge should.
+
+        Dead-end axis pick (2026-08-21, follow-up): picking whichever
+        ADJACENT corner is geometrically farther (raw Euclidean distance
+        from the cursor) seemed reasonable but is dominated by the wander
+        range's aspect ratio, not by which way she's actually being
+        pushed -- in a wide-but-short range, "farther corner" nearly
+        always resolves to the one across the WIDE dimension regardless
+        of push direction (Pink report: pushed repeatedly straight left
+        while cornered top-right, and the dead-end pick sent her to
+        top-left, sideways, instead of down the already-open right edge).
+        Comparing |dx| vs |dy| instead picks the axis by push direction
+        directly: the LARGER of the two is the dominant/blocked push
+        axis (that's exactly the one already pinned), so flee along the
+        OTHER, smaller one.
+
+        Sticky (2026-08-21, follow-up): real repeated pushes from
+        roughly the same side never land at EXACTLY the same cursor
+        position each time -- a few pixels of natural jitter flip dx/dy's
+        sign push to push. Recomputing fresh on every call meant a
+        single noisy push could reverse a bout of stuck hops/flees
+        already in progress (verified via a repeated-push simulation:
+        without stickiness she wobbled up and down an edge). Reusing the
+        same target for STUCK_ESCAPE_STICKY_SEC after it's first picked
+        means one noisy call can't undo it -- only a real lull (implying
+        a fresh situation) lets this re-decide.
+
+        Deliberately does NOT self-invalidate the moment she's reached
+        the cached target (tried that, reverted it): once she's ARRIVED
+        at, say, the bottom of a permanently-pinned right edge (cursor
+        still pushing from the same side), a same-axis-ambiguous push
+        (dy still ~0) re-evaluated fresh reproduces the exact same
+        dead-end symmetry that put her there, and the 90-degree turn
+        logic above has only ONE other option on a 2-ended edge -- the
+        end she just left. Re-deciding on arrival therefore bounced her
+        straight back to the original corner on the very next trigger.
+        Simply outlasting the sticky window (worst case: one harmless
+        no-op flee onto an already-occupied point, if a threshold fires
+        again before it expires) is a much smaller cost than that.
+
+        (2026-08-21, second follow-up: also tried gating the whole
+        single-axis-pinned/dead-end branches on |dx|/|dy| exceeding a
+        deadzone, treating a near-zero secondary axis as "no signal,
+        stay put" instead of forcing a direction. Reverted -- real
+        continuous left/right pushing produces exactly this near-zero dy
+        by nature (confirmed via simulation with realistic +/-3px
+        jitter, well under any deadzone that would also filter out
+        genuine small pushes), so "no signal" is the COMMON case here,
+        not an edge case -- gating on it made her freeze in place
+        instead of turning down the edge, reproducing the original
+        reported bug. The sticky cache above already handles the
+        practically-important case (steady progress during an active
+        push); an eventual bounce-back after minutes of uninterrupted
+        pushing at a fixed spot is a smaller cost than that regression)."""
+        now = time.time()
+        if (self._corner_escape_cache is not None
+                and now - self._corner_escape_cache_time < STUCK_ESCAPE_STICKY_SEC):
+            return self._corner_escape_cache
+        win_center_x = ox + WIN_W / 2
+        win_center_y = oy + CHAR_TOP_IN_WIN / 2
+        dx = win_center_x - cursor_x
+        dy = win_center_y - cursor_y
+        away_x = max_x if dx >= 0 else min_x
+        away_y = max_y if dy >= 0 else min_y
+        at_x_boundary = abs(ox - away_x) < NUDGE_STUCK_THRESHOLD_PX
+        at_y_boundary = abs(oy - away_y) < NUDGE_STUCK_THRESHOLD_PX
+        if at_x_boundary and not at_y_boundary:
+            target = (ox, away_y)
+        elif at_y_boundary and not at_x_boundary:
+            target = (away_x, oy)
+        elif at_x_boundary and at_y_boundary:
+            if abs(dx) >= abs(dy):
+                other_y = min_y if away_y == max_y else max_y
+                target = (ox, other_y)
+            else:
+                other_x = min_x if away_x == max_x else max_x
+                target = (other_x, oy)
+        else:
+            # Not currently pinned to either boundary -- keep her on
+            # whichever edge she's nearest to rather than cutting a raw
+            # diagonal.
+            target = self._project_nudge_to_stroll_mode(
+                ox, oy, away_x, away_y, min_x, max_x, min_y, max_y)
+        self._corner_escape_cache = target
+        self._corner_escape_cache_time = now
+        return target
+
+    def _do_request_nudge(self, cursor_x: float, cursor_y: float, my_gen: int = 0) -> None:
         if self._is_drag_active():
             return
         origin = self._get_origin()
@@ -402,22 +612,6 @@ class WanderController:
         min_y = vy + BOTTOM_MARGIN_PX
         max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         if max_x <= min_x or max_y <= min_y:
-            return
-
-        # Nudge-streak bookkeeping: a lull longer than NUDGE_COUNT_RESET_SEC
-        # means this is a fresh bout of pestering, not a continuation.
-        now = time.time()
-        if now - self._last_nudge_time > NUDGE_COUNT_RESET_SEC:
-            self._nudge_count = 0
-        self._nudge_count += 1
-        self._last_nudge_time = now
-
-        if self._nudge_count > NUDGE_TO_CORNER_THRESHOLD:
-            # Escalate: she's had enough of the small hops. Reset the streak
-            # so it takes another full run of nudges to trigger this again,
-            # rather than corner-fleeing on every nudge from here on.
-            self._nudge_count = 0
-            self._flee_to_corner(ox, oy, min_x, max_x, min_y, max_y)
             return
 
         # Direction away from cursor, in Cocoa screen coords (both cursor
@@ -446,16 +640,32 @@ class WanderController:
         # no-op nudge. Detect that (near-zero actual movement, checked AFTER
         # the stroll-mode projection above -- "edges" mode can itself
         # collapse an otherwise-real move to zero) and fall back to a
-        # direction that's guaranteed open: away from whichever corner
-        # she's pinned against, toward the center of her wander range (not
-        # literally screen center -- the range itself is already inset by
-        # the edge margins/clamps, so its center is always reachable).
+        # direction that's guaranteed open.
         stuck_dist = ((tx - ox) ** 2 + (ty - oy) ** 2) ** 0.5
         if stuck_dist < NUDGE_STUCK_THRESHOLD_PX:
-            range_cx = (min_x + max_x) / 2
-            range_cy = (min_y + max_y) / 2
-            fdx = range_cx - ox
-            fdy = range_cy - oy
+            if self._stroll_mode == "edges":
+                # Use the SAME "which axis actually has room" reasoning as
+                # _flee_to_corner (see _corner_escape_target, including
+                # its own stickiness against cursor-position jitter) --
+                # NOT a generic "toward range center" direction. That
+                # used to get re-projected onto whichever edge
+                # _compute_edge_at's fixed bottom>top>left>right priority
+                # happened to pick (always "top" at a top-right corner,
+                # say), sliding her the WRONG way -- left along the top
+                # edge -- instead of down the right edge she was
+                # actually pinned against.
+                target_x, target_y = self._corner_escape_target(
+                    ox, oy, cursor_x, cursor_y, min_x, max_x, min_y, max_y)
+                fdx, fdy = target_x - ox, target_y - oy
+            else:
+                # "anywhere" mode has no edge to stay pinned to -- toward
+                # the center of her wander range (not literally screen
+                # center -- the range itself is already inset by the edge
+                # margins/clamps, so its center is always reachable).
+                range_cx = (min_x + max_x) / 2
+                range_cy = (min_y + max_y) / 2
+                fdx = range_cx - ox
+                fdy = range_cy - oy
             fdist = (fdx * fdx + fdy * fdy) ** 0.5
             if fdist < 1e-3:
                 angle = random.uniform(0, 2 * math.pi)
@@ -465,33 +675,108 @@ class WanderController:
             ty = oy + (fdy / fdist) * NUDGE_HOP_DISTANCE_PX
             tx = max(min_x, min(max_x, tx))
             ty = max(min_y, min(max_y, ty))
-            # "Toward range center" would walk her off the edge in "edges"
-            # stroll mode -- re-project so a cornered fallback still slides
-            # along whichever edge _compute_edge_at picks (bottom>top>
-            # left>right priority, same as the rest of the edge system),
-            # away from the corner, rather than cutting across open middle.
-            tx, ty = self._project_nudge_to_stroll_mode(ox, oy, tx, ty, min_x, max_x, min_y, max_y)
             print(f"[squid-pet] nudge: stuck in corner, falling back to "
                   f"away-from-corner direction", flush=True)
 
         print(f"[squid-pet] nudge: ({ox:.0f},{oy:.0f}) -> ({tx:.0f},{ty:.0f}) "
               f"away from cursor ({cursor_x:.0f},{cursor_y:.0f})", flush=True)
-        self._animate_hop(ox, oy, tx, ty)
+        self._animate_hop(ox, oy, tx, ty, my_gen)
 
-    def _flee_to_corner(self, ox, oy, min_x, max_x, min_y, max_y) -> None:
-        """After NUDGE_TO_CORNER_THRESHOLD+ nudges in a row, skip the small
-        away-from-cursor hop and go straight to whichever corner of her
-        wander range is nearest. Those four points are exactly where two
-        edges meet, so this lands on-edge for free in "edges" stroll mode
-        -- no need for _project_nudge_to_stroll_mode."""
-        corners = [(min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)]
-        tx, ty = min(corners, key=lambda c: (c[0] - ox) ** 2 + (c[1] - oy) ** 2)
-        print(f"[squid-pet] nudge: {NUDGE_TO_CORNER_THRESHOLD}+ nudges in a row, "
-              f"fleeing to nearest corner ({ox:.0f},{oy:.0f}) -> ({tx:.0f},{ty:.0f})",
+    def _do_request_flee_to_corner(self, cursor_x: float, cursor_y: float, my_gen: int = 0) -> None:
+        if self._is_drag_active():
+            return
+        origin = self._get_origin()
+        frame = self._get_frame()
+        if origin is None or frame is None:
+            return
+        ox, oy = origin
+        vx, vy, vw, vh = frame
+        min_x = vx + EDGE_MARGIN_PX
+        max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+        min_y = vy + BOTTOM_MARGIN_PX
+        max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
+        if max_x <= min_x or max_y <= min_y:
+            return
+        self._flee_to_corner(ox, oy, cursor_x, cursor_y, min_x, max_x, min_y, max_y, my_gen)
+
+    def _flee_to_corner(self, ox, oy, cursor_x, cursor_y, min_x, max_x, min_y, max_y, my_gen=0) -> None:
+        """Skip the small away-from-cursor hop and go straight to
+        whichever corner of her wander range is furthest from the cursor.
+
+        Deliberately picks the corner AWAY FROM THE CURSOR, not the corner
+        nearest her current position (2026-08-19 bug: with the old
+        nearest-to-self pick, a few short 70px hops away from the cursor
+        often weren't enough to cross over to the far half of the wander
+        range, so "nearest corner" was still on the cursor's side -- she'd
+        flee right back toward whoever was nudging her).
+
+        The raw (away_x, away_y) pick moves on BOTH axes at once -- fine in
+        "anywhere" stroll mode, but in "edges" mode (the default) she's
+        normally already pinned to one edge, and jumping to a corner on a
+        DIFFERENT edge reads as an off-edge diagonal cut across open space
+        (2026-08-21, Pink report: nudging her twice sent her diagonally
+        instead of sliding along the edge she was already on). In "edges"
+        mode, constrain movement to whichever axis actually has room:
+        an axis where she's already sitting at its away-target boundary
+        contributes no movement, and the OTHER axis carries the whole
+        move -- a straight slide to the corner at the end of whichever
+        edge she can still travel along.
+
+        This is deliberately NOT just "project onto _compute_edge_at's
+        single classified edge": AT a corner she's simultaneously pinned
+        on both axes, and that classifier only returns ONE edge (fixed
+        bottom>top>left>right priority), so it can pick the very edge
+        with no room left in the away direction and collapse the whole
+        move to a no-op (2026-08-21 report #2: nudged from the right
+        while already in the bottom-left corner -- away_x correctly had
+        no room, but projecting onto the classifier's "bottom" edge also
+        reset the already-correct away_y back to her current y, instead
+        of letting her slide up the left edge to the top-left corner).
+
+        Dead-end turn (2026-08-21): if she's already sitting exactly at
+        the away corner on BOTH axes, there's no straight-line room left
+        at all -- turn 90 degrees instead of freezing in place. Pick
+        whichever of the two corners ADJACENT to this one (sharing a
+        single edge with it, not the diagonal-opposite) ends up farther
+        from the cursor, and slide there. Applies regardless of
+        stroll_mode -- "anywhere" mode's away_x/away_y is just as capable
+        of landing her back on a corner she's already occupying.
+
+        All of the above (axis-constrained slide, dead-end 90-degree
+        turn) lives in _corner_escape_target, shared with the small nudge
+        hop's own corner-stuck fallback -- see that method's docstring."""
+        if self._stroll_mode == "edges":
+            tx, ty = self._corner_escape_target(
+                ox, oy, cursor_x, cursor_y, min_x, max_x, min_y, max_y)
+        else:
+            win_center_x = ox + WIN_W / 2
+            win_center_y = oy + CHAR_TOP_IN_WIN / 2
+            dx = win_center_x - cursor_x
+            dy = win_center_y - cursor_y
+            away_x = max_x if dx >= 0 else min_x
+            away_y = max_y if dy >= 0 else min_y
+            tx, ty = away_x, away_y
+            stuck = (abs(tx - ox) < NUDGE_STUCK_THRESHOLD_PX
+                     and abs(ty - oy) < NUDGE_STUCK_THRESHOLD_PX)
+            if stuck:
+                # Same axis-by-push-direction pick as _corner_escape_target
+                # (see its docstring) -- flee along whichever axis is NOT
+                # the dominant/already-blocked push direction.
+                if abs(dx) >= abs(dy):
+                    other_y = min_y if away_y == max_y else max_y
+                    tx, ty = ox, other_y
+                else:
+                    other_x = min_x if away_x == max_x else max_x
+                    tx, ty = other_x, oy
+                print(f"[squid-pet] nudge: corner flee dead-end, turning 90deg "
+                      f"to ({tx:.0f},{ty:.0f})", flush=True)
+
+        print(f"[squid-pet] nudge: corner-flee threshold hit, "
+              f"fleeing to corner away from cursor ({ox:.0f},{oy:.0f}) -> ({tx:.0f},{ty:.0f})",
               flush=True)
-        self._animate_hop(ox, oy, tx, ty)
+        self._animate_hop(ox, oy, tx, ty, my_gen)
 
-    def _animate_hop(self, ox, oy, tx, ty) -> None:
+    def _animate_hop(self, ox, oy, tx, ty, my_gen=0) -> None:
         """Step-animate the window origin ox,oy -> tx,ty at nudge speed.
 
         Tags sub_state "nudge-{facing}", NOT "walking-{facing}": a distinct
@@ -503,7 +788,14 @@ class WanderController:
         2026-08-19 fix. Shared by the plain cursor-avoidance hop and the
         corner-flee escalation -- both are the same kind of flinch, just
         with a different target.
-        """
+
+        my_gen: this call's hop/flee generation number (see
+        _bump_nudge_generation). Checked on every step -- if a newer
+        request has since bumped the counter, this animation is stale
+        and bails immediately instead of continuing to fight a newer one
+        for the window origin (2026-08-21, Pink report: rapid continuous
+        nudging produced only tiny net movement because overlapping
+        un-synchronized hop/flee threads were racing each other)."""
         facing = "left" if tx < ox else "right"
         self._set_sub_state(f"nudge-{facing}")
         dist_actual = ((tx - ox) ** 2 + (ty - oy) ** 2) ** 0.5
@@ -513,6 +805,8 @@ class WanderController:
         for i in range(steps + 1):
             if self._stop.is_set() or self._is_drag_active():
                 break
+            if self._nudge_generation != my_gen:
+                return  # superseded by a newer nudge/flee -- don't clear its sub_state either
             t = i / steps
             e = _ease_in_out(t)
             cx = ox + (tx - ox) * e
@@ -522,7 +816,8 @@ class WanderController:
             sleep_for = target_t - time.time()
             if sleep_for > 0:
                 time.sleep(sleep_for)
-        self._set_sub_state("")
+        if self._nudge_generation == my_gen:
+            self._set_sub_state("")
 
     # ── edge picking (used for band="edge") ────────────────────────────
     def _pick_edge_destination(self, ox, oy, min_x, max_x, min_y, max_y):

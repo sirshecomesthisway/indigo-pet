@@ -337,3 +337,37 @@ def test_unknown_state_transition_returns_none(obs):
     assert obs.on_state_change("idle", "drowsy") is None
     # made-up state
     assert obs.on_state_change("idle", "nonexistent_state") is None
+
+
+# ----------------------------------------------------------------------
+# on_still_working -- periodic refresh while state STAYS "working"
+# ----------------------------------------------------------------------
+
+def test_still_working_with_shell_cmd_returns_shell_bubble(obs):
+    result = obs.on_still_working(["pytest", "tests/test_observer.py", "-v"])
+    assert result == "running pytest"
+
+
+def test_still_working_with_no_shell_cmd_returns_none(obs):
+    """Deliberately does NOT fall back to a generic 'tap tap' emote --
+    repeating a canned mood line on a timer would read as a glitch."""
+    assert obs.on_still_working(None) is None
+    assert obs.on_still_working([]) is None
+
+
+def test_still_working_muted_returns_none(muted_obs):
+    assert muted_obs.on_still_working(["pytest"]) is None
+
+
+# ----------------------------------------------------------------------
+# idle_chatter -- fired by RoutineController during idle rest beats
+# ----------------------------------------------------------------------
+
+def test_idle_chatter_registered_and_reachable_via_on_interaction(obs):
+    assert "idle_chatter" in BUBBLE_LINES
+    result = obs.on_interaction("idle_chatter")
+    assert result in BUBBLE_LINES["idle_chatter"]
+
+
+def test_idle_chatter_muted_returns_none(muted_obs):
+    assert muted_obs.on_interaction("idle_chatter") is None

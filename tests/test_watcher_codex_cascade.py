@@ -1,7 +1,7 @@
 """StateMachine cascade tests for CodexDetector -- mirrors
 test_watcher_claude_code_cascade.py. Verifies Codex gets promoted into
-the TPA-style working/thinking distinction (branch 4) instead of falling
-through the flat non-TPA OR-fallback.
+the rich working/thinking distinction (branch 4) instead of falling
+through the flat generic OR-fallback.
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from squid_pet.watcher import StateMachine
 from squid_pet.detectors import CodexDetector
 
 
-def install_world(monkeypatch, idle=0.0, error_age=float("inf")):
+def install_world(monkeypatch, idle=0.0):
     monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
-    monkeypatch.setattr(watcher, "file_age_sec", lambda p: error_age)
+    monkeypatch.setattr(watcher, "find_tpa_processes", lambda: [])
 
 
 def _codex_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),
@@ -98,18 +98,11 @@ def test_codex_not_running_is_idle(monkeypatch):
     assert st.codex_running is False
 
 
-def test_codex_detector_absent_matches_pure_tpa_behavior(monkeypatch):
+def test_codex_detector_absent_falls_to_idle(monkeypatch):
+    """No codex detector in the list at all -- codex_running stays False
+    and the cascade falls through to plain idle."""
     install_world(monkeypatch)
-    monkeypatch.setattr(watcher, "find_tpa_processes", lambda: [])
-    from squid_pet.detectors import TPADetector
-    cp = TPADetector(
-        find_processes_fn=lambda: [],
-        aggregate_cpu_fn=lambda p: 0.0,
-        most_recent_tool_activity_age_fn=lambda: float("inf"),
-        has_active_shell_children_fn=lambda p: False,
-        newest_subagent_age_fn=lambda: float("inf"),
-    )
-    sm = StateMachine(detectors=[cp])
+    sm = StateMachine(detectors=[])
     st = sm.compute()
     assert st.state == "idle"
     assert st.codex_running is False

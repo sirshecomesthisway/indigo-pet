@@ -1,23 +1,23 @@
 """Tests for the build_detectors factory + DEFAULT_TRIGGERS."""
 from __future__ import annotations
 from squid_pet.detectors import (
-    build_detectors, TPADetector, GitDetector,
+    build_detectors, GitDetector,
     TerminalDetector, IDEDetector, DEFAULT_TRIGGERS,
 )
 
 
-def test_empty_settings_yields_five_enabled_one_off():
-    """Default config: tpa + claude_code + codex + git + ide are
-    on, terminal is off (2026-06-25: terminal misfires on any dev
-    machine -- see test_explicit_opt_out_disables_one_detector for
-    context)."""
+def test_empty_settings_yields_four_enabled_one_off():
+    """Default config: claude_code + codex + git + ide are on, terminal
+    is off (2026-06-25: terminal misfires on any dev machine -- see
+    test_explicit_opt_out_disables_one_detector for context). TPA
+    (Pink-2026-08-22): removed -- never actually installed/run on this
+    machine, so it never fired anything in practice."""
     ds = build_detectors(settings=None)
-    assert len(ds) == 6
+    assert len(ds) == 5
     assert {d.name for d in ds} == {
-        "tpa", "claude_code", "codex", "git", "terminal", "ide",
+        "claude_code", "codex", "git", "terminal", "ide",
     }
     by_name = {d.name: d for d in ds}
-    assert by_name["tpa"].enabled is True
     assert by_name["claude_code"].enabled is True
     assert by_name["codex"].enabled is True
     assert by_name["git"].enabled is True
@@ -35,7 +35,7 @@ def test_explicit_opt_out_disables_one_detector():
     ds = build_detectors(settings=s)
     by_name = {d.name: d for d in ds}
     assert by_name["git"].enabled is False
-    assert by_name["tpa"].enabled is True
+    assert by_name["claude_code"].enabled is True
     assert by_name["terminal"].enabled is False  # off by default
     assert by_name["ide"].enabled is True
 
@@ -47,7 +47,7 @@ def test_explicit_opt_out_disables_one_detector():
 
 def test_all_off_yields_all_disabled():
     s = {"triggers": {
-        "tpa": False, "claude_code": False, "codex": False,
+        "claude_code": False, "codex": False,
         "git": False, "terminal": False, "ide": False,
     }}
     ds = build_detectors(settings=s)
@@ -76,13 +76,13 @@ def test_custom_ide_processes_propagate():
 
 
 def test_default_triggers_contains_expected_keys():
-    for k in ("tpa", "claude_code", "codex", "git", "terminal", "ide",
+    for k in ("claude_code", "codex", "git", "terminal", "ide",
               "project_dirs", "ide_processes"):
         assert k in DEFAULT_TRIGGERS
 
 
-def test_detector_order_puts_tpa_first():
-    """Important: state.json schema fields cpu_percent +
-    tpa_running come from TPADetector."""
+def test_detector_order_puts_claude_code_first():
+    """Important: state.json schema field claude_code_running comes
+    from ClaudeCodeDetector."""
     ds = build_detectors(settings=None)
-    assert ds[0].name == "tpa"
+    assert ds[0].name == "claude_code"

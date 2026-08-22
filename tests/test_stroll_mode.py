@@ -190,10 +190,14 @@ def test_refresh_edge_picks_up_new_position(monkeypatch):
     """After a 'drag' (origin changes externally), refresh_edge should
     re-read origin and update the edge tracker without needing a walk."""
     edge_calls = []
-    # Frame (0,0,1000,800) with WIN_W=200, EDGE_MARGIN=12, BOTTOM_MARGIN=-40
-    # -> valid origin range: x in [12, 788], y in [-40, max_y]
+    # Frame (0,0,1000,800). Derive the LEFT-edge x from the live EDGE_MARGIN_PX
+    # (not hardcoded -- a hardcoded 12.0 here silently broke when
+    # EDGE_MARGIN_PX went negative on 2026-08-18 to reach window.py's
+    # CHAR_LEFT_IN_WIN hard clamp) so this test survives future tuning.
+    # -> valid origin range: x in [EDGE_MARGIN_PX, 788], y in [-40, max_y]
     # where max_y = 800 - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX  (symbolic; survives
     # tuning of CHAR_TOP_IN_WIN — Pink 2026-07-07 head-hug fix bumped it 165->145).
+    _LEFT_X = float(EDGE_MARGIN_PX)
     _MAX_Y = 800 - CHAR_TOP_IN_WIN - EDGE_MARGIN_PX
     current_origin = [788.0, -40.0]  # start: bottom-right corner (both d=0)
     wc = WanderController(
@@ -210,11 +214,11 @@ def test_refresh_edge_picks_up_new_position(monkeypatch):
     assert e1 == "bottom", f"expected bottom at (788,-40), got {e1!r}"
     assert edge_calls[-1] == "bottom"
 
-    # Simulate user dragging Squid to mid LEFT edge: (12, 250)
-    current_origin[0] = 12.0
+    # Simulate user dragging Squid to mid LEFT edge.
+    current_origin[0] = _LEFT_X
     current_origin[1] = 250.0
     e2 = wc.refresh_edge()
-    assert e2 == "left", f"after drag to (12,250), expected left, got {e2!r}"
+    assert e2 == "left", f"after drag to ({_LEFT_X},250), expected left, got {e2!r}"
     assert edge_calls[-1] == "left"
 
     # Drag her to mid TOP edge (y == max_y so d_top=0 wins).

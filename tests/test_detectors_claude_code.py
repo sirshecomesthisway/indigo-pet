@@ -125,6 +125,34 @@ def test_file_active_requires_process_running():
     assert d.file_active is False
 
 
+def test_celebrate_fires_after_busy_drop():
+    """Busy (shell_active) then quiet should fire celebrate sticky for
+    CELEBRATE_DURATION_SEC -- was a documented non-goal until 2026-08-22,
+    mirrors TPADetector.test_celebrate_fires_after_cpu_drop."""
+    state = {"shell_active": True}
+    d = ClaudeCodeDetector(
+        enabled=True,
+        find_processes_fn=lambda: [_FakeProc()],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: state["shell_active"],
+        projects_dir=Path("/fake"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    assert d.is_busy(now=1.0) is True
+    state["shell_active"] = False
+    d.is_celebrating(now=2.0)
+    assert d.is_celebrating(now=2.5) is True
+    assert d.is_celebrating(now=30.0) is False  # past CELEBRATE_DURATION_SEC=20
+
+
+def test_no_celebrate_without_a_prior_busy_edge():
+    """Never having been busy shouldn't spontaneously celebrate."""
+    d = _make(procs=[_FakeProc()])
+    assert d.is_celebrating(now=1.0) is False
+
+
 def test_disabled_detector_always_returns_false():
     d = _make(
         procs=[_FakeProc()], shell_active=True,
@@ -140,7 +168,8 @@ def test_diagnostic_contains_required_keys():
     d.is_busy(now=1000.0)
     diag = d.diagnostic()
     for key in ("name", "enabled", "claude_code_running", "cpu_percent",
-                "shell_active", "file_active", "transcript_age", "streaming"):
+                "shell_active", "file_active", "transcript_age", "streaming",
+                "celebrate_until"):
         assert key in diag, f"missing {key}"
     assert diag["name"] == "claude_code"
 

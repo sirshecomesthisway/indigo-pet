@@ -99,7 +99,7 @@ to JavaScript via pywebview's `js_api`:
 
 #### Scenario: JavaScript reads current state
 - **WHEN** `window.pywebview.api.get_state()` is awaited
-- **THEN** the returned object includes `state`, `cpu_percent`, `idle_seconds`, `tpa_running`, `timestamp`, and `message` fields
+- **THEN** the returned object includes `state`, `cpu_percent`, `idle_seconds`, `tpa_running`, `claude_code_running`, `codex_running`, `timestamp`, and `message` fields
 
 ### Requirement: Persist across all macOS Spaces and fullscreen apps
 

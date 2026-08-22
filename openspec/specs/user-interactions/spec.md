@@ -23,7 +23,7 @@ A confirmed poke SHALL:
 - **THEN** 260 milliseconds later, the wake override is set to now + 60 seconds
 - **AND** the "boop!" hint pill appears
 - **AND** the frontend plays the wake-stretch transition and returns to the idle sprite
-- **AND** Squid stays awake for the next 60 seconds even if TPA remains idle
+- **AND** Squid stays awake for the next 60 seconds even if the agent remains idle
 
 #### Scenario: Double-click supersedes pending poke
 - **WHEN** the user double-clicks Squid within 260 milliseconds of the first click

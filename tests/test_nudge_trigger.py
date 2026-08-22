@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import threading
 
-from squid_pet.passthrough import NudgeApproachTracker, PassthroughController
+from squid_pet.passthrough import (
+    NudgeApproachTracker, CornerFleeApproachTracker, PassthroughController,
+)
 
 
 # ── NudgeApproachTracker (pure logic) ───────────────────────────────────
@@ -80,6 +82,86 @@ def test_default_thresholds_are_two_approaches_800ms():
     assert t._window_sec == 0.8
 
 
+# ── CornerFleeApproachTracker (pure logic) ──────────────────────────────
+# Independent of NudgeApproachTracker above: counts raw consecutive
+# re-entries (no window/cooldown gating), reset only by a
+# CORNER_FLEE_RESET_SEC lull. Replaces the old wanderer-side
+# NUDGE_TO_CORNER_THRESHOLD scheme (2026-08-21) where fleeing to a corner
+# required a run of already-gated *nudges*, not raw entries.
+
+def test_corner_flee_first_two_entries_do_not_fire():
+    t = CornerFleeApproachTracker(threshold=3, reset_sec=6.0)
+    assert t.on_tick(True, False, now=0.0) is False   # 1st entry
+    assert t.on_tick(False, True, now=0.1) is False    # left
+    assert t.on_tick(True, False, now=0.2) is False    # 2nd entry
+
+
+def test_corner_flee_dwelling_never_fires():
+    """A plain hover (no re-entries) must never accumulate a streak,
+    however long it dwells."""
+    t = CornerFleeApproachTracker(threshold=3, reset_sec=6.0)
+    assert t.on_tick(True, False, now=0.0) is False
+    for i in range(1, 100):
+        assert t.on_tick(True, True, now=i * 0.03) is False
+
+
+def test_corner_flee_third_consecutive_entry_fires():
+    t = CornerFleeApproachTracker(threshold=3, reset_sec=6.0)
+    assert t.on_tick(True, False, now=0.0) is False    # 1st
+    assert t.on_tick(False, True, now=0.1) is False
+    assert t.on_tick(True, False, now=0.2) is False    # 2nd
+    assert t.on_tick(False, True, now=0.3) is False
+    assert t.on_tick(True, False, now=0.4) is True     # 3rd -> fire
+
+
+def test_corner_flee_not_gated_by_a_window_unlike_nudge_tracker():
+    """Unlike NudgeApproachTracker, entries spread well apart (but still
+    within the reset lull) must still accumulate toward the threshold --
+    there's no NUDGE_WINDOW_SEC-style burst-speed requirement here."""
+    t = CornerFleeApproachTracker(threshold=3, reset_sec=6.0)
+    assert t.on_tick(True, False, now=0.0) is False    # 1st
+    assert t.on_tick(False, True, now=1.0) is False
+    assert t.on_tick(True, False, now=2.5) is False    # 2nd, 2.5s later
+    assert t.on_tick(False, True, now=3.0) is False
+    assert t.on_tick(True, False, now=5.0) is True     # 3rd, still within reset_sec -> fire
+
+
+def test_corner_flee_streak_resets_after_long_gap():
+    t = CornerFleeApproachTracker(threshold=3, reset_sec=6.0)
+    assert t.on_tick(True, False, now=0.0) is False    # 1st
+    assert t.on_tick(False, True, now=0.1) is False
+    assert t.on_tick(True, False, now=0.2) is False    # 2nd
+    assert t.on_tick(False, True, now=0.3) is False
+    # Long lull -- streak resets, so this counts as a fresh 1st entry.
+    assert t.on_tick(True, False, now=10.0) is False
+    assert t.on_tick(False, True, now=10.1) is False
+    assert t.on_tick(True, False, now=10.2) is False   # would be 3rd pre-reset -> still False
+
+
+def test_corner_flee_fires_again_after_firing():
+    """After firing, the streak resets so it takes a fresh run of
+    threshold entries to fire again."""
+    t = CornerFleeApproachTracker(threshold=3, reset_sec=6.0)
+    assert t.on_tick(True, False, now=0.0) is False    # 1st
+    assert t.on_tick(False, True, now=0.1) is False
+    assert t.on_tick(True, False, now=0.2) is False    # 2nd
+    assert t.on_tick(False, True, now=0.3) is False
+    assert t.on_tick(True, False, now=0.4) is True     # 3rd -> fires, streak resets
+
+    assert t.on_tick(False, True, now=0.5) is False
+    assert t.on_tick(True, False, now=0.6) is False    # 1st of a fresh streak
+    assert t.on_tick(False, True, now=0.7) is False
+    assert t.on_tick(True, False, now=0.8) is False    # 2nd
+    assert t.on_tick(False, True, now=0.9) is False
+    assert t.on_tick(True, False, now=1.0) is True     # 3rd -> fires again
+
+
+def test_corner_flee_default_threshold_is_three():
+    t = CornerFleeApproachTracker()
+    assert t._threshold == 3
+    assert t._reset_sec == 6.0
+
+
 # ── PassthroughController wiring ────────────────────────────────────────
 
 def _make_controller():
@@ -95,6 +177,8 @@ def _make_controller():
     ctrl._last_ignore = None
     ctrl._nudge_callback = None
     ctrl._nudge_tracker = NudgeApproachTracker()
+    ctrl._corner_flee_callback = None
+    ctrl._corner_flee_tracker = CornerFleeApproachTracker()
     ctrl._was_interactive = False
     return ctrl
 
@@ -135,3 +219,63 @@ def test_track_nudge_swallows_callback_exceptions():
     ctrl._track_nudge(True, 0.0, 0.0)
     ctrl._track_nudge(False, 0.0, 0.0)
     ctrl._track_nudge(True, 0.0, 0.0)  # must not raise
+
+
+def test_set_corner_flee_callback_fires_on_third_consecutive_entry():
+    calls = []
+    ctrl = _make_controller()
+    ctrl.set_corner_flee_callback(lambda cx, cy: calls.append((cx, cy)))
+
+    ctrl._track_nudge(True, 1.0, 1.0)   # 1st entry
+    ctrl._track_nudge(False, 1.0, 1.0)
+    ctrl._track_nudge(True, 2.0, 2.0)   # 2nd entry
+    ctrl._track_nudge(False, 2.0, 2.0)
+    ctrl._track_nudge(True, 3.0, 3.0)   # 3rd entry -> corner-flee fires
+
+    assert calls == [(3.0, 3.0)]
+
+
+def test_corner_flee_and_nudge_callbacks_are_independent():
+    """Both trackers observe the same raw entry stream (_track_nudge uses
+    real wall-clock time internally, and these calls execute back to
+    back, well inside both the hop tracker's 0.8s window and the
+    corner-flee tracker's 6.0s reset lull) and fire off their own
+    thresholds -- the hop callback (threshold 2) fires before, and
+    independently of, the corner-flee callback (threshold 3)."""
+    hop_calls = []
+    corner_calls = []
+    ctrl = _make_controller()
+    ctrl.set_nudge_callback(lambda cx, cy: hop_calls.append((cx, cy)))
+    ctrl.set_corner_flee_callback(lambda cx, cy: corner_calls.append((cx, cy)))
+
+    ctrl._track_nudge(True, 1.0, 1.0)   # 1st entry
+    ctrl._track_nudge(False, 1.0, 1.0)
+    ctrl._track_nudge(True, 2.0, 2.0)   # 2nd entry -> hop fires (nudge cooldown starts)
+    assert hop_calls == [(2.0, 2.0)]
+    assert corner_calls == []
+
+    ctrl._track_nudge(False, 2.0, 2.0)
+    ctrl._track_nudge(True, 3.0, 3.0)   # 3rd entry -> corner-flee fires (hop still cooling down)
+    assert hop_calls == [(2.0, 2.0)]
+    assert corner_calls == [(3.0, 3.0)]
+
+
+def test_track_nudge_swallows_corner_flee_callback_exceptions():
+    """A broken corner-flee callback must not take down the poll loop,
+    and must not suppress the (working) hop callback."""
+    ctrl = _make_controller()
+    hop_calls = []
+
+    def _boom(cx, cy):
+        raise RuntimeError("boom")
+
+    ctrl.set_nudge_callback(lambda cx, cy: hop_calls.append((cx, cy)))
+    ctrl.set_corner_flee_callback(_boom)
+
+    ctrl._track_nudge(True, 1.0, 1.0)
+    ctrl._track_nudge(False, 1.0, 1.0)
+    ctrl._track_nudge(True, 2.0, 2.0)  # hop fires normally
+    ctrl._track_nudge(False, 2.0, 2.0)
+    ctrl._track_nudge(True, 3.0, 3.0)  # corner-flee threshold hit -> callback raises, must not propagate
+
+    assert hop_calls == [(2.0, 2.0)]

@@ -15,7 +15,10 @@ import sys
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="squid-pet", description="Desktop pet for TPA")
+    parser = argparse.ArgumentParser(
+        prog="squid-pet",
+        description="Desktop pet that reacts to CLI coding agents (Claude Code, Codex)",
+    )
     parser.add_argument(
         "--watcher-only", action="store_true",
         help="Run only the watcher daemon (no window). Useful for LaunchAgents."

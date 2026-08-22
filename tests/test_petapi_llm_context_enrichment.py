@@ -11,8 +11,13 @@ bubbles can say "shipped"/"fetching deps" instead of generic text)
 never engaged.
 
 Fix: PetApi.set_state_machine() gives it a live StateMachine ref
-(wired from watcher_thread()); enrichment reads
-self._sm._tpa_detector / self._sm._git_detector instead.
+(wired from watcher_thread()); enrichment reads self._sm._git_detector.
+
+Pink-2026-08-22: the cpu_pct/tool_age/llm_streaming TPA-detector-signal
+enrichment (and TPADetector itself) was removed -- TPA was
+never actually installed/run on this machine, so it never fired
+anything in practice. Those three fields are now permanent static
+defaults; only git_active still reads a live detector.
 """
 from __future__ import annotations
 
@@ -37,27 +42,9 @@ def _make_api():
     return api
 
 
-def test_update_reads_tpa_detector_signals_via_state_machine():
-    api = _make_api()
-    fake_sm = MagicMock()
-    fake_sm._tpa_detector = MagicMock(
-        llm_streaming=True, cpu_percent=42.5, tool_activity_age=3.0,
-    )
-    fake_sm._git_detector = None
-    api.set_state_machine(fake_sm)
-
-    api.update(PetState(state="working", timestamp=1000.0))
-
-    _, kwargs = api._observer.on_state_change.call_args
-    assert kwargs["llm_streaming"] is True
-    assert kwargs["cpu_pct"] == 42.5
-    assert kwargs["tool_age"] == 3.0
-
-
 def test_update_reads_git_detector_signal_via_state_machine():
     api = _make_api()
     fake_sm = MagicMock()
-    fake_sm._tpa_detector = None
     fake_git = MagicMock()
     fake_git.is_busy.return_value = True
     fake_git.is_celebrating.return_value = False

@@ -33,6 +33,12 @@ WINDOW_WIDTH  = 200
 WINDOW_HEIGHT = 300  # was 220; bumped to give hearts headroom above sprite
 EDGE_MARGIN   = 20
 
+# Minimum gap between "still working on X" bubbles fired while state stays
+# "working" across ticks (the on-entry bubble from on_state_change doesn't
+# count against this -- it resets the clock on the way in). Keeps a long
+# working stretch from narrating every watcher tick (1Hz).
+WORKING_REANNOUNCE_SEC = 25.0
+
 POSITION_FILE = Path.home() / ".squid-pet" / "position.json"
 SETTINGS_FILE = Path.home() / ".squid-pet" / "settings.json"
 # Presence == intentionally hidden via the menu bar toggle. Written by
@@ -76,15 +82,41 @@ def _get_ns_window():
 # Wider states (thinking max_x=159, celebrating min_x=21) were getting clipped
 # at screen edge when clamped to idle bbox only. (Pink 2026-06-11.)
 CHAR_LEFT_IN_WIN   = 51     # SPRITE_LEFT(10) + min_x(21) + 20px rotation padding (CSS rotate up to ±14deg)
-CHAR_RIGHT_IN_WIN  = 190    # SPRITE_LEFT(10) + max_x(160) + 20px rotation padding (CSS rotate up to ±14deg)
-CHAR_BOTTOM_IN_WIN = 8      # WINDOW_H(300) - SPRITE_TOP(120) - worst max_y(172) [DROWSY — was missed in prior analysis]
+CHAR_RIGHT_IN_WIN  = 158    # SPRITE_LEFT(10) + idle max_x(138) + 10px sway buffer. Was 190 (10 +
+                            # max_x(160), a worst-case envelope covering attention_needed/thinking's
+                            # wider flag/arm poses). 2026-08-18: tightened to idle's own reach at
+                            # Pink's explicit request ("touching") -- unlike CHAR_BOTTOM_IN_WIN's fix
+                            # this is NOT a stale-data correction, it's a deliberate tradeoff: idle
+                            # (what's visible ~always while wandering) now hugs the right edge
+                            # closely, but attention_needed/thinking/celebrating/grooving/stretch
+                            # (wider states that CAN appear while she happens to be resting at this
+                            # tightened position) may show a small (few-to-~20px, worst case the flag
+                            # tip) clip at the literal screen edge -- there's no opaque menu bar to
+                            # hide behind here like the top-edge tradeoff. Widen back toward 190 if
+                            # that clipping turns out to be more noticeable/annoying than the tighter
+                            # idle fit is worth.
+CHAR_BOTTOM_IN_WIN = 45     # WINDOW_H(300) - SPRITE_TOP(120) - worst max_y(145, THINKING). Was 8,
+                            # based on a claimed "worst max_y(172) [DROWSY]" that does NOT match
+                            # direct measurement: loading every sprite PNG's actual alpha channel
+                            # (2026-08-18, same method that exactly reproduces every OTHER cited
+                            # number here -- idle min_y=35, celebrating min_x=21, idle max_x=138 all
+                            # matched) finds no sprite anywhere near 172; the real worst is
+                            # thinking at 145. That 172 was leaving a real, unnecessary ~40px gap
+                            # between her feet and the bottom edge even at the "tight" clamp. 45 =
+                            # 300-120-145 (real worst-case) + 10px buffer for the small ±14deg idle-
+                            # sway wobble (bottom has NO edge rotation to worry about, unlike
+                            # left/right/top, so this is the only slack this needs). If her feet
+                            # still don't look flush: it's this buffer, not a repeat of the
+                            # top-edge rotation problem -- shrink in small steps and check.
 CHAR_TOP_IN_WIN    = 145    # WINDOW_H(300) - SPRITE_TOP(120) - typical min_y(35, idle).
                             # Was 165 (thinking/flag-wave worst-case) but that left her
                             # head 20-40px below menu bar in idle. Trade-off: flag tips
                             # (attention_needed) clip ~34px behind menu bar. Menu bar is
                             # opaque so it is a clean cut, not a visual glitch. Pink 2026-07-07.
-TOP_MARGIN_PX      = 35     # MIRRORS wanderer.TOP_MARGIN_PX — pulls top-edge origin down so the
-                            # 180deg-rotated body doesn't clip the physical screen top. Pink 2026-07-12.
+TOP_MARGIN_PX      = 50     # MIRRORS wanderer.TOP_MARGIN_PX — MUST match or the wander target
+                            # picker and this hard clamp disagree on the top boundary. Binary-search
+                            # step between confirmed-broken (<=35) and confirmed-safe (65) -- see
+                            # wanderer.TOP_MARGIN_PX for the full story.
 
 
 def clamp_origin_to_screen(ox, oy):
@@ -489,10 +521,10 @@ class PetApi:
         self._routine = None                   # RoutineController (set in on_loaded)
         # Live StateMachine ref (set by watcher_thread() via
         # set_state_machine()) -- lets update()'s LLM-bubble context
-        # enrichment read the TPA/Git detectors' current signals. Was
-        # None forever pre-2026-08-17 (a dead self._tpa_detector /
-        # self._git_detector lookup that never matched anything), so
-        # the enrichment always silently used its defaults.
+        # enrichment read the Git detector's current signal. Was
+        # None forever pre-2026-08-17 (a dead self._git_detector
+        # lookup that never matched anything), so the enrichment
+        # always silently used its defaults.
         self._sm: "watcher.StateMachine | None" = None
         self._frontend_mood: str = ""          # JS mood: ""/drowsy/sleeping/stretch
         # Set when on_loaded fires; the watchdog in main() uses this to
@@ -509,6 +541,9 @@ class PetApi:
         self._pending_bubble: str | None = None
         self._last_state_for_bubble: str = "idle"
         self._last_mood_for_bubble: str = ""
+        # "Still working on X" periodic refresh (see _maybe_reannounce_working).
+        self._last_working_bubble_at: float = 0.0
+        self._last_working_bubble_text: str = ""
         # LLM-enriched bubbles (opt-in via ~/.squid-pet/config.json).
         # llm-bubbles polish 2026-06-27, item 1: construct the LLMClient
         # unconditionally (cheap -- just reads puppy.cfg once) so that
@@ -555,7 +590,7 @@ class PetApi:
 
     def set_state_machine(self, sm: "watcher.StateMachine") -> None:
         """Called once by watcher_thread() so update()'s LLM-bubble
-        context enrichment can read the live TPA/Git detector signals."""
+        context enrichment can read the live Git detector signal."""
         self._sm = sm
 
     def update(self, state: watcher.PetState) -> None:
@@ -568,46 +603,27 @@ class PetApi:
             self._passthrough.set_state(shown)
         # Observer: fire on actual state transitions only
         if prev_state != state.state:
-            # Enrich working bubble with shell cmdline if available
+            # Pink-2026-08-22: shell_cmd enrichment removed -- it only
+            # ever read TPA's shell children (find_tpa_processes
+            # + latest_shell_child_cmdline, both TPA-only), which was always
+            # empty/None on this machine since TPA was never run.
             shell_cmd = None
-            if state.state == "working":
-                try:
-                    procs = watcher.find_tpa_processes()
-                    shell_cmd = watcher.latest_shell_child_cmdline(procs)
-                except Exception:
-                    shell_cmd = None
             # Fix B (2026-06-28): collect richer signals for LLM context
             # so the model can be specific ("shipped", "fetching deps")
             # instead of generic ("settle in"). All best-effort -- a
             # failure to read any signal just omits it from the context.
+            # Pink-2026-08-22: subagent_name/llm_streaming/cpu_pct/tool_age
+            # were all TPA-only signals (subagent_sessions/*.pkl,
+            # TPADetector.llm_streaming/cpu_percent/tool_activity_age)
+            # and always empty/zero on this machine since TPA was
+            # never run -- removed along with TPADetector. Left as
+            # static defaults; Observer.on_state_change's signature keeps
+            # these kwargs so it still degrades gracefully.
             subagent_name = None
             llm_streaming = False
             git_active = False
             cpu_pct = 0.0
             tool_age = float("inf")
-            try:
-                # TPA detector signals (already scanned this tick). Read
-                # via the live StateMachine ref (set_state_machine(),
-                # called once from watcher_thread()) -- self._tpa_detector
-                # and watcher._tpa_detector_singleton were never assigned
-                # anywhere, so this enrichment silently no-op'd forever
-                # before 2026-08-17.
-                cp = self._sm._tpa_detector if self._sm is not None else None
-                if cp is not None:
-                    llm_streaming = bool(getattr(cp, "llm_streaming", False))
-                    cpu_pct = float(getattr(cp, "cpu_percent", 0.0))
-                    tool_age = float(getattr(cp, "tool_activity_age", float("inf")))
-            except Exception:
-                pass
-            try:
-                # Subagent name: newest *.pkl in subagent_sessions/
-                _sub_dir = watcher.SUBAGENT_DIR
-                if _sub_dir.exists():
-                    _pkls = sorted(_sub_dir.glob("*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
-                    if _pkls and (state.timestamp - _pkls[0].stat().st_mtime) < 60:
-                        subagent_name = _pkls[0].stem
-            except Exception:
-                pass
             try:
                 # Git active: GitDetector reads .git/HEAD/index/refs mtimes
                 gd = self._sm._git_detector if self._sm is not None else None
@@ -629,6 +645,35 @@ class PetApi:
             if bubble is not None:
                 with self._lock:
                     self._pending_bubble = bubble
+            if state.state == "working":
+                # Reset the reannounce clock on entry -- the first periodic
+                # refresh should land WORKING_REANNOUNCE_SEC after she
+                # started working, not immediately.
+                self._last_working_bubble_at = state.timestamp
+                self._last_working_bubble_text = bubble or ""
+        elif state.state == "working":
+            self._maybe_reannounce_working(state)
+
+    def _maybe_reannounce_working(self, state: watcher.PetState) -> None:
+        """While state STAYS 'working' across ticks (no transition, so
+        on_state_change never fires again), periodically surface what
+        she's currently watching. Throttled to WORKING_REANNOUNCE_SEC and
+        silent if there's nothing concrete to report or it hasn't changed
+        -- see Observer.on_still_working.
+
+        Pink-2026-08-22: shell_cmd is always None now -- it used to read
+        TPA's shell children only (find_tpa_processes +
+        latest_shell_child_cmdline), which never fired on this machine."""
+        if state.timestamp - self._last_working_bubble_at < WORKING_REANNOUNCE_SEC:
+            return
+        shell_cmd = None
+        bubble = self._observer.on_still_working(shell_cmd)
+        self._last_working_bubble_at = state.timestamp
+        if bubble is None or bubble == self._last_working_bubble_text:
+            return
+        self._last_working_bubble_text = bubble
+        with self._lock:
+            self._pending_bubble = bubble
 
     def get_state(self) -> dict:
         with self._lock:
@@ -683,6 +728,16 @@ class PetApi:
             return
         with self._lock:
             self._pending_bubble = text
+
+    def _fire_idle_chatter(self) -> None:
+        """RoutineController's chatter_cb -- called (at CHATTER_PROBABILITY
+        odds) during idle 'rest' beats. Not a state transition, so this
+        bypasses on_state_change entirely and goes straight through the
+        same generic random-line picker poke/shake/sprint use."""
+        bubble = self._observer.on_interaction("idle_chatter")
+        if bubble is not None:
+            with self._lock:
+                self._pending_bubble = bubble
 
     def set_wander_edge(self, edge: str) -> None:
         """Called by WanderController when she crosses an edge boundary.
@@ -1107,47 +1162,6 @@ class PetApi:
         self._emit_hint("↻ live tracking")
 
     # ─── Diagnostics ───
-    def _menu_has_recent_error(self) -> bool:
-        """True if errors.log was touched in the last 10 min."""
-        try:
-            from squid_pet.watcher import ERRORS_LOG
-            import time as _t
-            if not ERRORS_LOG.exists():
-                return False
-            return (_t.time() - ERRORS_LOG.stat().st_mtime) < 600
-        except Exception:
-            return False
-
-    def _menu_whats_wrong(self) -> None:
-        """Open the last error log in Console.app."""
-        try:
-            from squid_pet.watcher import ERRORS_LOG
-            import subprocess
-            subprocess.Popen(["open", "-a", "Console", str(ERRORS_LOG)])
-            self._emit_hint("🩺 opened errors.log")
-        except Exception as e:
-            self._emit_hint(f"🩺 failed: {e}")
-
-    def _menu_show_stats(self) -> None:
-        """Build a compact stats string and emit as hint."""
-        try:
-            with self._lock:
-                st = self._latest
-            from squid_pet.watcher import (
-                find_tpa_processes, most_recent_tool_activity_age,
-            )
-            procs = find_tpa_processes()
-            n_proc = len(procs)
-            tool_age = most_recent_tool_activity_age()
-            tool_str = (f"{int(tool_age)}s ago" if tool_age != float("inf")
-                        else "—")
-            msg = (f"📊 cpu {st.cpu_percent:.0f}% · "
-                   f"idle {int(st.idle_seconds)}s · "
-                   f"procs {n_proc} · tool {tool_str}")
-            self._emit_hint(msg)
-        except Exception as e:
-            self._emit_hint(f"📊 stats err: {e}")
-
     def _menu_open_log(self) -> None:
         """Open /tmp/squid-pet.out.log in Console.app.
 
@@ -1416,6 +1430,16 @@ def main() -> None:
             wc.request_nudge(cx, cy)
         pt.set_nudge_callback(_on_repeated_approach)
 
+        # Wire the corner-flee trigger: fires independently once the
+        # cursor has re-entered her clickable bbox CORNER_FLEE_THRESHOLD
+        # times in a row (see passthrough.CornerFleeApproachTracker).
+        # Gated the same way as the nudge trigger above.
+        def _on_corner_flee_approach(cx, cy):
+            if api._pinned or api._hidden:
+                return
+            wc.request_flee_to_corner(cx, cy)
+        pt.set_corner_flee_callback(_on_corner_flee_approach)
+
         # Apply persisted stroll mode (restored 2026-06-13)
         try:
             wc.set_stroll_mode(api._stroll_mode)
@@ -1454,6 +1478,7 @@ def main() -> None:
                 is_busy=lambda: False,
                 get_mood=api.get_frontend_mood,
                 is_pinned=lambda: api._pinned or api._hidden or _time.time() < api._wander_paused_until,
+                chatter_cb=api._fire_idle_chatter,
             )
             api._routine = rc
             rc.start()

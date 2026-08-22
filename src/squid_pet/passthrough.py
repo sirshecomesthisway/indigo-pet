@@ -49,6 +49,56 @@ NUDGE_APPROACH_THRESHOLD = 2
 NUDGE_WINDOW_SEC = 0.8
 NUDGE_COOLDOWN_SEC = 1.5
 
+# Corner-flee trigger (2026-08-21): retired the old wanderer-side scheme
+# where fleeing to a corner required NUDGE_TO_CORNER_THRESHOLD *nudges* in
+# a row (each nudge itself already gated behind NUDGE_APPROACH_THRESHOLD
+# rapid re-entries) -- too many entries needed to pile up before she'd
+# actually get out of the way. Replaced with a direct, independent count
+# of raw re-entries into her clickable bbox: as soon as the cursor has
+# entered CORNER_FLEE_THRESHOLD times in a row, flee straight to the
+# corner, no window/cooldown gating (that's still only relevant to the
+# smaller hop above). "In a row" is bounded purely by a lull -- if she
+# goes CORNER_FLEE_RESET_SEC without a fresh entry, the streak resets.
+CORNER_FLEE_THRESHOLD = 3
+CORNER_FLEE_RESET_SEC = 6.0
+
+
+class CornerFleeApproachTracker:
+    """Counts consecutive fresh re-entries into the clickable bbox,
+    independent of NudgeApproachTracker's window/cooldown-gated hop
+    trigger -- every fresh entry counts, back to back, until a
+    CORNER_FLEE_RESET_SEC lull breaks the streak. Fires (and resets) once
+    the streak reaches CORNER_FLEE_THRESHOLD.
+
+    Pure logic, no AppKit/threading -- same rationale as
+    NudgeApproachTracker.
+    """
+
+    def __init__(
+        self,
+        threshold: int = CORNER_FLEE_THRESHOLD,
+        reset_sec: float = CORNER_FLEE_RESET_SEC,
+    ):
+        self._threshold = threshold
+        self._reset_sec = reset_sec
+        self._streak = 0
+        self._last_entry_time = 0.0
+
+    def on_tick(self, now_interactive: bool, was_interactive: bool, now: float) -> bool:
+        """Call once per poll tick with the freshly-computed interactive
+        state. Returns True exactly on the tick that crosses the streak
+        threshold -- caller should flee to the corner then."""
+        if not (now_interactive and not was_interactive):
+            return False  # not a fresh entry (dwelling or still outside)
+        if now - self._last_entry_time > self._reset_sec:
+            self._streak = 0  # long lull -- fresh streak starts here
+        self._last_entry_time = now
+        self._streak += 1
+        if self._streak < self._threshold:
+            return False
+        self._streak = 0
+        return True
+
 
 class NudgeApproachTracker:
     """Counts fresh transitions into the clickable bbox and decides when
@@ -162,6 +212,9 @@ class PassthroughController:
         # Nudge trigger (repeated-approach detector) -- see set_nudge_callback().
         self._nudge_callback = None
         self._nudge_tracker = NudgeApproachTracker()
+        # Corner-flee trigger (independent streak) -- see set_corner_flee_callback().
+        self._corner_flee_callback = None
+        self._corner_flee_tracker = CornerFleeApproachTracker()
         self._was_interactive = False
         print(f"[squid-pet] passthrough: loaded {len(self._masks)} alpha masks", flush=True)
 
@@ -171,6 +224,15 @@ class PassthroughController:
         detects repeated rapid re-entries into her clickable bbox. cb should
         be fast/non-blocking (called from the poll thread)."""
         self._nudge_callback = cb
+
+    def set_corner_flee_callback(self, cb) -> None:
+        """Register cb(cursor_x, cursor_y), invoked when
+        CornerFleeApproachTracker sees CORNER_FLEE_THRESHOLD consecutive
+        fresh re-entries into her clickable bbox. Independent of the
+        nudge-hop callback above -- both fire off the same raw entry
+        stream but track separate streaks/thresholds. cb should be
+        fast/non-blocking (called from the poll thread)."""
+        self._corner_flee_callback = cb
 
     def set_state(self, state: str) -> None:
         with self._lock:
@@ -222,17 +284,25 @@ class PassthroughController:
 
     # ── Internals ──
     def _track_nudge(self, now_interactive: bool, cx: float, cy: float) -> None:
-        """Feed the current interactive (opaque-hit) state to the approach
-        tracker and fire the nudge callback on threshold. Only called from
-        the poll loop thread, so no lock needed on _was_interactive."""
+        """Feed the current interactive (opaque-hit) state to both the
+        hop tracker and the corner-flee tracker, firing whichever
+        callback(s) cross threshold on this tick. Only called from the
+        poll loop thread, so no lock needed on _was_interactive."""
         now = time.time()
-        fire = self._nudge_tracker.on_tick(now_interactive, self._was_interactive, now)
+        was = self._was_interactive
+        fire_hop = self._nudge_tracker.on_tick(now_interactive, was, now)
+        fire_corner = self._corner_flee_tracker.on_tick(now_interactive, was, now)
         self._was_interactive = now_interactive
-        if fire and self._nudge_callback is not None:
+        if fire_hop and self._nudge_callback is not None:
             try:
                 self._nudge_callback(cx, cy)
             except Exception as e:
                 print(f"[squid-pet] nudge callback failed: {e}", flush=True)
+        if fire_corner and self._corner_flee_callback is not None:
+            try:
+                self._corner_flee_callback(cx, cy)
+            except Exception as e:
+                print(f"[squid-pet] corner-flee callback failed: {e}", flush=True)
 
     def _alpha_at(self, mask, sx: int, sy: int) -> int:
         """MAX alpha in a 5-pixel cross neighborhood (robust to CSS animation jitter)."""

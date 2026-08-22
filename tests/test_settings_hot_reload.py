@@ -35,12 +35,12 @@ def _write(settings_file: Path, payload: dict) -> None:
 
 
 def test_no_settings_file_yields_defaults(isolated_settings):
-    """Missing settings.json -> defaults (5 enabled: tpa/
-    claude_code/codex/git/ide, terminal off). And nothing crashes."""
+    """Missing settings.json -> defaults (4 enabled: claude_code/codex/
+    git/ide, terminal off). And nothing crashes."""
     sm = watcher.StateMachine()
     by_name = {d.name: d.enabled for d in sm.detectors}
     assert by_name == {
-        "tpa": True, "claude_code": True, "codex": True,
+        "claude_code": True, "codex": True,
         "git": True, "terminal": False, "ide": True,
     }
 
@@ -89,12 +89,12 @@ def test_no_reload_when_mtime_unchanged(isolated_settings):
 def test_explicit_detector_list_never_hot_reloads(isolated_settings):
     """If caller passed detectors=[...], we don't own the list -- the
     user-supplied detectors stay put even if settings.json changes."""
-    from squid_pet.detectors import TPADetector
-    custom = [TPADetector(enabled=False)]
+    from squid_pet.detectors import ClaudeCodeDetector
+    custom = [ClaudeCodeDetector(enabled=False)]
     sm = watcher.StateMachine(detectors=custom)
     assert sm._owns_detectors is False
 
-    _write(isolated_settings, {"triggers": {"git": True, "tpa": True}})
+    _write(isolated_settings, {"triggers": {"git": True, "claude_code": True}})
     sm._maybe_reload_settings()
 
     # Detector list still the custom one; not rebuilt from settings.
@@ -103,19 +103,19 @@ def test_explicit_detector_list_never_hot_reloads(isolated_settings):
     assert sm.detectors[0].enabled is False
 
 
-def test_reload_refreshes_tpa_detector_ref(isolated_settings):
-    """After a reload, _tpa_detector points to the NEW TPA detector
-    instance, not the old one. Otherwise back-compat proxies leak."""
+def test_reload_refreshes_claude_detector_ref(isolated_settings):
+    """After a reload, _claude_detector points to the NEW detector
+    instance, not the old one. Otherwise cached refs leak."""
     sm = watcher.StateMachine()
-    old_cp = sm._tpa_detector
-    assert old_cp is not None
+    old_claude = sm._claude_detector
+    assert old_claude is not None
 
-    _write(isolated_settings, {"triggers": {"tpa": True}})
+    _write(isolated_settings, {"triggers": {"claude_code": True}})
     sm._maybe_reload_settings()
 
-    new_cp = sm._tpa_detector
-    assert new_cp is not None
-    assert new_cp is not old_cp, "TPA detector should be a fresh instance"
+    new_claude = sm._claude_detector
+    assert new_claude is not None
+    assert new_claude is not old_claude, "Claude detector should be a fresh instance"
 
 
 def test_compute_invokes_reload(isolated_settings):
@@ -140,7 +140,7 @@ def test_corrupt_settings_file_does_not_crash(isolated_settings):
     sm = watcher.StateMachine()  # initial load with corrupt file
     # Should still have built defaults despite bad JSON.
     assert {d.name for d in sm.detectors} == {
-        "tpa", "claude_code", "codex", "git", "terminal", "ide",
+        "claude_code", "codex", "git", "terminal", "ide",
     }
     # And reload on a still-corrupt file shouldn't raise.
     isolated_settings.write_text("still not json :(")
@@ -148,5 +148,5 @@ def test_corrupt_settings_file_does_not_crash(isolated_settings):
     os.utime(isolated_settings, (future, future))
     sm._maybe_reload_settings()  # must not raise
     assert {d.name for d in sm.detectors} == {
-        "tpa", "claude_code", "codex", "git", "terminal", "ide",
+        "claude_code", "codex", "git", "terminal", "ide",
     }

@@ -29,8 +29,8 @@ def test_why_human_output_contains_expected_sections():
     assert "squid-pet state:" in out
     assert "DETECTORS:" in out
     assert "VERDICT:" in out
-    # All 4 default detectors should be listed
-    for name in ("tpa", "git", "terminal", "ide"):
+    # Default detectors should be listed
+    for name in ("claude_code", "codex", "git", "terminal", "ide"):
         assert name in out, f"missing detector {name} in --why output"
 
 

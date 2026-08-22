@@ -4,8 +4,8 @@
 Define how Squid moves on her own without user input. Covers the wanderer
 thread that periodically picks new screen positions, stroll modes (anywhere
 vs edges-only), sprint-perimeter animation, the busy-gate that suppresses
-motion when the user is actively driving TPA, and the drowsy entry
-trigger after prolonged TPA idleness.
+motion when the user is actively driving their coding agent, and the drowsy
+entry trigger after prolonged idleness.
 
 ## Requirements
 ### Requirement: Wanderer thread moves the window without user input
@@ -19,20 +19,27 @@ duration.
 The wanderer SHALL respect a configurable `is_busy` callback supplied at
 construction. When `is_busy()` returns True, the wanderer SHALL skip its
 tick and remain stationary. The standard busy gate semantics are:
-- TPA is actively thinking or working (genuine CPU activity), OR
-- A TPA process exists AND the user has been driving TPA within the
+- The agent is actively thinking or working (genuine activity), OR
+- An agent process exists AND the user has been driving it within the
   last 30 seconds (idle_seconds < 30)
 
-Otherwise the wanderer SHALL run, even when stale background TPA processes exist.
+Otherwise the wanderer SHALL run, even when stale background agent processes
+exist.
 
-#### Scenario: User is actively driving TPA
-- **WHEN** TPA is running
+Pink-2026-08-22 note: this gate is currently wired to `is_busy=lambda: False`
+in window.py (a 2026-06-08 decision, predating and unrelated to the
+TPADetector removal) -- Squid wanders unconditionally today. The
+contract below documents the intended semantics if/when the gate is
+re-enabled, not current runtime behavior.
+
+#### Scenario: User is actively driving the agent
+- **WHEN** the agent is running
 - **AND** the user has typed in the terminal within the last 30 seconds
 - **THEN** the wanderer skips its tick
 - **AND** Squid remains stationary
 
-#### Scenario: Only stale TPA processes exist
-- **WHEN** one or more TPA processes exist
+#### Scenario: Only stale agent processes exist
+- **WHEN** one or more agent processes exist
 - **AND** none of them are thinking or working (low CPU)
 - **AND** the user has been idle for more than 30 seconds
 - **THEN** the wanderer is permitted to run
@@ -91,18 +98,19 @@ SHALL:
        for a full 360 degrees of cumulative travel
 - **AND** Squid ends at the bottom edge
 
-### Requirement: Drowsy entry after prolonged TPA idle
+### Requirement: Drowsy entry after prolonged agent idle
 
 The frontend SHALL transition Squid to the `drowsy` state via a slump
-animation when Squid has been in the `idle` state continuously and Code
-Puppy idle time exceeds 300 seconds (raised from 120s on 2026-08-17,
-so the idle-routine cycle in `routine.py`'s `IDLE_ROUTINE` -- which
-stays at its original ~91s-average pacing rather than being slowed
-down -- gets to repeat 2-3+ times before drowsy, instead of cutting it
-off mid-cycle). The drowsy state SHALL persist until either a wake
-event fires (user gesture) or TPA resumes activity.
+animation when Squid has been in the `idle` state continuously and the
+state-machine idle time (`agent_idle_seconds`) exceeds 300 seconds (raised
+from 120s on 2026-08-17, so the idle-routine cycle in `routine.py`'s
+`IDLE_ROUTINE` -- which stays at its original ~91s-average pacing rather
+than being slowed down -- gets to repeat 2-3+ times before drowsy,
+instead of cutting it off mid-cycle). The drowsy state SHALL persist
+until either a wake event fires (user gesture) or the agent resumes
+activity.
 
-#### Scenario: Drowsy entry after TPA idle threshold
+#### Scenario: Drowsy entry after idle threshold
 - **WHEN** Squid has been in the idle state continuously
 - **AND** agent_idle_seconds exceeds 300
 - **AND** no user_wake_override is active

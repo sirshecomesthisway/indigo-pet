@@ -4,9 +4,17 @@ Pluggable activity detectors for squid-pet.
 Each detector observes a different signal source and returns three booleans
 per tick: ``is_busy(now)``, ``is_celebrating(now)``, ``is_grooving(now)``.
 The StateMachine ORs across all enabled detectors. This lets squid-pet
-react to git commits / terminal commands / IDE bursts in addition to
-TPA activity -- so engineers without TPA still see Squid react to
-their work.
+react to Claude Code / Codex activity, git commits, terminal commands,
+and IDE bursts.
+
+Pink-2026-08-22: TPADetector (the original TPA-aware busy/thinking/
+celebrating/grooving/concerned detector) was removed -- TPA was
+never actually installed/run on this machine, so it never fired anything
+in practice. The TPA-specific approval_needed/flag-wave machinery in
+watcher.py (find_tpa_processes, tpa_pids_awaiting_input,
+per_process_pending_approval_idle, etc.) is untouched and still fully
+TPA-driven -- it's kept pending a Claude-Code-native replacement signal
+(see the Notification-hook idea in that change's discussion).
 
 Design goals:
 * Each detector is fully unit-testable in isolation. All filesystem,
@@ -22,8 +30,8 @@ See ``openspec/changes/trigger-broadening/design.md`` for the full
 contract per detector (D1 git, D2 terminal, D3 IDE, D4 settings, D5
 privacy), and ``openspec/changes/claude-code-detector/design.md`` for
 ``ClaudeCodeDetector``, which -- unlike git/terminal/IDE -- is promoted
-into the TPA-style working/thinking cascade rather than the flat
-non-TPA fallback.
+into the rich working/thinking/celebrating cascade rather than the flat
+generic fallback.
 """
 from __future__ import annotations
 
@@ -50,185 +58,15 @@ class Detector(Protocol):
 
 
 # ----------------------------------------------------------------------
-# TPADetector -- ports the existing watcher.py TPA-aware logic
-# ----------------------------------------------------------------------
-class TPADetector:
-    """Existing TPA-aware logic, packaged as a Detector.
-
-    Exposes ``cpu_percent``, ``tpa_running``, and ``shell_active``
-    as public attributes so the StateMachine can keep populating the
-    state.json schema (cpu_percent, tpa_running) without breaking
-    frontend consumers.
-
-    All scanning helpers are injected so tests can replace them.
-    """
-    name = "tpa"
-
-    # Threshold + sticky-window constants -- mirror watcher.py module-level.
-    CPU_BUSY_THRESHOLD = 20.0  # Fix 10 (2026-06-27): 15.0 -> 20.0 to suppress TUI-redraw false positives
-    TOOL_ACTIVE_WINDOW_SEC = 20  # post-e2e-polish 2026-06-27 Fix 6: was 8s
-    # Fix 10b (2026-06-27): primary "LLM is thinking" signal -- TPA's sitecustomize
-    # patch writes ~/.tpa/llm_active.flag on stream entry and removes it on
-    # exit. Anything older than LLM_FLAG_STALE_SEC is treated as a crashed TPA and
-    # ignored (don't pin Squid into thinking if TPA died mid-stream).
-    LLM_FLAG_PATH = os.path.join(os.path.expanduser("~"), ".tpa", "llm_active.flag")
-    LLM_FLAG_STALE_SEC = 60
-    SUBAGENT_ACTIVE_WINDOW_SEC = 30
-    CELEBRATE_DURATION_SEC = 20  # post-e2e-polish 2026-06-27 Fix 1: was 4
-
-    def __init__(
-        self,
-        enabled: bool = True,
-        *,
-        find_processes_fn: Callable | None = None,
-        aggregate_cpu_fn: Callable | None = None,
-        most_recent_tool_activity_age_fn: Callable | None = None,
-        newest_subagent_age_fn: Callable | None = None,
-        has_active_shell_children_fn: Callable | None = None,
-    ) -> None:
-        self.enabled = enabled
-        # Lazily import watcher helpers as defaults so tests can inject.
-        # If a fn is provided directly, never touches watcher at all.
-        self._find_processes = find_processes_fn
-        self._aggregate_cpu = aggregate_cpu_fn
-        self._most_recent_tool_activity_age = most_recent_tool_activity_age_fn
-        self._newest_subagent_age = newest_subagent_age_fn
-        self._has_active_shell_children = has_active_shell_children_fn
-        # Per-tick scan cache (refreshed by _scan(now))
-        self._last_scan_ts: float = 0.0
-        self.cpu_percent: float = 0.0
-        self.tpa_running: bool = False
-        self.shell_active: bool = False
-        self.tool_activity_age: float = float("inf")
-        self.subagent_age: float = float("inf")
-        # Sticky "celebrate after busy-drop" state
-        self._was_busy: bool = False
-        self._celebrate_until: float = 0.0
-        # Burst suppression -- consecutive busy ticks before sustained_busy
-        self._busy_streak: int = 0
-        self.sustained_busy: bool = False
-        # Fix 10b (2026-06-27): LLM heartbeat from TPA's sitecustomize patch
-        self.llm_streaming: bool = False
-        self.llm_flag_age: float = float("inf")
-
-    def _lazy_defaults(self) -> None:
-        """Resolve default scan functions from watcher on first use."""
-        if self._find_processes is None:
-            from . import watcher as _w
-            self._find_processes = _w.find_tpa_processes
-            self._aggregate_cpu = _w.aggregate_cpu
-            self._most_recent_tool_activity_age = _w.most_recent_tool_activity_age
-            self._has_active_shell_children = _w.has_active_shell_children
-            if self._newest_subagent_age is None:
-                self._newest_subagent_age = lambda: _w.newest_file_age_in_dir(
-                    _w.SUBAGENT_DIR, "*.pkl"
-                )
-
-    def _scan(self, now: float) -> None:
-        """Refresh cached signals if the cache is stale for this tick."""
-        if now == self._last_scan_ts:
-            return
-        self._lazy_defaults()
-        procs = self._find_processes()
-        self.tpa_running = bool(procs)
-        self.cpu_percent = round(
-            self._aggregate_cpu(procs) if procs else 0.0, 1
-        )
-        self.shell_active = (
-            self._has_active_shell_children(procs) if procs else False
-        )
-        self.tool_activity_age = (
-            self._most_recent_tool_activity_age() if procs else float("inf")
-        )
-        self.subagent_age = self._newest_subagent_age()
-        # Fix 10b (2026-06-27): read TPA's LLM heartbeat flag
-        try:
-            _mtime = os.path.getmtime(self.LLM_FLAG_PATH)
-            self.llm_flag_age = now - _mtime
-            self.llm_streaming = self.llm_flag_age < self.LLM_FLAG_STALE_SEC
-        except FileNotFoundError:
-            self.llm_flag_age = float("inf")
-            self.llm_streaming = False
-        except Exception:
-            # Permission, FS error, etc. -- treat as unavailable
-            self.llm_flag_age = float("inf")
-            self.llm_streaming = False
-        # Burst suppression: only "really busy" after 2 sustained ticks.
-        # Fix 10 (2026-06-27): threshold is config-hot-reloadable so Pink can tune
-        # without restarting Squid. Falls back to class default if config unavailable.
-        try:
-            from . import config as _cfg
-            _threshold = float(_cfg.get('cpu_busy_threshold', self.CPU_BUSY_THRESHOLD))
-        except Exception:
-            _threshold = self.CPU_BUSY_THRESHOLD
-        if self.cpu_percent >= _threshold:
-            self._busy_streak += 1
-        else:
-            self._busy_streak = 0
-        self.sustained_busy = self._busy_streak >= 4
-        # was_busy -> celebrate edge detection
-        any_busy = (
-            self.sustained_busy or self.shell_active or
-            self.subagent_age < self.SUBAGENT_ACTIVE_WINDOW_SEC
-        )
-        if self._was_busy and self.cpu_percent < 1.0 and not any_busy:
-            # post-e2e-polish 2026-06-27 Fix 1: config-driven hold
-            try:
-                from . import config as _cfg
-                hold = float(_cfg.get('celebrate_hold_sec', self.CELEBRATE_DURATION_SEC))
-            except Exception:
-                hold = self.CELEBRATE_DURATION_SEC
-            self._celebrate_until = now + hold
-            self._was_busy = False
-        elif any_busy:
-            self._was_busy = True
-        self._last_scan_ts = now
-
-    def is_busy(self, now: float) -> bool:
-        if not self.enabled:
-            return False
-        self._scan(now)
-        return self.sustained_busy or self.shell_active
-
-    def is_celebrating(self, now: float) -> bool:
-        if not self.enabled:
-            return False
-        self._scan(now)
-        return now < self._celebrate_until
-
-    def is_grooving(self, now: float) -> bool:
-        if not self.enabled:
-            return False
-        self._scan(now)
-        return self.subagent_age < self.SUBAGENT_ACTIVE_WINDOW_SEC
-
-    def diagnostic(self) -> dict:
-        return {
-            "name": self.name,
-            "enabled": self.enabled,
-            "tpa_running": self.tpa_running,
-            "cpu_percent": self.cpu_percent,
-            "shell_active": self.shell_active,
-            "tool_activity_age": self.tool_activity_age,
-            "subagent_age": self.subagent_age,
-            "sustained_busy": self.sustained_busy,
-            "llm_streaming": self.llm_streaming,
-            "llm_flag_age": self.llm_flag_age,
-            "celebrate_until": self._celebrate_until,
-        }
-
-
-# ----------------------------------------------------------------------
-# ClaudeCodeDetector -- TPA-equivalent detector for the `claude` CLI
+# ClaudeCodeDetector -- detects `claude` CLI activity
 # ----------------------------------------------------------------------
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
 class ClaudeCodeDetector:
-    """Detect Claude Code CLI activity, playing the same role
-    TPADetector plays for TPA so engineers whose daily
-    driver is Claude Code get the same working/thinking distinction
-    instead of falling through the flat non-TPA OR-fallback.
+    """Detect Claude Code CLI activity, giving engineers whose daily
+    driver is Claude Code a working/thinking/celebrating distinction
+    instead of falling through the flat generic OR-fallback.
 
     Three independent signals:
       shell_active -- a live non-shell descendant process under `claude`
@@ -257,6 +95,14 @@ class ClaudeCodeDetector:
     DISCOVERY_CACHE_SEC = 60.0
     CANDIDATE_MAX_AGE_SEC = 900.0  # drop transcripts idle >15min from the cache
     FILE_ACTIVE_WINDOW_SEC = 10.0  # a bit more generous than IDEDetector's 5s
+    # Pink-2026-08-22: was a documented non-goal ("no reliable signal yet")
+    # because there was no busy/idle edge to hang a celebrate window off of.
+    # is_busy() already merges three independent signals (shell_active,
+    # file_active, streaming) that are each windowed/debounced on their own,
+    # so unlike TPA's raw CPU%, there's no separate blip-suppression streak
+    # needed here -- a busy->not-busy flip on the merged signal is already a
+    # real edge. Mirrors GitDetector's _celebrate_until sticky-window mechanism.
+    CELEBRATE_DURATION_SEC = 20  # shared default with celebrate_hold_sec config
 
     def __init__(
         self,
@@ -292,6 +138,9 @@ class ClaudeCodeDetector:
         self.file_active: bool = False
         self.transcript_age: float = float("inf")
         self.streaming: bool = False
+        # Sticky "celebrate after busy-drop" state.
+        self._was_busy: bool = False
+        self._celebrate_until: float = 0.0
 
     def _lazy_defaults(self) -> None:
         if self._find_processes is None:
@@ -345,6 +194,20 @@ class ClaudeCodeDetector:
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
+        # was_busy -> celebrate edge detection.
+        # Unlike TPA's raw CPU%, each signal here is already time-windowed/
+        # debounced on its own, so a plain busy->not-busy flip is a real edge.
+        any_busy = self.shell_active or self.file_active or self.streaming
+        if self._was_busy and not any_busy:
+            try:
+                from . import config as _cfg
+                hold = float(_cfg.get('celebrate_hold_sec', self.CELEBRATE_DURATION_SEC))
+            except Exception:
+                hold = self.CELEBRATE_DURATION_SEC
+            self._celebrate_until = now + hold
+            self._was_busy = False
+        elif any_busy:
+            self._was_busy = True
         self._last_scan_ts = now
 
     def is_busy(self, now: float) -> bool:
@@ -354,7 +217,10 @@ class ClaudeCodeDetector:
         return self.shell_active or self.file_active or self.streaming
 
     def is_celebrating(self, now: float) -> bool:
-        return False  # no reliable signal yet -- documented non-goal
+        if not self.enabled:
+            return False
+        self._scan(now)
+        return now < self._celebrate_until
 
     def is_grooving(self, now: float) -> bool:
         return False  # no reliable signal yet -- documented non-goal
@@ -369,11 +235,12 @@ class ClaudeCodeDetector:
             "file_active": self.file_active,
             "transcript_age": self.transcript_age,
             "streaming": self.streaming,
+            "celebrate_until": self._celebrate_until,
         }
 
 
 # ----------------------------------------------------------------------
-# CodexDetector -- TPA-equivalent detector for the OpenAI Codex CLI
+# CodexDetector -- detects the OpenAI Codex CLI
 # ----------------------------------------------------------------------
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
@@ -383,8 +250,8 @@ class CodexDetector:
     ClaudeCodeDetector -- process presence, live tool subprocess, recent
     project-file writes, and session-transcript write recency -- for
     engineers whose daily driver is Codex instead of (or alongside)
-    Claude Code / TPA. See ClaudeCodeDetector's docstring for the
-    rationale behind each of the three busy signals; identical here.
+    Claude Code. See ClaudeCodeDetector's docstring for the rationale
+    behind each of the three busy signals; identical here.
 
     Session transcripts are nested by date --
     ~/.codex/sessions/YYYY/MM/DD/*.jsonl -- so discovery uses a
@@ -393,9 +260,9 @@ class CodexDetector:
 
     Kept as an independent class rather than sharing a base with
     ClaudeCodeDetector, matching this module's existing convention
-    (TPADetector/GitDetector/TerminalDetector/IDEDetector each
-    implement the Detector protocol independently despite structural
-    overlap) -- the two can evolve independently (e.g. Codex's
+    (GitDetector/TerminalDetector/IDEDetector each implement the
+    Detector protocol independently despite structural overlap) --
+    the two can evolve independently (e.g. Codex's
     ~/.codex/log/codex-tui.log could become its own future signal).
     """
     name = "codex"
@@ -914,7 +781,6 @@ class IDEDetector:
 # Factory: build detectors from a settings dict
 # ----------------------------------------------------------------------
 DEFAULT_TRIGGERS = {
-    "tpa": True,
     "claude_code": True,
     "codex": True,
     "git": True,
@@ -929,14 +795,14 @@ def build_detectors(settings: dict | None = None) -> list:
     """Build a list of Detector instances from the ``triggers`` subsection
     of settings.json. Missing keys take DEFAULT_TRIGGERS values.
 
-    Returns a list with detectors in priority-relevant order
-    (TPA first so it can populate state.json schema fields).
+    Pink-2026-08-22: TPADetector removed (TPA was never
+    actually run on this machine). A settings.json with a leftover
+    "tpa" key is harmless -- it's simply ignored.
     """
     s = (settings or {}).get("triggers", {}) if settings else {}
     project_dirs = s.get("project_dirs", DEFAULT_TRIGGERS["project_dirs"])
     ide_processes = s.get("ide_processes", DEFAULT_TRIGGERS["ide_processes"])
     detectors = [
-        TPADetector(enabled=s.get("tpa", True)),
         ClaudeCodeDetector(project_dirs=project_dirs, enabled=s.get("claude_code", True)),
         CodexDetector(project_dirs=project_dirs, enabled=s.get("codex", True)),
         GitDetector(project_dirs=project_dirs, enabled=s.get("git", True)),

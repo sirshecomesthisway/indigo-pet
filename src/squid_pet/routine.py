@@ -40,6 +40,15 @@ from typing import Callable, Optional
 IDLE_BEFORE_ROUTINE_SEC = 6.0    # don't start cycling immediately after wake
 MOOD_POLL_INTERVAL_SEC = 1.0     # how often we re-check the gate while paused
 
+# Idle chatter timing: fires roughly every CHATTER_*_INTERVAL_SEC, jittered,
+# independent of which IDLE_ROUTINE action is currently in flight -- she can
+# pipe up while resting, walking, or looking around, not just on "rest"
+# beats (Pink 2026-08-18: the old rest-only/30%-per-beat version averaged
+# ~1 blurb per ~91s cycle and was easy to miss, especially since it never
+# fired during the routine walk at all).
+CHATTER_MIN_INTERVAL_SEC = 40.0
+CHATTER_MAX_INTERVAL_SEC = 50.0
+
 
 # ── The heartbeat ───────────────────────────────────────────────────────
 # Each tuple: (action_name, min_duration_s, max_duration_s).
@@ -89,6 +98,7 @@ class RoutineController:
         get_mood: Callable[[], str],                     # "" / drowsy / sleeping / stretch
         is_pinned: Callable[[], bool] = None,            #  from menu
         is_user_paused: Callable[[], bool] = None,       # menu pause-N-min
+        chatter_cb: Callable[[], None] = None,           # fires an idle_chatter bubble
     ):
         self.wanderer = wanderer
         self._get_state = get_state
@@ -97,6 +107,7 @@ class RoutineController:
         self._get_mood = get_mood
         self._is_pinned = is_pinned or (lambda: False)
         self._is_user_paused = is_user_paused or (lambda: False)
+        self._chatter_cb = chatter_cb or (lambda: None)
 
         self._stop = threading.Event()
         self._enabled = True
@@ -105,6 +116,7 @@ class RoutineController:
         self._prev_mood = ""
         self._idle_since: Optional[float] = None
         self._action_done_at: Optional[float] = None  # when current action's duration window ends
+        self._next_chatter_at: Optional[float] = None  # epoch sec; None = not yet armed
 
     # ── lifecycle ──────────────────────────────────────────────────────
     def start(self) -> None:
@@ -183,10 +195,25 @@ class RoutineController:
         # so the 6s breath plays again when state returns to idle.
         if self._should_pause():
             self._idle_since = None
+            # Restart the chatter countdown from scratch next time she's
+            # genuinely idle, rather than firing on a stale timer the
+            # instant she returns (or having it silently accumulate
+            # across a long busy stretch).
+            self._next_chatter_at = None
             return
 
-        # If we're inside an action's duration window, just wait.
+        # Idle chatter: a separate timer from the action-window logic
+        # below, so it can land mid-walk or mid-rest alike.
         now = time.time()
+        if self._next_chatter_at is None:
+            self._next_chatter_at = now + random.uniform(
+                CHATTER_MIN_INTERVAL_SEC, CHATTER_MAX_INTERVAL_SEC)
+        elif now >= self._next_chatter_at:
+            self._chatter_cb()
+            self._next_chatter_at = now + random.uniform(
+                CHATTER_MIN_INTERVAL_SEC, CHATTER_MAX_INTERVAL_SEC)
+
+        # If we're inside an action's duration window, just wait.
         if self._action_done_at is not None and now < self._action_done_at:
             return
 

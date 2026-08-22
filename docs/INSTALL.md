@@ -156,7 +156,6 @@ cat > ~/.squid-pet/settings.json <<EOF
   "starting_corner": "bottom-right",
   "show_on_all_spaces": true,
   "triggers": {
-    "tpa": true,
     "claude_code": true,
     "codex": true,
     "git": true,
@@ -167,11 +166,16 @@ cat > ~/.squid-pet/settings.json <<EOF
 EOF
 ```
 
-Squid reacts to whichever of these tools you actually run — TPA,
-Claude Code, and Codex CLI are all optional; leaving a trigger `true` for
-a tool you don't have installed just means that detector quietly reports
-nothing (no process found), it doesn't error. See the README's
-"Detectors & triggers" section for what each one watches.
+Squid reacts to whichever of these tools you actually run — Claude Code
+and Codex CLI are both optional; leaving a trigger `true` for a tool you
+don't have installed just means that detector quietly reports nothing (no
+process found), it doesn't error. See the README's "Detectors & triggers"
+section for what each one watches.
+
+(TPA is no longer one of the `triggers` -- TPADetector was
+removed 2026-08-22. If you run TPA, Squid still waves at you when
+it's waiting on your input; that mechanism is separate from `triggers` and
+needs no configuration here.)
 
 ### 10. Boot the LaunchAgent
 

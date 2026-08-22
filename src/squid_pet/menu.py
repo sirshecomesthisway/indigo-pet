@@ -38,8 +38,6 @@ EMO_MASK = "🎭"
 EMO_PAUSE = "⏸"
 EMO_PLAY = "▶"
 EMO_SPRINT = "🏃‍♀️"
-EMO_DOCTOR = "🩺"
-EMO_CHART = "📊"
 EMO_SCROLL = "📜"
 EMO_RELOAD = "↻"
 EMO_XMARK = "❌"
@@ -134,8 +132,6 @@ class _MenuTarget(NSObject):
     def moodClear_(self, s): self.api._menu_clear_force()
 
     # Diagnostics
-    def whatsWrong_(self, s): self.api._menu_whats_wrong()
-    def showStats_(self, s): self.api._menu_show_stats()
     def openLog_(self, s): self.api._menu_open_log()
 
     # Lifecycle
@@ -332,9 +328,6 @@ def _populate_menu(menu, target, api) -> None:
     menu.addItem_(NSMenuItem.separatorItem())
 
     # ============ Diagnostics ============
-    has_err = bool(api._menu_has_recent_error())
-    _add(menu, f"{EMO_DOCTOR}  What's wrong?", target, "whatsWrong:", enabled=has_err)
-    _add(menu, f"{EMO_CHART}  Show stats", target, "showStats:")
     _add(menu, f"{EMO_SCROLL}  Open Squid log", target, "openLog:")
     menu.addItem_(NSMenuItem.separatorItem())
 

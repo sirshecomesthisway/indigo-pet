@@ -6,19 +6,24 @@ reacts to what's happening. Named **Squid** (chosen by Pink Tan, June
 
 She lives in a transparent, frameless window pinned to a corner of the
 screen. A background watcher polls a pluggable set of activity detectors
-— TPA, Claude Code, Codex, git, terminal, IDE — every 800 ms and
-computes her mood from whichever ones are enabled and running. Her
-animations are pure CSS keyframes; the Python side drives state +
-window position only.
+— Claude Code, Codex, git, terminal, IDE — every 800 ms and computes her
+mood from whichever ones are enabled and running. Her animations are pure
+CSS keyframes; the Python side drives state + window position only.
 
-Squid started life watching **TPA** (`~/.tpa/` — process
-CPU, subagent files, error logs, shell children) but now watches
-**Claude Code** (the `claude` CLI) and **Codex** (the `codex` CLI) just
-as richly: live tool-subprocess detection, recent project-file writes
-(catches in-process edits that never spawn a subprocess), and
-transcript-write recency together give the same working/thinking
-distinction TPA gets. Git, terminal, and IDE activity feed a
-simpler busy/idle signal on top. See [Detectors & triggers](#detectors--triggers) below.
+Squid started life watching **TPA** (a separate CLI coding agent;
+`~/.tpa/` — process CPU, subagent files, error logs, shell
+children), but that detector was removed 2026-08-22: TPA was never
+actually installed/run in this environment, so it never fired anything in
+practice. Squid now watches **Claude Code** (the `claude` CLI) and
+**Codex** (the `codex` CLI): live tool-subprocess detection, recent
+project-file writes (catches in-process edits that never spawn a
+subprocess), and transcript-write recency together give a working/thinking
+distinction. Git, terminal, and IDE activity feed a simpler busy/idle
+signal on top. See [Detectors & triggers](#detectors--triggers) below.
+
+TPA's approval-needed "flag wave" (she waves when TPA is
+waiting on you) is untouched and still fully TPA-driven, kept
+pending a Claude-Code-native replacement signal.
 
 ---
 
@@ -89,19 +94,29 @@ Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 | State | Trigger | Look |
 |---|---|---|
 | **idle** | Default — nothing else fires | Gentle breathing, occasional blink |
-| **thinking** | TPA CPU busy with no recent log writes, OR Claude Code/Codex wrote a session transcript in the last 20s with no shell/file evidence | Head tilt, floating dots, cyan aura |
-| **working** | Sustained CPU + tool activity, OR active shell child, OR a project file was just written (TPA, Claude Code, or Codex) | Typing arms, focused eyes, yellow aura |
-| **grooving** | Subagent `.pkl` modified < 30 s ago | Spinning sway, rainbow aura |
-| **celebrating** | Busy → idle transition (task likely complete) | Bounce, confetti, big smile (4 s window) |
-| **concerned** | Recent line in `errors.log` (60 s for hard, 20 s for transient/network) | Tremble, red aura, raised eyes |
+| **thinking** | Claude Code/Codex wrote a session transcript in the last 20s with no shell/file evidence | Head tilt, floating dots, cyan aura |
+| **working** | Active shell child, OR a project file was just written (Claude Code or Codex) | Typing arms, focused eyes, yellow aura |
+| **grooving** | Extensibility hook — no detector currently implements this | Spinning sway, rainbow aura |
+| **celebrating** | Claude Code's/Codex's busy signal dropped to idle (task likely complete), or Git saw a fresh commit | Bounce, confetti, big smile (20 s window) |
 | **sleeping** | macOS HID idle > 5 min | Closed eyes, Zz floating, dim aura |
-| **drowsy** | TPA idle 300–359 s (frontend-driven) | Slumped sprite, paused routine |
+| **drowsy** | State-machine idle 300–359 s (frontend-driven) | Slumped sprite, paused routine |
 | **stretch** | Wake transition (~1.6 s, frontend-driven) | Wake-up stretch animation |
 
 Priority order is fixed (`watcher.py:StateMachine.compute`): sleeping >
-celebrating-held > no-TPA-idle > grooving > concerned > working > thinking >
-celebrating-transition > idle. See `tests/test_state_machine.py` for the
-contract.
+celebrating-held > grooving > working > thinking > non-agent-detector busy >
+idle. `approval_needed` (the flag-wave) can override any of the above — see
+below. `concerned` (TPA's `errors.log`) is presently unreachable via
+natural detection; still settable via the `~/.squid-pet/force_state` debug
+override. See `tests/test_state_machine.py`,
+`tests/test_watcher_claude_code_cascade.py`, and
+`tests/test_watcher_codex_cascade.py` for the contract.
+
+**Flag-wave (`approval_needed`)** is a separate, higher-priority alert layered
+on top of the state above: Squid waves when TPA signals it's waiting
+on you (`~/.tpa/awaiting_input/<pid>`, or a CPU-idle fallback,
+off by default). This is still 100% TPA-driven — there's no
+Claude-Code-native equivalent yet (see `squid why` / `--why-json` for
+diagnosing it).
 
 ---
 
@@ -113,25 +128,23 @@ Squid reads activity from a pluggable list of detectors
 
 | Detector | Signal | Feeds |
 |---|---|---|
-| `tpa` | TPA process CPU, session-log mtimes, subagent `.pkl`, `errors.log`, `llm_active.flag` | working / thinking / grooving / concerned / celebrating |
-| `claude_code` | `claude` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.claude/projects/*/*.jsonl` write recency | working / thinking |
+| `claude_code` | `claude` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.claude/projects/*/*.jsonl` write recency | working / thinking / celebrating |
 | `codex` | `codex`/`codex-tui` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.codex/sessions/**/*.jsonl` write recency | working / thinking |
 | `git` | `.git/{HEAD,index,refs/heads/}` mtimes under `project_dirs` | busy / celebrating |
 | `terminal` | any shell with a long-lived non-shell child | busy (off by default — misfires on any dev machine with a long-running foreground process, e.g. an editor or a REPL) |
 | `ide` | VS Code / Cursor / JetBrains CPU + recent file mtimes under `project_dirs` | busy / grooving |
 
-`tpa`, `claude_code`, and `codex` get the full working/thinking
-distinction (same cascade, OR-merged across all three); the rest feed a
-flatter busy/idle signal. For Claude Code and Codex, "working" fires on
-either a live tool subprocess (e.g. a shell command) *or* a recent file
-write under `project_dirs` — the latter is what catches in-process
-Edit/Write/apply_patch-style tool calls, which never spawn a subprocess
-and would otherwise only ever show as "thinking". Defaults:
+`claude_code` and `codex` get the full working/thinking distinction (same
+cascade, OR-merged across both); the rest feed a flatter busy/idle signal.
+For Claude Code and Codex, "working" fires on either a live tool subprocess
+(e.g. a shell command) *or* a recent file write under `project_dirs` — the
+latter is what catches in-process Edit/Write/apply_patch-style tool calls,
+which never spawn a subprocess and would otherwise only ever show as
+"thinking". Defaults:
 
 ```json
 {
   "triggers": {
-    "tpa": true,
     "claude_code": true,
     "codex": true,
     "git": true,
@@ -149,6 +162,12 @@ only metadata (process names, CPU%, file mtimes) — never file contents,
 never network. Full per-detector data-access table: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 Run `squid why` to see exactly which detector fired on the current tick.
 
+TPA is no longer a general detector (removed 2026-08-22 — it was
+never actually installed/run in this environment), but the flag-wave
+alert above is still fully TPA-driven independent of this table;
+`find_tpa_processes()` and the `~/.tpa/awaiting_input/<pid>`
+scan in `watcher.py` are untouched.
+
 ---
 
 ## Architecture
@@ -156,12 +175,13 @@ Run `squid why` to see exactly which detector fired on the current tick.
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ watcher.py     (background thread, 1 Hz)                               │
-│   detectors.py → pluggable Detector list (tpa, claude_code,     │
-│                  codex, git, terminal, ide) — see "Detectors &          │
-│                  triggers"                                             │
-│   psutil → find tpa / claude / codex procs, aggregate CPU%      │
+│   detectors.py → pluggable Detector list (claude_code, codex, git,    │
+│                  terminal, ide) — see "Detectors & triggers"           │
+│   psutil → find claude / codex procs, aggregate CPU%; also Code       │
+│            Puppy procs for the flag-wave alert (approval_needed only) │
 │   ioreg  → macOS HID idle                                              │
-│   mtime  → ~/.tpa/{…}, ~/.claude/projects/…, ~/.codex/…, .git/… │
+│   mtime  → ~/.claude/projects/…, ~/.codex/…, .git/…,                  │
+│            ~/.tpa/awaiting_input/… (flag-wave only)             │
 │   ────────────────────────────────────────────────────                 │
 │   StateMachine.compute() — priority cascade over detector signals      │
 │   ↓                                                                    │
@@ -213,7 +233,7 @@ src/squid_pet/
 ├── __init__.py
 ├── __main__.py              # CLI entry: --check, --watcher-only, default=full
 ├── watcher.py               # state detection + StateMachine (priority cascade)
-├── detectors.py             # pluggable Detector classes (tpa, claude_code, codex, git, terminal, ide)
+├── detectors.py             # pluggable Detector classes (claude_code, codex, git, terminal, ide)
 ├── window.py                # pywebview window + PetApi (JS bridge)
 ├── routine.py               # RoutineController — IDLE_ROUTINE scheduler
 ├── wanderer.py              # service-mode walks + look-around + sprint

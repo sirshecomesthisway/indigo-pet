@@ -16,20 +16,30 @@ and how to turn any of it off.
 
 ## What each detector observes
 
-### TPADetector — observes TPA itself
+### TPA — approval-alert ("flag wave") only
+
+TPADetector (which formerly gave Squid a working/thinking/grooving/
+concerned/celebrating reaction to TPA, mirroring what
+ClaudeCodeDetector does for Claude Code below) was removed 2026-08-22 —
+TPA was never actually installed/run in this environment, so it
+never fired anything in practice. It previously read (and would again,
+for anyone re-adding it) `~/.tpa/logs/errors.log` CONTENT (last
+few lines, parsed for severity hints) in addition to metadata — that
+content-reading path no longer exists anywhere in the codebase.
+
+What's left is a separate, narrower mechanism — the approval-needed
+"flag wave" — that is independent of the table above and still fully
+TPA-specific:
 
 | Reads | What for |
 |-------|----------|
-| `psutil.process_iter()` cmdline | finds python processes running `tpa` |
-| CPU% of those processes | detects "thinking" / "working" |
-| `~/.tpa/autosaves/*.pkl` mtime | detects "grooving" (subagent active) |
-| `~/.tpa/logs/errors.log` mtime | detects "concerned" (recent error) |
-| `~/.tpa/logs/errors.log` content | last few lines parsed for severity hints (transient vs hard) |
-| `~/.tpa/subagent_sessions/*.pkl` mtime | secondary grooving signal |
-| Shell-child processes of TPA (rg, grep, find, git, ...) | detects "running shell" |
+| `psutil.process_iter()` cmdline | finds python processes running `tpa`, to know it's present |
+| `~/.tpa/awaiting_input/<pid>` file presence | direct signal: TPA is waiting on you right now |
+| CPU% of those processes (fallback only, off by default) | idle-since-last-busy heuristic if the direct signal is unavailable |
 
 Does NOT read: prompt content, model responses, file contents you edit
-with TPA, chat history, API keys, OneDrive/Confluence data.
+with TPA, chat history, API keys, OneDrive/Confluence data,
+`errors.log`, or any subagent/autosave file.
 
 ### ClaudeCodeDetector — observes the Claude Code CLI
 
@@ -37,7 +47,7 @@ with TPA, chat history, API keys, OneDrive/Confluence data.
 |-------|----------|
 | `psutil.process_iter()` cmdline (basename `claude`) | finds the Claude Code CLI process — `Process.name()` was found unreliable for this binary on macOS, so matching goes through cmdline instead |
 | CPU% of that process | diagnostic only (`squid why`) — not used to decide state |
-| Non-shell descendant processes of `claude` (same allowlist as TPADetector) | detects a live tool call (e.g. a Bash-tool command) → "working" |
+| Non-shell descendant processes of `claude` (shared tool-name allowlist, also used by CodexDetector) | detects a live tool call (e.g. a Bash-tool command) → "working" |
 | File mtimes under `project_dirs` (default `~/Projects`), same scan as IDEDetector | detects a very recent write (in-process tools like Edit/Write don't spawn a subprocess, so this catches what shell-child detection misses) → "working" |
 | `~/.claude/projects/*/*.jsonl` mtime (youngest across all sessions) | detects a recent transcript write → "thinking" (proxy for the LLM generating or a tool call resolving) |
 
@@ -144,7 +154,6 @@ Edit `~/.squid-pet/settings.json`:
 {
   "stroll_mode": "edges",
   "triggers": {
-    "tpa": true,
     "claude_code": true,
     "codex": true,
     "git": true,
@@ -155,6 +164,11 @@ Edit `~/.squid-pet/settings.json`:
   }
 }
 ```
+
+There's no `tpa` trigger to toggle any more (TPADetector was
+removed) -- the flag-wave alert is a separate mechanism with its own
+on/off switch, `approval_alert_enabled` in `~/.squid-pet/config.json`
+(default `true`), independent of the `triggers` block above.
 
 Set any detector to `false` to disable it entirely (no scans, no
 process iteration, no fs walks). Customize `project_dirs` if your

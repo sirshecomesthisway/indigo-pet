@@ -2,9 +2,17 @@
 Unit tests for squid_pet.watcher.StateMachine.
 
 Strategy: monkeypatch every I/O function at the module level
-(psutil/filesystem/ioreg) and drive StateMachine.compute() through each
-of its 9 priority branches plus the cross-tick memory (agent_idle tracking,
-celebration window, busy_streak burst-suppression).
+(psutil/filesystem/ioreg) and drive StateMachine.compute() through the
+detector-agnostic parts of its priority cascade (sleeping, celebrating,
+auto-wake, default idle) plus cross-tick memory.
+
+Pink-2026-08-22: TPADetector removed (TPA was never
+actually installed/run on this machine, so its busy/thinking/working/
+celebrating/grooving/concerned role never fired anything in practice).
+The rich working/thinking/celebrating tests for Claude Code and Codex
+live in test_watcher_claude_code_cascade.py / test_watcher_codex_cascade.py.
+Tests here that exercised TPA-only branches (grooving, concerned, CPU-
+heuristic working/thinking, busy_streak) were removed along with them.
 """
 from __future__ import annotations
 
@@ -21,19 +29,13 @@ from squid_pet.watcher import StateMachine
 def install_world(monkeypatch, **overrides):
     """Stub out every external signal the StateMachine consults.
 
-    Defaults represent 'completely quiet system: no TPA, no errors,
-    no idle, no shell activity.' Override per-test via kwargs.
+    Defaults represent 'completely quiet system: no TPA, no idle'.
+    Override per-test via kwargs.
     """
     defaults = dict(
         idle=0.0,                # macos_idle_seconds
         procs=[],                # find_tpa_processes
         cpu=0.0,                 # aggregate_cpu
-        tool_activity_age=float("inf"),
-        shell_active=False,
-        session_log_age=float("inf"),
-        subagent_age=float("inf"),
-        error_age=float("inf"),
-        error_parse=("", "hard"),  # (reason, severity)
     )
     defaults.update(overrides)
 
@@ -43,40 +45,13 @@ def install_world(monkeypatch, **overrides):
                         lambda: defaults["procs"])
     monkeypatch.setattr(watcher, "aggregate_cpu",
                         lambda procs: defaults["cpu"])
-    monkeypatch.setattr(watcher, "most_recent_tool_activity_age",
-                        lambda: defaults["tool_activity_age"])
-    monkeypatch.setattr(watcher, "has_active_shell_children",
-                        lambda procs: defaults["shell_active"])
-    monkeypatch.setattr(watcher, "newest_session_log_age",
-                        lambda: defaults["session_log_age"])
-    monkeypatch.setattr(watcher, "newest_file_age_in_dir",
-                        lambda d, pattern="*": defaults["subagent_age"])
-    monkeypatch.setattr(watcher, "file_age_sec",
-                        lambda p: defaults["error_age"])
-    monkeypatch.setattr(watcher, "parse_last_error",
-                        lambda log, lookback_bytes=32_000: defaults["error_parse"])
 
 
-def make_machine_primed() -> StateMachine:
-    """StateMachine with ONLY a TPADetector wired to the monkeypatched
-    module-level scan fns. No Git/Terminal/IDE detectors -- they would scan
-    the real filesystem / process table and contaminate the test fixture.
-
-    The TPA detector's scan fns are wired as lambdas that resolve via the
-    ``watcher`` module each call, so monkeypatch.setattr(watcher, ...)
-    installed BEFORE this helper still takes effect.
-    """
-    from squid_pet.detectors import TPADetector
-    cp = TPADetector(
-        find_processes_fn=lambda: watcher.find_tpa_processes(),
-        aggregate_cpu_fn=lambda p: watcher.aggregate_cpu(p),
-        most_recent_tool_activity_age_fn=lambda: watcher.most_recent_tool_activity_age(),
-        has_active_shell_children_fn=lambda p: watcher.has_active_shell_children(p),
-        newest_subagent_age_fn=lambda: watcher.newest_file_age_in_dir(
-            watcher.SUBAGENT_DIR, "*.pkl"
-        ),
-    )
-    return StateMachine(detectors=[cp])
+def make_machine_bare() -> StateMachine:
+    """StateMachine with no detectors at all -- exercises the sleeping /
+    celebrating / default-idle branches without any TPA/Claude/Codex
+    involvement."""
+    return StateMachine(detectors=[])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -84,27 +59,23 @@ def make_machine_primed() -> StateMachine:
 # ──────────────────────────────────────────────────────────────────────
 def test_sleeping_when_macos_idle_exceeds_threshold(monkeypatch):
     install_world(monkeypatch, idle=400.0, procs=["fake"], cpu=20.0)
-    sm = make_machine_primed()
-    sm.was_busy = True  # should be reset
+    sm = make_machine_bare()
 
     st = sm.compute()
     assert st.state == "sleeping"
     assert "idle" in st.message
-    assert sm.was_busy is False
 
 
 def test_sleeping_takes_priority_over_everything(monkeypatch):
-    """Sleeping wins even when subagent is grooving + shell is active."""
+    """Sleeping wins even when a celebrate window is armed."""
     install_world(
         monkeypatch,
         idle=watcher.IDLE_THRESHOLD_SEC + 1,
         procs=["fake"],
         cpu=50.0,
-        shell_active=True,
-        subagent_age=1.0,
-        error_age=1.0,
     )
-    sm = make_machine_primed()
+    sm = make_machine_bare()
+    sm.celebrate_until = time.time() + 20
     st = sm.compute()
     assert st.state == "sleeping"
 
@@ -114,18 +85,17 @@ def test_sleeping_takes_priority_over_everything(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 def test_celebrating_held_for_duration(monkeypatch):
     install_world(monkeypatch, procs=["fake"], cpu=0.0)
-    sm = make_machine_primed()
-    # Pretend we just started celebrating 1 second ago.
-    sm.celebrate_until = time.time() + watcher.CELEBRATE_DURATION_SEC - 1
+    sm = make_machine_bare()
+    sm.celebrate_until = time.time() + 19  # armed 1s ago, 20s hold
 
     st = sm.compute()
     assert st.state == "celebrating"
-    assert "nice" in st.message or "" in st.message  # not asserting exact glyph
+    assert "nice" in st.message
 
 
 def test_celebrating_window_expires(monkeypatch):
     install_world(monkeypatch, procs=["fake"], cpu=0.0)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
     sm.celebrate_until = time.time() - 1  # already expired
 
     st = sm.compute()
@@ -137,232 +107,41 @@ def test_celebrating_window_expires(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 def test_idle_when_no_tpa(monkeypatch):
     install_world(monkeypatch, procs=[])  # no procs
-    sm = make_machine_primed()
-    sm.was_busy = True  # should be reset
+    sm = make_machine_bare()
 
     st = sm.compute()
     assert st.state == "idle"
     assert st.tpa_running is False
-    assert sm.was_busy is False
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Priority 4 — GROOVING (subagent recent)
-# ──────────────────────────────────────────────────────────────────────
-def test_grooving_when_subagent_recent(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.0, subagent_age=10.0)
-    sm = make_machine_primed()
-    st = sm.compute()
-    assert st.state == "grooving"
-    assert sm.was_busy is True
-
-
-def test_grooving_threshold_boundary(monkeypatch):
-    """Just outside the window → no grooving."""
-    install_world(
-        monkeypatch, procs=["fake"], cpu=0.0,
-        subagent_age=watcher.SUBAGENT_ACTIVE_WINDOW_SEC + 0.1,
-    )
-    sm = make_machine_primed()
-    st = sm.compute()
-    assert st.state != "grooving"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Priority 5 — CONCERNED (error window, hard vs transient)
-# ──────────────────────────────────────────────────────────────────────
-def test_concerned_hard_error_within_window(monkeypatch):
-    install_world(
-        monkeypatch, procs=["fake"], cpu=0.0,
-        error_age=10.0,
-        error_parse=("crash in tool X", "hard"),
-    )
-    sm = make_machine_primed()
-    st = sm.compute()
-    assert st.state == "concerned"
-    assert st.concern_severity == "hard"
-    assert st.concern_reason == "crash in tool X"
-
-
-def test_concerned_transient_clears_faster(monkeypatch):
-    """Transient errors auto-clear at CONCERN_TRANSIENT_LOOKBACK_SEC (20s
-    default), not the longer hard window (60s)."""
-    # 25s > transient window (20s) but < hard window (60s)
-    install_world(
-        monkeypatch, procs=["fake"], cpu=0.0,
-        error_age=25.0,
-        error_parse=("network timeout", "transient"),
-    )
-    sm = make_machine_primed()
-    st = sm.compute()
-    assert st.state != "concerned"
-
-
-def test_concerned_transient_within_short_window(monkeypatch):
-    install_world(
-        monkeypatch, procs=["fake"], cpu=0.0,
-        error_age=10.0,
-        error_parse=("network timeout", "transient"),
-    )
-    sm = make_machine_primed()
-    st = sm.compute()
-    assert st.state == "concerned"
-    assert st.concern_severity == "transient"
-
-
-def test_concerned_suppressed_when_cpu_busy(monkeypatch):
-    """Concerned only fires when CPU is calm; if TPA is actively churning
-    we trust it to be working through the error."""
-    install_world(
-        monkeypatch, procs=["fake"], cpu=watcher.CPU_BUSY_THRESHOLD + 5,
-        error_age=10.0,
-        error_parse=("oops", "hard"),
-    )
-    sm = make_machine_primed()
-    # Prime busy_streak so sustained_busy is True
-    sm.busy_streak = 5
-    st = sm.compute()
-    assert st.state != "concerned"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Priority 6 — WORKING (shell active OR busy+tool activity)
-# ──────────────────────────────────────────────────────────────────────
-def test_working_when_shell_active(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.0, shell_active=True)
-    sm = make_machine_primed()
-    st = sm.compute()
-    assert st.state == "working"
-    assert "shell" in st.message
-    assert sm.was_busy is True
-
-
-def test_working_when_busy_and_tool_activity_recent(monkeypatch):
-    install_world(
-        monkeypatch, procs=["fake"],
-        cpu=watcher.CPU_BUSY_THRESHOLD + 10,
-        tool_activity_age=2.0,
-    )
-    sm = make_machine_primed()
-    sm.busy_streak = 5  # sustained
-    st = sm.compute()
-    assert st.state == "working"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Priority 7 — THINKING (busy, no recent tool writes)
-# ──────────────────────────────────────────────────────────────────────
-def test_thinking_when_busy_no_tool_activity(monkeypatch):
-    install_world(
-        monkeypatch, procs=["fake"],
-        cpu=watcher.CPU_BUSY_THRESHOLD + 10,
-        tool_activity_age=999.0,
-        shell_active=False,
-    )
-    sm = make_machine_primed()
-    sm.busy_streak = 5
-    st = sm.compute()
-    assert st.state == "thinking"
-    assert sm.was_busy is True
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Priority 8 — CELEBRATING transition (was_busy → cpu drops)
-# ──────────────────────────────────────────────────────────────────────
-def test_celebrating_triggered_on_busy_to_idle_drop(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.5)
-    sm = make_machine_primed()
-    sm.was_busy = True
-
-    st = sm.compute()
-    assert st.state == "celebrating"
-    assert "done" in st.message
-    assert sm.was_busy is False  # consumed
-    assert sm.celebrate_until > time.time()  # window armed
-
-
-def test_no_celebration_if_never_was_busy(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.5)
-    sm = make_machine_primed()
-    sm.was_busy = False  # never armed
-
-    st = sm.compute()
-    assert st.state == "idle"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Priority 9 — Default IDLE
-# ──────────────────────────────────────────────────────────────────────
-def test_default_idle(monkeypatch):
+def test_default_idle_when_tpa_running_with_no_signals(monkeypatch):
+    """tpa_running is still populated accurately even though TPA
+    no longer drives working/thinking/etc -- the approval_needed alert
+    still keys off it."""
     install_world(monkeypatch, procs=["fake"], cpu=0.0)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
     st = sm.compute()
     assert st.state == "idle"
     assert st.tpa_running is True
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Burst-suppression (busy_streak >= 2)
-# ──────────────────────────────────────────────────────────────────────
-def test_single_cpu_spike_does_not_trigger_thinking(monkeypatch):
-    """One tick of high CPU shouldn't move us to thinking; need 2 in a row."""
-    install_world(
-        monkeypatch, procs=["fake"],
-        cpu=watcher.CPU_BUSY_THRESHOLD + 10,
-        tool_activity_age=999.0,
-    )
-    sm = make_machine_primed()
-    # Fresh machine: busy_streak = 0. After this tick it becomes 1, but
-    # sustained_busy needs >= 2. So state should NOT be thinking yet.
-    st = sm.compute()
-    assert st.state != "thinking"
-    assert sm.busy_streak == 1
-
-
-def test_four_consecutive_cpu_spikes_trigger_thinking(monkeypatch):
-    """As of 2026-06-25 the busy_streak threshold is 4 ticks (was 2) --
-    transient TUI render spikes shouldn't flip Squid into thinking."""
-    install_world(
-        monkeypatch, procs=["fake"],
-        cpu=watcher.CPU_BUSY_THRESHOLD + 10,
-        tool_activity_age=999.0,
-    )
-    sm = make_machine_primed()
-    sm.compute()              # streak=1, not yet
-    sm.compute()              # streak=2, not yet
-    sm.compute()              # streak=3, not yet
-    st = sm.compute()         # streak=4, sustained_busy=True
-    assert st.state == "thinking"
-
-
-def test_busy_streak_resets_when_cpu_calm(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
-    sm = make_machine_primed()
-    sm.busy_streak = 7
-    sm.compute()
-    assert sm.busy_streak == 0
-
-
-# ──────────────────────────────────────────────────────────────────────
-# agent_idle_seconds tracking
+# agent_idle_seconds tracking (generic: tracks time since any active state,
+# not specific to TPA despite the field name)
 # ──────────────────────────────────────────────────────────────────────
 def test_agent_idle_seconds_zero_when_active(monkeypatch):
-    """While TPA is in an active state (e.g. thinking), agent_idle should be 0."""
-    install_world(
-        monkeypatch, procs=["fake"],
-        cpu=watcher.CPU_BUSY_THRESHOLD + 10,
-        tool_activity_age=999.0,
-    )
-    sm = make_machine_primed()
-    sm.busy_streak = 5  # so first compute lands in thinking
+    """While state is active (e.g. celebrating), agent_idle should be 0."""
+    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+    sm = make_machine_bare()
+    sm.celebrate_until = time.time() + 20
     st = sm.compute()
-    assert st.state == "thinking"
+    assert st.state == "celebrating"
     assert st.agent_idle_seconds == 0.0
 
 
 def test_agent_idle_seconds_starts_ticking_when_state_becomes_idle(monkeypatch):
     install_world(monkeypatch, procs=["fake"], cpu=0.0)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
 
     st1 = sm.compute()
     assert st1.state == "idle"
@@ -376,21 +155,16 @@ def test_agent_idle_seconds_starts_ticking_when_state_becomes_idle(monkeypatch):
 
 
 def test_agent_idle_resets_on_transition_to_active(monkeypatch):
-    """Going idle → thinking should zero agent_idle_seconds."""
+    """Going idle → celebrating should zero agent_idle_seconds."""
     install_world(monkeypatch, procs=["fake"], cpu=0.0)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
     sm.compute()                             # land in idle
     sm._agent_idle_since = time.time() - 60.0  # pretend 60s of idle
 
-    # Now flip to thinking
-    install_world(
-        monkeypatch, procs=["fake"],
-        cpu=watcher.CPU_BUSY_THRESHOLD + 10,
-        tool_activity_age=999.0,
-    )
-    sm.busy_streak = 5
+    # Now flip to celebrating
+    sm.celebrate_until = time.time() + 20
     st = sm.compute()
-    assert st.state == "thinking"
+    assert st.state == "celebrating"
     assert st.agent_idle_seconds == 0.0
     assert sm._agent_idle_since == 0.0
 
@@ -421,7 +195,7 @@ def test_auto_wake_opens_window_after_10_min_sleeping(monkeypatch):
     """After AUTO_WAKE_AFTER_SLEEPING_SEC in sleeping, the next tick suppresses
     sleeping and falls through to a non-sleeping state (idle by default)."""
     install_world(monkeypatch, idle=900.0)  # 15 min idle (well past threshold)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
 
     # First tick: enters sleeping, _sleeping_since stamped.
     st1 = sm.compute()
@@ -435,7 +209,7 @@ def test_auto_wake_opens_window_after_10_min_sleeping(monkeypatch):
     st2 = sm.compute()
     assert st2.state != "sleeping", \
         f"expected auto-wake to suppress sleeping, got state={st2.state}"
-    # Default fall-through is idle (no TPA, no shell, no errors).
+    # Default fall-through is idle (no TPA, no detectors).
     assert st2.state == "idle"
     # Window is now active.
     assert sm._force_awake_until > time.time()
@@ -446,7 +220,7 @@ def test_auto_wake_opens_window_after_10_min_sleeping(monkeypatch):
 def test_sleeping_returns_after_wake_window_expires(monkeypatch):
     """Once _force_awake_until passes, sleeping check fires again."""
     install_world(monkeypatch, idle=900.0)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
 
     # Simulate: wake window opened in the past, now expired.
     sm._force_awake_until = time.time() - 1.0
@@ -462,7 +236,7 @@ def test_user_return_clears_auto_wake_state(monkeypatch):
     """When idle drops below threshold (user came back), both bookkeeping
     flags clear so the next sleeping period starts from a fresh timer."""
     install_world(monkeypatch, idle=900.0)
-    sm = make_machine_primed()
+    sm = make_machine_bare()
     # Pretend we were in the middle of a sleep cycle, mid-wake-window.
     sm._sleeping_since = time.time() - 300
     sm._force_awake_until = time.time() + 100
@@ -473,4 +247,3 @@ def test_user_return_clears_auto_wake_state(monkeypatch):
     assert st.state != "sleeping"
     assert sm._sleeping_since == 0.0
     assert sm._force_awake_until == 0.0
-

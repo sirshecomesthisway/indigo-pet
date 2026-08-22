@@ -6,9 +6,10 @@ Architecture: the Observer is a passive comment layer that:
   2. Watches direct user interactions reported by PetApi
   3. Returns short reaction strings (<= 32 chars) for the frontend bubble
 
-It NEVER modifies pet state, NEVER intercepts TPA, and NEVER produces
-multi-line output. The voice lives entirely in the BUBBLE_LINES dict below
--- editing that dict is the canonical way to evolve Squid's personality.
+It NEVER modifies pet state, NEVER intercepts the coding agent, and NEVER
+produces multi-line output. The voice lives entirely in the BUBBLE_LINES
+dict below -- editing that dict is the canonical way to evolve Squid's
+personality.
 
 Reference: openspec/specs/observer-mode/spec.md
 """
@@ -47,9 +48,10 @@ LLM_ENRICH_TRIGGERS = frozenset({"working", "concerned", "celebrating", "groovin
 # observation breaks the bubble UI. Empty string = stay silent.
 OBSERVER_SYSTEM_PROMPT = (
     "You are Squid, a tiny pink octopus pet who lives on the corner "
-    "of the user's screen. You watch them work with TPA (their "
-    "AI coding agent) but you are NOT the agent and NEVER speak as it. "
-    "You are a passive observer who occasionally pipes up.\n\n"
+    "of the user's screen. You watch them work with their AI coding "
+    "agent (Claude Code, Codex, or similar) but you are NOT the agent "
+    "and NEVER speak as it. You are a passive observer who occasionally "
+    "pipes up.\n\n"
     "VOICE: dry, fond, perceptive. Lowercase. Fragmentary. Like a cat "
     "noticing a thing. Asterisk-actions like *peeks* or *flops* are fine.\n\n"
     "HARD RULES:\n"
@@ -140,6 +142,16 @@ BUBBLE_LINES: dict[str, LineSpec] = {
     # registered but unwired in v1
     "like":         ["~"],
     "sleeping":     ["zzz...", "*snore*"],
+
+    # Idle chatter (2026-08-18) -- fired occasionally by RoutineController
+    # during "rest" beats of the idle cycle, NOT on a state transition.
+    # Voice: same dry/fond/fragmentary rules as everything else, but
+    # there's genuinely nothing happening, so these are small-talk /
+    # boredom beats rather than reactions to anything.
+    "idle_chatter": ["hmm", "*stares*", "waiting~", "bored?", "tick... tock",
+                     "*tentacle wiggle*", "anything?", "still here",
+                     "la la la", "*doodles*", "hm hm hm", "nothing yet",
+                     "*people-watching*", "quiet today"],
 }
 
 # ----------------------------------------------------------------------
@@ -184,10 +196,13 @@ STATE_TRIGGERS: list[tuple[str, Optional[frozenset[str]], str]] = [
 # ----------------------------------------------------------------------
 # Concern-reason formatting
 # ----------------------------------------------------------------------
-# The watcher already extracts a short reason string from errors.log when
-# the concerned state fires (see watcher.parse_last_error). We surface it
-# verbatim in the bubble, truncated + lowercased for pet vibes, IFF non-
-# empty. If empty, we fall back to a generic concerned line.
+# Pink-2026-08-22: the natural trigger for "concerned" (TPADetector
+# reading errors.log) was removed along with TPADetector -- no
+# equivalent exists for Claude Code / Codex. "concerned" is presently only
+# reachable via the ~/.squid-pet/force_state debug override, which never
+# populates concern_reason, so this formatting always falls through to the
+# generic concerned line below. Kept in case a future detector wires up
+# concern_reason again.
 
 _REASON_PREFIX_TRIM = (
     "anthropic.", "openai.", "google.", "pydantic_ai.", "httpx.",
@@ -225,8 +240,11 @@ def _format_concern_reason(reason: str) -> Optional[str]:
 # Shell-child detection -- "running pytest" / "running git push"
 # ----------------------------------------------------------------------
 # When the watcher reports state="working" because has_active_shell_children
-# is True, we can read the shell child's cmdline directly from psutil. This
-# gives concrete "what is TPA doing" bubbles without parsing autosave pickles.
+# is True, we can read the shell child's cmdline directly from psutil for a
+# concrete "what's it doing" bubble. Pink-2026-08-22: window.py currently
+# always passes shell_cmdline=None -- the only wiring that ever populated it
+# (find_tpa_processes + latest_shell_child_cmdline) was TPA-
+# only and was removed. Kept for a future Claude Code / Codex equivalent.
 #
 # We trim flags + paths to get a short verb-noun bubble. Examples:
 #   pytest tests/test_observer.py -v  ->  "running pytest"
@@ -523,6 +541,26 @@ class Observer:
                 ctx_parts.append(f"reason={concern_reason[:120]}")
             self._async_enrich(trigger_key, "; ".join(ctx_parts))
         return rule_bubble
+
+    # ------------------------------------------------------------------
+    # "Still working" refresh -- NOT a state transition
+    # ------------------------------------------------------------------
+    def on_still_working(self, shell_cmdline: Optional[list[str]]) -> Optional[str]:
+        """Called periodically (by PetApi, throttled) while state STAYS
+        'working' across ticks, to surface what she's currently watching
+        even though on_state_change only fires once on entry.
+
+        Deliberately returns None -- rather than falling back to a
+        generic mood emote like "tap tap" -- when there's nothing
+        concrete to report. Repeating the same canned line on a timer
+        would read as a glitch, not aliveness; a fresh "running X" is
+        worth interrupting silence for, staying quiet is not.
+        """
+        if self._get_muted():
+            return None
+        if not shell_cmdline:
+            return None
+        return _shell_cmd_bubble(shell_cmdline)
 
     # ------------------------------------------------------------------
     # Interaction trigger

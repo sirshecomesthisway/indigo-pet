@@ -8,8 +8,8 @@ TBD - created by archiving change observer-mode. Update Purpose after archive.
 The system SHALL include an Observer component that consumes state-change and
 interaction events and publishes a single short reaction string per event.
 The Observer is a passive comment layer: it never modifies pet state, never
-intercepts the agent (TPA), and never produces multi-line or paragraph
-output.
+intercepts the agent (Claude Code, Codex, or TPA), and never produces
+multi-line or paragraph output.
 
 #### Scenario: State transition fires a reaction
 - **WHEN** the StateMachine computes a state change from `old` to `new` where `old != new`
