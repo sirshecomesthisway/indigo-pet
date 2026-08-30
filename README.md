@@ -1,29 +1,48 @@
 # Squid Pet — "Squid"
 
-A tiny floating desktop companion that watches your AI coding agent and
-reacts to what's happening. Named **Squid** (chosen by Pink Tan, June
-2026), nicknamed **Squid** because she looks like one.
+A tiny floating desktop companion, pinned to a corner of your screen,
+that reacts to your AI coding agent — Claude Code, Codex, git, your
+terminal, your IDE.
 
-She lives in a transparent, frameless window pinned to a corner of the
-screen. A background watcher polls a pluggable set of activity detectors
-— Claude Code, Codex, git, terminal, IDE — every 800 ms and computes her
-mood from whichever ones are enabled and running. Her animations are pure
-CSS keyframes; the Python side drives state + window position only.
+Named **Squid** (chosen by Pink Tan, June 2026) because she looks like one.
 
-Squid started life watching **TPA** (a separate CLI coding agent;
-`~/.tpa/` — process CPU, subagent files, error logs, shell
-children), but that detector was removed 2026-08-22: TPA was never
-actually installed/run in this environment, so it never fired anything in
-practice. Squid now watches **Claude Code** (the `claude` CLI) and
-**Codex** (the `codex` CLI): live tool-subprocess detection, recent
-project-file writes (catches in-process edits that never spawn a
-subprocess), and transcript-write recency together give a working/thinking
-distinction. Git, terminal, and IDE activity feed a simpler busy/idle
-signal on top. See [Detectors & triggers](#detectors--triggers) below.
+> Squid originally watched **TPA**, a internal CLI coding
+> agent; that support was fully removed 2026-08-27 since it was never
+> actually installed/run in this environment and never fired anything in
+> practice. See `CHANGELOG.md` for that and other history.
 
-TPA's approval-needed "flag wave" (she waves when TPA is
-waiting on you) is untouched and still fully TPA-driven, kept
-pending a Claude-Code-native replacement signal.
+## Contents
+
+- [Features](#features)
+- [Install](#install)
+- [Usage](#usage)
+- [How she reacts](#how-she-reacts)
+- [Approval-needed flag wave](#approval-needed-flag-wave)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [For contributors](#for-contributors)
+- [Requirements](#requirements)
+
+---
+
+## Features
+
+- **Reacts live** to Claude Code and Codex — distinguishes "thinking"
+  from "working" from "done", via live tool-subprocess detection, recent
+  project-file writes (catches in-process edits that never spawn a
+  subprocess), and transcript-write recency
+- **Waves and pings you** the instant a Claude Code session needs your
+  input, even a hook away from your desk — see
+  [Approval-needed flag wave](#approval-needed-flag-wave)
+- **Cross-tool**: also picks up git commits, terminal activity, and IDE
+  (VS Code/Cursor/JetBrains) activity
+- **Lightweight and private**: pure CSS animations, the Python side only
+  drives state + window position; every detector reads metadata only —
+  never file contents, never network ([privacy disclosure](docs/PRIVACY.md))
+- **Fully configurable**: toggle any detector, corner, or behavior live
+  via `~/.squid-pet/settings.json` — no restart needed
+- Drag her around, right-click for a corner/pause/sprint menu,
+  double-click to cycle state
 
 ---
 
@@ -43,7 +62,17 @@ against public PyPI (no dependency resolution — fast), renders the
 LaunchAgent plist, drops `~/.local/bin/squid` on your PATH, writes
 sensible default settings, and boots Squid.
 
-**Measured on M1:**
+> **Want the corner/stroll prompts back?** Run `./install.sh --wizard`.
+> Otherwise you get sensible defaults (bottom-right corner, edges stroll,
+> show on all spaces) — edit any time in [Configuration](#configuration).
+
+```bash
+# Re-run any time to upgrade in place (idempotent):
+cd ~/Projects/squid-pet && ./install.sh
+```
+
+<details>
+<summary>Install timing (measured on M1)</summary>
 
 | Scenario | Wall time |
 |---|---|
@@ -61,16 +90,13 @@ If a clean install ever takes more than 5 minutes, run
 `/tmp/squid-pet-install-profile-*.txt` — that's a regression worth
 investigating.
 
-> **Want the corner/stroll prompts back?** Run `./install.sh --wizard`.
-> Otherwise you get sensible defaults (bottom-right corner, edges stroll,
-> show on all spaces) — edit `~/.squid-pet/settings.json` any time to
-> customize; changes are picked up live, no restart needed.
+</details>
+
+---
+
+## Usage
 
 ```bash
-# Re-run any time to upgrade in place (idempotent):
-cd ~/Projects/squid-pet && ./install.sh
-
-# Daily commands:
 squid status         # is she alive? is the watcher ticking?
 squid why            # which detector fired? what state and why?
 squid doctor         # 6-check self-diagnostic
@@ -83,13 +109,9 @@ squid uninstall              # keeps your settings + source
 squid uninstall --yes --all  # nukes everything, no prompts
 ```
 
-**Requirements:** macOS 12+, Homebrew. `uv` is auto-installed if missing.
-Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
-Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
-
 ---
 
-## States
+## How she reacts
 
 | State | Trigger | Look |
 |---|---|---|
@@ -102,45 +124,107 @@ Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 | **drowsy** | State-machine idle 300–359 s (frontend-driven) | Slumped sprite, paused routine |
 | **stretch** | Wake transition (~1.6 s, frontend-driven) | Wake-up stretch animation |
 
+<details>
+<summary>Priority order, and forcing a state for testing/demos</summary>
+
 Priority order is fixed (`watcher.py:StateMachine.compute`): sleeping >
 celebrating-held > grooving > working > thinking > non-agent-detector busy >
-idle. `approval_needed` (the flag-wave) can override any of the above — see
-below. `concerned` (TPA's `errors.log`) is presently unreachable via
-natural detection; still settable via the `~/.squid-pet/force_state` debug
-override. See `tests/test_state_machine.py`,
-`tests/test_watcher_claude_code_cascade.py`, and
-`tests/test_watcher_codex_cascade.py` for the contract.
+idle. `approval_needed` (the flag-wave — see below) can override any of the
+above. `concerned` and `grooving`'s Claude-Code/Codex paths have no
+detector implementation yet (documented non-goals), but both are still
+settable via a debug override:
 
-**Flag-wave (`approval_needed`)** is a separate, higher-priority alert layered
-on top of the state above: Squid waves when TPA signals it's waiting
-on you (`~/.tpa/awaiting_input/<pid>`, or a CPU-idle fallback,
-off by default). This is still 100% TPA-driven — there's no
-Claude-Code-native equivalent yet (see `squid why` / `--why-json` for
-diagnosing it).
+```bash
+echo "celebrating" > ~/.squid-pet/force_state   # forces any state, skips natural triggers
+echo "" > ~/.squid-pet/force_state              # clears the override, resumes normal computation
+```
+
+See `tests/test_state_machine.py`, `tests/test_watcher_claude_code_cascade.py`,
+and `tests/test_watcher_codex_cascade.py` for the contract.
+
+</details>
 
 ---
 
-## Detectors & triggers
+## Approval-needed flag wave
+
+A separate, higher-priority alert layered on top of the state cascade
+above: Squid waves and fires a macOS notification when a Claude Code
+session is sitting there waiting on you.
+
+**Signal**: `~/.squid-pet/claude_awaiting_input/<session_id>`, written by
+`scripts/claude_pet_hook.py` on a `Notification` event with
+`notification_type` `permission_prompt` or `idle_prompt`, via Claude
+Code's own official hook system (registered in `~/.claude/settings.json`).
+Removed on `UserPromptSubmit` (you replied) or `SessionEnd`.
+
+Run `squid why` / `--why-json` to see exactly what's waving and why —
+it reports `claude_sessions_awaiting` / `claude_sessions_eligible`
+independently.
+
+<details>
+<summary>Manual hook setup (if a machine doesn't have it wired up yet)</summary>
+
+`~/.claude/settings.json` is personal/user-level (not tracked by this
+repo), so add this `hooks` block yourself, pointing `command` at this
+repo's `scripts/claude_pet_hook.py`:
+
+```json
+{
+  "hooks": {
+    "Notification":     [{"matcher": "", "hooks": [{"type": "command", "command": "/absolute/path/to/squid-pet/scripts/claude_pet_hook.py", "timeout": 5}]}],
+    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "/absolute/path/to/squid-pet/scripts/claude_pet_hook.py", "timeout": 5}]}],
+    "SessionEnd":       [{"matcher": "", "hooks": [{"type": "command", "command": "/absolute/path/to/squid-pet/scripts/claude_pet_hook.py", "timeout": 5}]}]
+  }
+}
+```
+
+Merge this into your existing `hooks` key if you already have one, rather
+than overwriting the whole file. New Claude Code sessions (and, in
+practice, already-running ones — settings.json changes are hot-reloaded)
+pick this up automatically; no restart required. Codex has no direct-signal
+hook yet.
+
+</details>
+
+<details>
+<summary>Self-healing and notification behavior</summary>
+
+Two self-healing layers guard against a stuck flag: a 2h staleness prune
+in `watcher.py` for a session that crashes without firing either hook, and
+(2026-08-27) a same-tick check that deletes the flag outright the moment
+Squid's own independent activity signal (real shell/file/streaming
+evidence, nothing to do with the hook) sees the session genuinely working
+again — covers Claude resuming on its own (approval granted some other
+way, an agentic task continuing unattended) without a fresh top-level
+prompt ever being submitted.
+
+A 120s "seen it, deferred" snooze (fires once, then quiets down until you
+reply and it fires again for genuinely new work) is enforced by
+`filter_eligible_claude_sessions` in `watcher.py`, and covered by the
+"Calm Squid" menu action (`snooze_all_awaiting_now`) and the
+`approval_alert_enabled` kill switch.
+
+The OS notification prefers `terminal-notifier` (if installed —
+`brew install terminal-notifier`, needs a full Xcode.app to build from
+source on older macOS) over plain `osascript`: `terminal-notifier`'s
+`-activate <bundle-id>` makes clicking "Show" bring the actual terminal
+app hosting Claude Code to the front (detected by walking the process
+tree — `find_terminal_app_bundle_for_claude_code()`), instead of the
+`display notification` fallback's unhelpful default (macOS attributes the
+click to whatever process ran the AppleScript, generically opening an
+empty Script Editor window).
+
+</details>
+
+---
+
+## Configuration
 
 Squid reads activity from a pluggable list of detectors
 (`src/squid_pet/detectors.py`), each independently toggleable via
-`~/.squid-pet/settings.json`:
-
-| Detector | Signal | Feeds |
-|---|---|---|
-| `claude_code` | `claude` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.claude/projects/*/*.jsonl` write recency | working / thinking / celebrating |
-| `codex` | `codex`/`codex-tui` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.codex/sessions/**/*.jsonl` write recency | working / thinking |
-| `git` | `.git/{HEAD,index,refs/heads/}` mtimes under `project_dirs` | busy / celebrating |
-| `terminal` | any shell with a long-lived non-shell child | busy (off by default — misfires on any dev machine with a long-running foreground process, e.g. an editor or a REPL) |
-| `ide` | VS Code / Cursor / JetBrains CPU + recent file mtimes under `project_dirs` | busy / grooving |
-
-`claude_code` and `codex` get the full working/thinking distinction (same
-cascade, OR-merged across both); the rest feed a flatter busy/idle signal.
-For Claude Code and Codex, "working" fires on either a live tool subprocess
-(e.g. a shell command) *or* a recent file write under `project_dirs` — the
-latter is what catches in-process Edit/Write/apply_patch-style tool calls,
-which never spawn a subprocess and would otherwise only ever show as
-"thinking". Defaults:
+`~/.squid-pet/settings.json`. Changes are picked up live — settings.json
+is hot-reloaded, no restart needed:
 
 ```json
 {
@@ -155,33 +239,57 @@ which never spawn a subprocess and would otherwise only ever show as
 }
 ```
 
-Edit any flag to `false` to disable that detector entirely — no scans,
-no process iteration, no filesystem walks for that source. Changes are
-picked up live (settings.json is hot-reloaded). Every detector reads
-only metadata (process names, CPU%, file mtimes) — never file contents,
-never network. Full per-detector data-access table: [`docs/PRIVACY.md`](docs/PRIVACY.md).
-Run `squid why` to see exactly which detector fired on the current tick.
+| Detector | Signal | Feeds |
+|---|---|---|
+| `claude_code` | `claude` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.claude/projects/*/*.jsonl` write recency | working / thinking / celebrating |
+| `codex` | `codex`/`codex-tui` process presence, live tool subprocess, recent writes under `project_dirs`, `~/.codex/sessions/**/*.jsonl` write recency | working / thinking |
+| `git` | `.git/{HEAD,index,refs/heads/}` mtimes under `project_dirs` | busy / celebrating |
+| `terminal` | any shell with a long-lived non-shell child | busy (off by default — misfires on any dev machine with a long-running foreground process, e.g. an editor or a REPL) |
+| `ide` | VS Code / Cursor / JetBrains CPU + recent file mtimes under `project_dirs` | busy / grooving |
 
-TPA is no longer a general detector (removed 2026-08-22 — it was
-never actually installed/run in this environment), but the flag-wave
-alert above is still fully TPA-driven independent of this table;
-`find_tpa_processes()` and the `~/.tpa/awaiting_input/<pid>`
-scan in `watcher.py` are untouched.
+`claude_code` and `codex` get the full working/thinking distinction (same
+cascade, OR-merged across both); the rest feed a flatter busy/idle signal.
+Edit any flag to `false` to disable that detector entirely — no scans,
+no process iteration, no filesystem walks for that source. Every detector
+reads only metadata (process names, CPU%, file mtimes) — never file
+contents, never network. Full per-detector data-access table:
+[`docs/PRIVACY.md`](docs/PRIVACY.md). Run `squid why` to see exactly which
+detector fired on the current tick.
 
 ---
 
-## Architecture
+## Troubleshooting
+
+If Squid seems missing, run the doctor:
+
+```bash
+python -m squid_pet --doctor
+```
+
+This runs 6 checks (process, state.json freshness, launchd, window
+visibility, window-not-wedged, startup log markers). Exit code 0 =
+healthy; otherwise the failing check number tells you what's broken.
+See [docs/STARTUP_SAFETY.md](docs/STARTUP_SAFETY.md) for the full
+four-layer defense documentation.
+
+---
+
+## For contributors
+
+<details>
+<summary><strong>Architecture</strong></summary>
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ watcher.py     (background thread, 1 Hz)                               │
 │   detectors.py → pluggable Detector list (claude_code, codex, git,    │
 │                  terminal, ide) — see "Detectors & triggers"           │
-│   psutil → find claude / codex procs, aggregate CPU%; also Code       │
-│            Puppy procs for the flag-wave alert (approval_needed only) │
+│   psutil → find claude / codex procs, aggregate CPU%                  │
 │   ioreg  → macOS HID idle                                              │
 │   mtime  → ~/.claude/projects/…, ~/.codex/…, .git/…,                  │
-│            ~/.tpa/awaiting_input/… (flag-wave only)             │
+│            ~/.squid-pet/claude_awaiting_input/… (flag-wave only,      │
+│            written by scripts/claude_pet_hook.py via Claude Code's    │
+│            own Notification/UserPromptSubmit/SessionEnd hooks)        │
 │   ────────────────────────────────────────────────────                 │
 │   StateMachine.compute() — priority cascade over detector signals      │
 │   ↓                                                                    │
@@ -224,9 +332,10 @@ scan in `watcher.py` are untouched.
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
----
+</details>
 
-## Project layout
+<details>
+<summary><strong>Project layout</strong></summary>
 
 ```
 src/squid_pet/
@@ -258,9 +367,10 @@ tests/
 openspec/                    # OpenSpec specs + changes (see "Specs" below)
 ```
 
----
+</details>
 
-## Tests
+<details>
+<summary><strong>Tests</strong></summary>
 
 ```bash
 .venv/bin/pytest
@@ -272,9 +382,10 @@ transition window) plus each detector in isolation. I/O is monkey-patched
 or dependency-injected so the suite never touches psutil / filesystem /
 ioreg in real life.
 
----
+</details>
 
-## Sprite tooling
+<details>
+<summary><strong>Sprite tooling</strong></summary>
 
 The artwork generator produces PNGs with solid backgrounds. `tools/remove_bg.py`
 flood-fills from all 4 corners with a colour-tolerance and sets matching pixels'
@@ -296,32 +407,38 @@ python tools/remove_bg.py --verify src/squid_pet/frontend/sprites/*.png
 Tolerance defaults to 30 (Euclidean RGB distance). Bump it up for noisier
 backgrounds.
 
----
+</details>
 
-## State file
+<details>
+<summary><strong>State file</strong> (<code>~/.squid-pet/state.json</code>)</summary>
 
-`~/.squid-pet/state.json` is rewritten atomically every second. Schema:
+Rewritten atomically every second. Schema:
 
 ```json
 {
   "state": "thinking",
   "sub_state": "",
-  "cpu_percent": 18.7,
   "idle_seconds": 3.2,
   "agent_idle_seconds": 12.4,
-  "tpa_running": true,
-  "claude_code_running": false,
+  "claude_code_running": true,
   "codex_running": false,
   "timestamp": 1780819113.12,
   "message": "thinking",
   "concern_reason": "",
-  "concern_severity": ""
+  "concern_severity": "",
+  "state_reason": "claude streaming"
 }
 ```
 
----
+(`agent_idle_seconds` keeps its historical name for schema stability, but is
+generic — seconds since the state machine last left an "active" state,
+not TPA-specific. `tpa_running`/`cpu_percent` were removed
+2026-08-27 along with the rest of TPADetector.)
 
-## Tuning
+</details>
+
+<details>
+<summary><strong>Tuning</strong></summary>
 
 Edit the constants near the top of `watcher.py`:
 
@@ -336,13 +453,15 @@ Edit the constants near the top of `watcher.py`:
 | `CONCERN_LOOKBACK_SEC` | 60 | Hard errors stay concerned this long |
 | `CONCERN_TRANSIENT_LOOKBACK_SEC` | 20 | Network/timeout errors auto-clear faster |
 
----
+</details>
 
-## Specs
+<details>
+<summary><strong>Specs (OpenSpec)</strong></summary>
 
 This project uses **OpenSpec** to track behavior contracts. Canonical specs
-live in `openspec/specs/` and any proposed change ships as an `openspec/changes/<name>/`
-folder (proposal + design + tasks + spec delta) before being archived.
+live in `openspec/specs/` and any proposed change ships as an
+`openspec/changes/<name>/` folder (proposal + design + tasks + spec delta)
+before being archived.
 
 ```bash
 openspec list              # see active changes
@@ -359,17 +478,12 @@ Current canonical specs:
 - `pet-animations` — sprite + CSS keyframe contract
 - `click-passthrough` — transparent-pixel click-through mechanism
 
-## Troubleshooting
+</details>
 
-If Squid seems missing, run the doctor:
+---
 
-```bash
-python -m squid_pet --doctor
-```
+## Requirements
 
-This runs 6 checks (process, state.json freshness, launchd, window
-visibility, window-not-wedged, startup log markers). Exit code 0 =
-healthy; otherwise the failing check number tells you what's broken.
-
-See [docs/STARTUP_SAFETY.md](docs/STARTUP_SAFETY.md) for the full
-four-layer defense documentation.
+macOS 12+, Homebrew. `uv` is auto-installed if missing.
+Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
+Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
