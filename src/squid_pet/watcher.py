@@ -396,6 +396,61 @@ def claude_sessions_just_finished() -> list[str]:
     return _scan_session_flag_dir(CLAUDE_FINISHED_DIR, CLAUDE_FINISHED_STALE_SEC, fresh_sec)
 
 
+def claude_finished_freshest_age(now: float | None = None) -> float | None:
+    """Seconds since the most recently written Stop-hook flag among
+    currently-fresh sessions (see claude_sessions_just_finished), or None
+    if none are fresh right now.
+
+    Pink-2026-08-30: lets StateMachine._compute_inner tell "just stopped"
+    (age near 0) apart from "stopped a while ago and nothing since" (age
+    approaching celebrate_hold_sec) -- the age is what distinguishes the
+    GROOVING beat from the CELEBRATING beat, since Stop itself fires
+    identically for both a mid-task turn and the final one.
+    """
+    if now is None:
+        now = time.time()
+    session_ids = claude_sessions_just_finished()
+    if not session_ids:
+        return None
+    ages = []
+    for sid in session_ids:
+        path = os.path.join(CLAUDE_FINISHED_DIR, sid)
+        try:
+            ages.append(now - os.stat(path).st_mtime)
+        except OSError:
+            continue
+    return min(ages) if ages else None
+
+
+# ── "recapping" flag (Pink-2026-08-30) ──────────────────────────────────
+# scripts/claude_pet_hook.py writes <dir>/<session_id> on the official
+# PreCompact hook (fires right before Claude Code summarizes/compacts its
+# context, whether from /compact or an automatic low-context trigger) and
+# removes it on PostCompact. Pink noticed Squid flashing to a generic,
+# unexplained "thinking" during a compaction and asked for it called out
+# explicitly -- unlike the busy signals above, a compaction is pure
+# summarization (no tool calls, no file writes), so it needs its own
+# signal rather than piggybacking on shell/file/transcript activity.
+CLAUDE_RECAPPING_DIR = os.path.join(
+    os.path.expanduser("~"), ".squid-pet", "claude_recapping"
+)
+CLAUDE_RECAPPING_STALE_SEC = 7200.0  # 2h -- crash-safety disk cleanup only
+# PostCompact should clear this within seconds under normal operation;
+# this is only a ceiling in case it never fires (older Claude Code build,
+# hook failure) so a stuck flag can't wave "recapping" forever.
+CLAUDE_RECAPPING_FRESH_SEC = 120.0
+
+
+def claude_sessions_recapping() -> list[str]:
+    """Return session_ids of Claude Code sessions currently compacting
+    (recapping) their context. See the module comment above this
+    function for the PreCompact/PostCompact protocol.
+    """
+    return _scan_session_flag_dir(
+        CLAUDE_RECAPPING_DIR, CLAUDE_RECAPPING_STALE_SEC, CLAUDE_RECAPPING_FRESH_SEC
+    )
+
+
 def filter_eligible_claude_sessions(session_ids: list[str]) -> list[str]:
     """Filter direct-signal Claude Code session_ids down to those that
     deserve a flag-wave right now.
@@ -829,13 +884,22 @@ class StateMachine:
             # exactly when Claude finishes responding and hands control
             # back, same fix pattern as the approval_needed migration off
             # CPU heuristics onto the Notification hook.
-            claude_celebrating = bool(claude_sessions_just_finished())
+            #
+            # Pink-2026-08-30: Stop fires identically on every turn, mid-
+            # task or truly final (confirmed live via claude_hook.log --
+            # this very session's Stop flag rewrote a dozen+ times across
+            # one long conversation), so raw freshness alone can't tell
+            # "made progress" from "actually done". claude_finished_age
+            # is that Stop flag's age; below it feeds a settle window
+            # (claude_groove_settle_sec) that decides GROOVING vs
+            # CELEBRATING -- see branches 2/3.
+            claude_finished_age = claude_finished_freshest_age(now)
         else:
             claude_running = False
             claude_shell_active = False
             claude_file_active = False
             claude_streaming = False
-            claude_celebrating = False
+            claude_finished_age = None
 
         codex = self._codex_detector
         # Same pattern as the Claude Code block -- see codex-detector
@@ -972,29 +1036,46 @@ class StateMachine:
             self._sleeping_since = 0.0
             self._force_awake_until = 0.0
 
-        # ── 2. CELEBRATING ── reserved for actual milestones, not routine
-        # turn completion. Codex's own busy->idle edge, any other
-        # detector's (e.g. Git's fresh-commit) celebrate signal, or a
-        # manually-armed self.celebrate_until (force_state / test hook --
-        # nothing in the current cascade sets this automatically; kept as
-        # a settable override point).
+        # claude_finished_age (set above) can't by itself tell "finished
+        # this turn, more coming" from "finished the whole task" -- Stop
+        # fires identically either way (confirmed live via
+        # claude_hook.log). Two more signals turn it into a decision:
         #
-        # Pink-2026-08-30: claude_celebrating (Claude Code's Stop hook --
-        # fires every time Claude finishes a single response, NOT when a
-        # whole multi-turn task is done) used to land HERE. Confirmed
-        # live: it fired mid-task on every ordinary turn of a long
-        # session, not just at genuine completion -- a mismatch with
-        # "celebrating" reserved for real milestones. Claude Code has no
-        # hook that distinguishes "finished this turn" from "finished the
-        # whole task" (Stop fires identically either way), so there's no
-        # signal to promote it to celebrating on. Moved to GROOVING below
-        # instead -- a per-turn "still making progress" beat is exactly
-        # what that state is for, and celebrating now stays reserved for
-        # detectors with an actual milestone signal (git's real commit,
-        # codex's -- currently also aspirational, see CodexDetector).
-        if now < self.celebrate_until or codex_celebrating or other_celebrating():
+        #   - claude_resumed_work: shell/file evidence that Claude has
+        #     already started doing something new since that Stop. If
+        #     so, the turn that just ended was clearly mid-task -- don't
+        #     show either beat, let branch 4 report WORKING/THINKING.
+        #   - claude_groove_settle_sec (config, default 8s): how long a
+        #     Stop gets the benefit of the doubt as GROOVING before, with
+        #     still no resumed work, it's treated as the last turn and
+        #     promoted to CELEBRATING. Must stay under celebrate_hold_sec
+        #     (the outer bound after which the Stop flag stops counting
+        #     as fresh at all, checked inside claude_finished_age).
+        try:
+            from . import config as _cfg
+            _groove_settle_sec = float(_cfg.get('claude_groove_settle_sec', 8))
+        except Exception:
+            _groove_settle_sec = 8.0
+        claude_resumed_work = claude_shell_active or claude_file_active
+        claude_just_stopped = claude_finished_age is not None and not claude_resumed_work
+        claude_settled_celebrating = claude_just_stopped and claude_finished_age >= _groove_settle_sec
+        claude_grooving_now = claude_just_stopped and claude_finished_age < _groove_settle_sec
+
+        # ── 2. CELEBRATING ── real milestones: claude_settled_celebrating
+        # (Stop fired and nothing resumed for claude_groove_settle_sec --
+        # see above), codex's own busy->idle edge, any other detector's
+        # (e.g. Git's fresh-commit) celebrate signal, or a manually-armed
+        # self.celebrate_until (force_state / test hook).
+        if (
+            now < self.celebrate_until
+            or claude_settled_celebrating
+            or codex_celebrating
+            or other_celebrating()
+        ):
             st.state = "celebrating"
-            if codex_celebrating:
+            if claude_settled_celebrating:
+                st.state_reason = "claude celebrating"
+            elif codex_celebrating:
                 st.state_reason = "codex celebrating"
             elif other_celebrating_name():
                 st.state_reason = f"{other_celebrating_name()} celebrating"
@@ -1004,16 +1085,26 @@ class StateMachine:
             return st
 
         # ── 3. GROOVING ── a lighter, per-turn "still making progress"
-        # beat. claude_celebrating (Stop hook -- see CELEBRATING's
-        # comment above for why it moved here, Pink-2026-08-30) fires
-        # this on every Claude Code turn completion; any other detector's
-        # is_grooving() also lands here (currently no detector implements
-        # real grooving logic beyond this -- kept as an extensibility
-        # hook for future signals).
-        if claude_celebrating or other_grooving():
+        # beat. claude_grooving_now (Stop just fired, within
+        # claude_groove_settle_sec, nothing resumed yet -- see above)
+        # fires this; any other detector's is_grooving() also lands here.
+        if claude_grooving_now or other_grooving():
             st.state = "grooving"
-            st.state_reason = "claude grooving" if claude_celebrating else "creative burst"
+            st.state_reason = "claude grooving" if claude_grooving_now else "creative burst"
             st.message = "🤸 creative burst"
+            return st
+
+        # ── 3b. RECAPPING ── Claude Code's PreCompact hook fired and
+        # PostCompact hasn't cleared it yet -- Claude is summarizing its
+        # own context, not doing agent work (no tool calls happen during
+        # a compaction). Reported as a flavor of "thinking" -- see
+        # claude_sessions_recapping()'s module comment -- so it wins over
+        # branch 4 below even if stale file-write evidence from just
+        # before the compact started is still technically "fresh".
+        if claude is not None and claude.enabled and claude_sessions_recapping():
+            st.state = "thinking"
+            st.state_reason = "claude recapping"
+            st.message = "📝 recapping..."
             return st
 
         # ── 4. CLAUDE CODE OR CODEX RUNNING -- richer working/thinking

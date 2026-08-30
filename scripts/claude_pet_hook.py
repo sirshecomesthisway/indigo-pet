@@ -3,8 +3,9 @@
 claude_pet_hook.py -- squid-pet's Claude Code hook receiver.
 
 Wired into ~/.claude/settings.json under hooks.Notification,
-hooks.UserPromptSubmit, hooks.SessionEnd, and hooks.Stop. Maintains two
-per-session flag-file signals that watcher.py reads:
+hooks.UserPromptSubmit, hooks.SessionEnd, hooks.Stop, hooks.PreCompact,
+and hooks.PostCompact. Maintains three per-session flag-file signals
+that watcher.py reads:
   - "awaiting input" (claude_sessions_awaiting_input()) -- mirrors what
     TPA's own sitecustomize.py patch does via
     ~/.tpa/awaiting_input/<pid>, except keyed by session_id,
@@ -19,19 +20,30 @@ per-session flag-file signals that watcher.py reads:
     Claude finishes responding and hands control back, which is what
     "worth celebrating" actually means -- same fix pattern as the
     Notification-hook migration above, applied to a different signal.
+  - "recapping" (claude_sessions_recapping()) -- Pink-2026-08-30: Pink
+    noticed Squid flashing to a generic "thinking" with no explanation
+    during a context compaction (/compact or auto-compact) and asked
+    for it to be called out by name. PreCompact/PostCompact bracket the
+    compaction exactly, unlike any of the busy signals above (a compact
+    is pure summarization -- no tool calls, no file writes).
 
 Protocol:
   - Notification with notification_type in {permission_prompt, idle_prompt}
     -> write <awaiting_input_dir>/<session_id>  (Claude is waiting on you)
   - UserPromptSubmit -> remove <awaiting_input_dir>/<session_id>  (you replied)
-  - SessionEnd -> remove <awaiting_input_dir>/<session_id>  (session is gone)
+  - SessionEnd -> remove <awaiting_input_dir>/<session_id> and
+    <recap_dir>/<session_id>  (session is gone)
   - Stop -> write <finished_dir>/<session_id>  (Claude just finished a turn)
+  - PreCompact -> write <recap_dir>/<session_id>  (compaction starting)
+  - PostCompact -> remove <recap_dir>/<session_id>  (compaction done)
 
-No message/transcript content is ever read or written for either signal
--- session_id and mtime only, matching this project's stated privacy
-stance (see ClaudeCodeDetector's docstring on why transcript content is
-never read). Stop's payload includes a last_assistant_message field;
-it is deliberately ignored.
+No message/transcript content is ever read or written for any of these
+signals -- session_id and mtime only, matching this project's stated
+privacy stance (see ClaudeCodeDetector's docstring on why transcript
+content is never read). Stop's payload includes a last_assistant_message
+field; PreCompact's includes custom_instructions; both are deliberately
+ignored. PreCompact's trigger field ("manual" vs "auto") is also
+ignored for now -- Squid shows the same "recapping" bubble either way.
 
 Confirmed empirically (2026-08-25/26, live Claude Code 2.1.239): the
 Notification payload for both permission_prompt and idle_prompt includes
@@ -46,7 +58,10 @@ another dedicated diagnostic pass. Also unverified: whether a Task-tool
 subagent's completion fires this same top-level Stop event in addition
 to its own SubagentStop (which this script does not handle) -- if the
 log ever shows Stop firing implausibly often during subagent-heavy
-sessions, that's the first thing to check.
+sessions, that's the first thing to check. PreCompact/PostCompact are
+documented (see Claude Code hooks-guide.md) but not yet independently
+verified against a live payload either -- same log-based confirmation
+applies after a real /compact.
 
 Never raises past main(), never blocks Claude Code, always exits 0 -- a
 bug here must not be able to interfere with normal Claude Code use. This
@@ -70,6 +85,7 @@ _SQUID_PET_HOME = os.environ.get(
 )
 FLAG_DIR = os.path.join(_SQUID_PET_HOME, "claude_awaiting_input")
 FINISHED_DIR = os.path.join(_SQUID_PET_HOME, "claude_finished")
+RECAP_DIR = os.path.join(_SQUID_PET_HOME, "claude_recapping")
 LOG_PATH = os.path.join(_SQUID_PET_HOME, "claude_hook.log")
 _LOG_MAX_BYTES = 200_000
 _LOG_KEEP_LINES = 1000
@@ -153,6 +169,16 @@ def main() -> int:
             _log(f"{event} {session_id} NOOP (no flag)")
         except Exception as e:
             _log(f"{event} {session_id} REMOVE_FAILED {e!r}")
+        if event == "SessionEnd":
+            # Crash-safety only -- PostCompact is the normal way this
+            # clears. A session ending mid-compact (rare) would otherwise
+            # leave a stuck "recapping" flag for watcher.py's stale-sweep
+            # to clean up 2h later instead of right away.
+            try:
+                os.unlink(os.path.join(RECAP_DIR, session_id))
+                _log(f"{event} {session_id} RECAP_REMOVED")
+            except (FileNotFoundError, OSError):
+                pass
     elif event == "Stop":
         if not _ensure_dir(FINISHED_DIR, event):
             return 0
@@ -163,6 +189,28 @@ def main() -> int:
             _log(f"Stop {session_id} WRITE")
         except Exception as e:
             _log(f"Stop {session_id} WRITE_FAILED {e!r}")
+    elif event == "PreCompact":
+        if not _ensure_dir(RECAP_DIR, event):
+            return 0
+        recap_path = os.path.join(RECAP_DIR, session_id)
+        trigger = payload.get("trigger", "")
+        try:
+            with open(recap_path, "w") as f:
+                f.write(trigger or "recap")
+            _log(f"PreCompact {session_id} WRITE {trigger!r}")
+        except Exception as e:
+            _log(f"PreCompact {session_id} WRITE_FAILED {e!r}")
+    elif event == "PostCompact":
+        if not _ensure_dir(RECAP_DIR, event):
+            return 0
+        recap_path = os.path.join(RECAP_DIR, session_id)
+        try:
+            os.unlink(recap_path)
+            _log(f"PostCompact {session_id} REMOVED")
+        except FileNotFoundError:
+            _log(f"PostCompact {session_id} NOOP (no flag)")
+        except Exception as e:
+            _log(f"PostCompact {session_id} REMOVE_FAILED {e!r}")
     else:
         _log(f"UNKNOWN_EVENT {event!r} {session_id}")
 

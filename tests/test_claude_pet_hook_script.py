@@ -42,6 +42,10 @@ def _finished_path(home: Path, session_id: str) -> Path:
     return home / "claude_finished" / session_id
 
 
+def _recap_path(home: Path, session_id: str) -> Path:
+    return home / "claude_recapping" / session_id
+
+
 def test_script_exists_and_is_executable():
     assert SCRIPT.exists(), f"missing {SCRIPT}"
     assert os.access(SCRIPT, os.X_OK), f"{SCRIPT} is not executable"
@@ -135,6 +139,64 @@ def test_multiple_stop_sessions_are_independent(home):
     _run({"session_id": "sess-B", "hook_event_name": "Stop"}, home)
     assert _finished_path(home, "sess-A").exists()
     assert _finished_path(home, "sess-B").exists()
+
+
+# ── PreCompact / PostCompact (Pink-2026-08-30: Pink noticed Squid
+# flashing to a generic "thinking" during a context compaction with no
+# indication why, and asked for it called out by name) ─────────────────
+def test_precompact_writes_recap_flag(home):
+    r = _run({"session_id": "sess-c1", "hook_event_name": "PreCompact",
+              "trigger": "manual", "custom_instructions": ""}, home)
+    assert r.returncode == 0, r.stderr
+    fp = _recap_path(home, "sess-c1")
+    assert fp.exists()
+    assert fp.read_text() == "manual"
+
+
+def test_precompact_auto_trigger_recorded(home):
+    r = _run({"session_id": "sess-c2", "hook_event_name": "PreCompact",
+              "trigger": "auto"}, home)
+    assert r.returncode == 0, r.stderr
+    assert _recap_path(home, "sess-c2").read_text() == "auto"
+
+
+def test_postcompact_removes_recap_flag(home):
+    _run({"session_id": "sess-c3", "hook_event_name": "PreCompact",
+          "trigger": "manual"}, home)
+    assert _recap_path(home, "sess-c3").exists()
+
+    r = _run({"session_id": "sess-c3", "hook_event_name": "PostCompact"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _recap_path(home, "sess-c3").exists()
+
+
+def test_postcompact_on_nonexistent_flag_is_a_noop(home):
+    r = _run({"session_id": "never-recapped",
+              "hook_event_name": "PostCompact"}, home)
+    assert r.returncode == 0, r.stderr
+
+
+def test_precompact_does_not_touch_other_flags(home):
+    """PreCompact/PostCompact are independent signals in their own
+    directory -- must not create or remove anything in
+    claude_awaiting_input/ or claude_finished/."""
+    r = _run({"session_id": "sess-c4", "hook_event_name": "PreCompact",
+              "trigger": "auto"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _flag_path(home, "sess-c4").exists()
+    assert not _finished_path(home, "sess-c4").exists()
+
+
+def test_session_end_also_clears_a_stuck_recap_flag(home):
+    """Crash-safety: a session ending mid-compact (PostCompact never
+    fires) must not leave Squid waving "recapping" forever."""
+    _run({"session_id": "sess-c5", "hook_event_name": "PreCompact",
+          "trigger": "manual"}, home)
+    assert _recap_path(home, "sess-c5").exists()
+
+    r = _run({"session_id": "sess-c5", "hook_event_name": "SessionEnd"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _recap_path(home, "sess-c5").exists()
 
 
 def test_user_prompt_submit_on_nonexistent_flag_is_a_noop(home):

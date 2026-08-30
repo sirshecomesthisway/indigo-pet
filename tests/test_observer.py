@@ -196,17 +196,37 @@ def test_concern_reason_empty_returns_none():
 # actually happened.)
 # ----------------------------------------------------------------------
 
-def test_celebrating_no_longer_names_claude(obs):
-    """Pink-2026-08-30: "claude celebrating" can no longer actually be
-    produced by the real cascade -- Claude Code's Stop hook moved from
-    CELEBRATING to GROOVING entirely (a per-turn beat, not a milestone;
-    see watcher.py's cascade comments). _CELEBRATE_REASON_BUBBLES no
-    longer has an entry for it, so this must fall through to the generic
-    mood-pick line rather than crash or invent stale text."""
+def test_recapping_bubble_fires_even_from_working(obs):
+    """Pink-2026-08-30: unlike routine working->thinking transitions
+    (deliberately silent -- "working IS already a kind of thinking"),
+    a recap must always announce itself since it's a genuinely different
+    activity Pink specifically asked to see called out."""
+    result = obs.on_state_change(
+        "working", "thinking", state_reason="claude recapping",
+    )
+    assert result == "📝 recapping..."
+
+
+def test_recapping_bubble_does_not_repeat_while_still_recapping(obs):
+    """old==new short-circuit: a still-recapping tick reports
+    thinking->thinking, so this must stay silent, not re-fire on every
+    poll while the compaction is still running."""
+    result = obs.on_state_change(
+        "thinking", "thinking", state_reason="claude recapping",
+    )
+    assert result is None
+
+
+def test_celebrating_names_claude_deterministically(obs):
+    """Pink-2026-08-30: "claude celebrating" is real again -- watcher.py
+    now only sets it once claude_groove_settle_sec has passed since the
+    Stop hook fired with no shell/file evidence of renewed work (see
+    claude_settled_celebrating in StateMachine._compute_inner), so it no
+    longer means "just any turn ended" the way the raw Stop flag did."""
     result = obs.on_state_change(
         "working", "celebrating", state_reason="claude celebrating",
     )
-    assert result in BUBBLE_LINES["celebrating"]
+    assert result == "finished with claude!"
 
 
 def test_celebrating_names_codex_deterministically(obs):

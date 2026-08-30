@@ -14,16 +14,17 @@ from squid_pet.watcher import StateMachine
 from squid_pet.detectors import ClaudeCodeDetector
 
 
-def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent"):
+def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent", recap_dir="/nonexistent"):
     """Stub the non-detector-owned signals StateMachine still reads
-    directly: idle time, the Claude Code awaiting-input directory, and
-    the Claude Code just-finished directory (each must be isolated from
-    the real ~/.squid-pet/claude_*/, or a live flag on the developer's
-    own machine overrides every test here via approval_needed/
-    celebrating)."""
+    directly: idle time, the Claude Code awaiting-input directory, the
+    Claude Code just-finished directory, and the Claude Code recapping
+    directory (each must be isolated from the real ~/.squid-pet/claude_*/,
+    or a live flag on the developer's own machine overrides every test
+    here via approval_needed/celebrating/thinking)."""
     monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
     monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
     monkeypatch.setattr(watcher, "CLAUDE_FINISHED_DIR", finished_dir)
+    monkeypatch.setattr(watcher, "CLAUDE_RECAPPING_DIR", recap_dir)
 
 
 def _claude_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),
@@ -153,12 +154,15 @@ def test_claude_detector_absent_falls_to_idle(monkeypatch):
 #
 # Pink-2026-08-30: Stop hook fires on EVERY turn completion, not "the
 # whole task is done" -- confirmed live as celebrating firing mid-task on
-# routine turns. Moved off CELEBRATING (now reserved for actual
-# milestones -- git commits, etc.) onto GROOVING (a lighter, per-turn
-# "still making progress" beat) -- see watcher.py's cascade comments.
+# routine turns. First moved entirely off CELEBRATING onto GROOVING, but
+# that lost real completions too (Pink: "grooving 是任務中途有進展，
+# celebrating 是這個任務結束了"). Settled on a two-phase read of the same
+# Stop flag instead: GROOVING immediately, promoted to CELEBRATING once
+# claude_groove_settle_sec passes with no shell/file evidence Claude
+# resumed -- see claude_settled_celebrating in watcher.py's cascade.
 # These tests updated accordingly; the reachability regression they
 # originally guarded against (the branch being silently dead) is the same
-# concern, just for GROOVING now.
+# concern either way.
 def _write_finished_flag(finished_dir: Path, session_id: str, mtime: float) -> None:
     finished_dir.mkdir(parents=True, exist_ok=True)
     path = finished_dir / session_id
@@ -216,12 +220,22 @@ def test_claude_stop_hook_flag_fires_grooving(monkeypatch, tmp_path):
     assert st2.state_reason == "claude grooving"
 
 
-def test_claude_grooving_holds_for_the_configured_window(monkeypatch, tmp_path):
+def test_claude_grooving_settles_into_celebrating_then_expires(monkeypatch, tmp_path):
+    """Pink-2026-08-30: grooving and celebrating are no longer mutually
+    exclusive outcomes of the same Stop flag -- they're two phases of it.
+    A Stop with nothing resumed since starts as GROOVING (still might be
+    mid-task), and once claude_groove_settle_sec passes with still no
+    resumed work, promotes to CELEBRATING (the turn that ended really
+    was the last one) for the remainder of celebrate_hold_sec."""
     finished_dir = tmp_path / "claude_finished"
     install_world(monkeypatch, finished_dir=str(finished_dir))
     monkeypatch.setattr(
         "squid_pet.config.get",
-        lambda k, default=None: 20 if k == "celebrate_hold_sec" else default,
+        lambda k, default=None: (
+            20 if k == "celebrate_hold_sec"
+            else 8 if k == "claude_groove_settle_sec"
+            else default
+        ),
     )
     now_ref = {"v": 1_000_000.0}
 
@@ -238,12 +252,150 @@ def test_claude_grooving_holds_for_the_configured_window(monkeypatch, tmp_path):
     monkeypatch.setattr(watcher.time, "time", lambda: now_ref["v"])
 
     _write_finished_flag(finished_dir, "sess-1", now_ref["v"])
+    st = sm.compute()
+    assert st.state == "grooving" and st.state_reason == "claude grooving"
+
+    now_ref["v"] += 5  # still within the 8s settle window
+    st = sm.compute()
+    assert st.state == "grooving", "must not promote before claude_groove_settle_sec elapses"
+
+    now_ref["v"] += 5  # 10s since Stop: past settle (8s), still within hold (20s)
+    st = sm.compute()
+    assert st.state == "celebrating" and st.state_reason == "claude celebrating", (
+        f"nothing resumed for >claude_groove_settle_sec -- the turn that "
+        f"ended must now read as genuinely finished, not still grooving; "
+        f"got {st.state!r} (reason={st.state_reason!r})"
+    )
+
+    now_ref["v"] += 11  # 21s since Stop: past the 20s celebrate_hold_sec
+    assert sm.compute().state == "idle"
+
+
+def test_claude_resumed_work_suppresses_groove_and_celebrate(monkeypatch, tmp_path):
+    """If real shell/file evidence shows Claude already started something
+    new since the Stop, that Stop was clearly mid-task -- neither beat
+    should show, even while the flag is still fresh; branch 4's WORKING
+    must take over instead."""
+    finished_dir = tmp_path / "claude_finished"
+    install_world(monkeypatch, finished_dir=str(finished_dir))
+    monkeypatch.setattr(
+        "squid_pet.config.get",
+        lambda k, default=None: (
+            20 if k == "celebrate_hold_sec"
+            else 8 if k == "claude_groove_settle_sec"
+            else default
+        ),
+    )
+    now_ref = {"v": 1_000_000.0}
+    state = {"shell_active": False}
+
+    claude = ClaudeCodeDetector(
+        find_processes_fn=lambda: ["fake-claude-proc"],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: state["shell_active"],
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    sm = StateMachine(detectors=[claude])
+    monkeypatch.setattr(watcher.time, "time", lambda: now_ref["v"])
+
+    _write_finished_flag(finished_dir, "sess-1", now_ref["v"])
     assert sm.compute().state == "grooving"
 
-    now_ref["v"] += 18  # still within the 20s celebrate_hold_sec window
-    assert sm.compute().state == "grooving"
+    state["shell_active"] = True  # Claude started a new tool call
+    now_ref["v"] += 1.0
+    st = sm.compute()
+    assert st.state == "working", (
+        f"resumed shell activity right after a Stop must suppress the "
+        f"groove/celebrate beat and fall through to WORKING; got "
+        f"{st.state!r}"
+    )
 
-    now_ref["v"] += 5  # now past the hold
+
+# ── RECAPPING (Pink-2026-08-30): PreCompact hook -- Pink asked for
+# compaction to be called out explicitly instead of showing as an
+# unexplained generic "thinking" ───────────────────────────────────────
+def _write_recap_flag(recap_dir: Path, session_id: str, mtime: float, trigger: str = "manual") -> None:
+    recap_dir.mkdir(parents=True, exist_ok=True)
+    path = recap_dir / session_id
+    path.write_text(trigger)
+    os.utime(path, (mtime, mtime))
+
+
+def test_recap_flag_fires_thinking_with_recapping_reason(monkeypatch, tmp_path):
+    recap_dir = tmp_path / "claude_recapping"
+    install_world(monkeypatch, recap_dir=str(recap_dir))
+
+    claude = ClaudeCodeDetector(
+        find_processes_fn=lambda: ["fake-claude-proc"],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: False,
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    sm = StateMachine(detectors=[claude])
+    now_ref = {"v": 1_000_000.0}
+    monkeypatch.setattr(watcher.time, "time", lambda: now_ref["v"])
+
+    _write_recap_flag(recap_dir, "sess-r1", now_ref["v"])
+    st = sm.compute()
+    assert st.state == "thinking"
+    assert st.state_reason == "claude recapping"
+    assert st.message == "📝 recapping..."
+
+
+def test_recap_flag_wins_over_stale_working_evidence(monkeypatch, tmp_path):
+    """A compaction is pure summarization -- no tool calls happen during
+    one -- so even if file-write evidence from just before the compact
+    started is still technically within its freshness window, RECAPPING
+    must still win over branch 4's WORKING."""
+    recap_dir = tmp_path / "claude_recapping"
+    install_world(monkeypatch, recap_dir=str(recap_dir))
+
+    claude = ClaudeCodeDetector(
+        find_processes_fn=lambda: ["fake-claude-proc"],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: True,  # stale "still active" evidence
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    sm = StateMachine(detectors=[claude])
+    now_ref = {"v": 1_000_000.0}
+    monkeypatch.setattr(watcher.time, "time", lambda: now_ref["v"])
+
+    _write_recap_flag(recap_dir, "sess-r2", now_ref["v"])
+    assert sm.compute().state_reason == "claude recapping"
+
+
+def test_recap_flag_expires_after_fresh_window(monkeypatch, tmp_path):
+    """Ceiling for a stuck flag (PostCompact never fired) -- see
+    CLAUDE_RECAPPING_FRESH_SEC's docstring."""
+    recap_dir = tmp_path / "claude_recapping"
+    install_world(monkeypatch, recap_dir=str(recap_dir))
+
+    claude = ClaudeCodeDetector(
+        find_processes_fn=lambda: ["fake-claude-proc"],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: False,
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    sm = StateMachine(detectors=[claude])
+    now_ref = {"v": 1_000_000.0}
+    monkeypatch.setattr(watcher.time, "time", lambda: now_ref["v"])
+
+    _write_recap_flag(recap_dir, "sess-r3", now_ref["v"])
+    assert sm.compute().state_reason == "claude recapping"
+
+    now_ref["v"] += watcher.CLAUDE_RECAPPING_FRESH_SEC + 1
     assert sm.compute().state == "idle"
 
 

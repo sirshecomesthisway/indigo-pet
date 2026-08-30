@@ -276,13 +276,13 @@ def _format_concern_reason(reason: str) -> Optional[str]:
 # this is NOT probabilistic and doesn't go through the LLM-enrich path --
 # "why" deserves a consistent answer, not personality-driven variety.
 #
-# Pink-2026-08-30: "claude celebrating" REMOVED from this table. Claude
-# Code's Stop hook (fires every single turn completion, not "the task is
-# done") moved from CELEBRATING to GROOVING entirely -- see watcher.py's
-# CELEBRATING/GROOVING cascade comments for the full story (Pink report:
-# celebrating mid-task on routine turns, confused with what should have
-# been a lighter per-turn beat). state_reason can no longer BE "claude
-# celebrating", so keeping a dead entry here would be misleading.
+# Pink-2026-08-30: "claude celebrating" briefly removed from this table
+# (Stop fires every turn, not just "the task is done", so it was moved
+# entirely to GROOVING -- Pink report: celebrating mid-task on routine
+# turns). Re-added the same day once watcher.py grew a real way to tell
+# them apart: claude_settled_celebrating only fires once claude_groove_
+# settle_sec has passed since Stop with no shell/file evidence of
+# renewed work -- see StateMachine._compute_inner branches 2/3.
 #
 # codex's celebrate signal is UNCHANGED (CodexDetector.is_celebrating()
 # is still a hardcoded False, "no reliable signal yet" -- Codex has no
@@ -292,6 +292,10 @@ def _format_concern_reason(reason: str) -> Optional[str]:
 # actual HEAD mtime change -- a real commit happened -- so it's already
 # safe to state as fact.
 _CELEBRATE_REASON_BUBBLES = {
+    # Pink-2026-08-30: re-added -- claude celebrating is real again now
+    # that watcher.py distinguishes it from routine turn completion (see
+    # claude_settled_celebrating in StateMachine._compute_inner).
+    "claude celebrating": "finished with claude!",
     "codex celebrating": "ooh, codex!",
     "git celebrating": "nice, fresh commit!",
 }
@@ -547,6 +551,22 @@ class Observer:
             return None
         if self._get_muted():
             return None
+
+        # Pink-2026-08-30: PreCompact-triggered "recapping" needs to
+        # announce itself regardless of what state Squid was in right
+        # before -- including working -> thinking, which the "thinking"
+        # trigger below deliberately suppresses everywhere else ("working
+        # IS already a kind of thinking", no bubble needed). A compaction
+        # is a genuinely different activity from routine reasoning, and
+        # Pink specifically asked for it called out by name, so this
+        # bypasses STATE_TRIGGERS's old-state filtering entirely. Not
+        # random (see _format_celebrate_reason's rationale) -- Pink wants
+        # a consistent, always-shown answer, not a personality coin flip.
+        # Naturally rate-limited by the old==new check above: repeated
+        # ticks while still recapping never re-fire this (old and new are
+        # both "thinking" on every tick after the first).
+        if new == "thinking" and state_reason == "claude recapping":
+            return "📝 recapping..."
 
         # Find matching trigger
         trigger_key = None
