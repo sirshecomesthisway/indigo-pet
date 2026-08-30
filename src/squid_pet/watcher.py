@@ -1,30 +1,27 @@
 """
-Squid Pet Watcher — observes Claude Code / Codex / TPA + macOS
-activity and emits state.
+Squid Pet Watcher — observes Claude Code / Codex activity and emits state.
 
 State model:
   - idle         : nothing happening
   - thinking     : Claude Code / Codex transcript written recently (streaming)
   - working      : Claude Code / Codex has a live shell child, or a project
                    file was just written
-  - celebrating  : any detector's busy signal just dropped to idle (sticky
-                   window), or GitDetector saw a fresh commit
+  - celebrating  : Claude Code's/Codex's busy signal just dropped to idle
+                   (sticky window), or GitDetector saw a fresh commit
   - sleeping     : macOS idle > 5 min
+  - approval_needed : Claude Code's Notification hook (scripts/
+                   claude_pet_hook.py) reports a session is waiting on you
 
-  TPA (a separate CLI coding agent) is no longer watched as a
-  general activity source -- Pink-2026-08-22: it was never actually
-  installed/run on this machine, so TPADetector's busy/thinking/
-  working/celebrating/grooving/concerned role never fired anything in
-  practice and was removed. "grooving" (TPA subagent) and "concerned"
-  (TPA errors.log) had no equivalent for Claude Code / Codex and are
-  presently unreachable via natural detection (still settable via the
+  Pink-2026-08-27: TPA (a separate CLI coding agent this project
+  originally watched) has been fully removed, including the approval-
+  needed/flag-wave mechanism that used to be TPA-driven
+  (~/.tpa/awaiting_input/<pid> + a CPU-idle fallback) -- Code
+  Puppy was never actually installed/run on this machine, and the
+  Claude-Code-native replacement (an official Notification hook) has
+  been live and tested since 2026-08-26. "grooving" and "concerned" had
+  no Claude Code/Codex equivalent to begin with and remain unreachable
+  via natural detection (still settable via the
   ~/.squid-pet/force_state debug override for testing/demos).
-
-  The TPA-specific approval_needed/flag-wave machinery below (direct
-  ~/.tpa/awaiting_input/<pid> signal + CPU-idle fallback) is
-  UNTOUCHED and still fully TPA-driven -- kept pending a Claude-Code-
-  native replacement (e.g. a Notification hook writing an equivalent
-  flag file).
 
 State is written to ~/.squid-pet/state.json every 1s, frontend polls it.
 """
@@ -83,6 +80,17 @@ SHELL_CHILD_NAMES = (
     "sleep", "tee", "xargs", "env",
 )
 
+# Pink-2026-08-27k: subset of SHELL_CHILD_NAMES that are wrapper shells,
+# not the meaningful command -- Claude Code's actual Bash-tool invocation
+# is `zsh -c 'source <shell-snapshot> ... && eval "<real command>" ...'`,
+# so the FIRST shell-child match found is almost always this wrapper
+# itself, whose cmdline is a huge, useless snapshot-sourcing preamble
+# (confirmed live). has_active_shell_children() still counts these
+# (a wrapper being alive IS evidence a tool is running underneath), but
+# latest_shell_child_cmdline() below skips them and keeps walking for an
+# actual reportable command instead of returning "running zsh".
+SHELL_WRAPPER_NAMES = frozenset({"bash", "sh", "zsh", "fish"})
+
 
 # ────────────────────────────────────────────────────────────────────────
 # State dataclass
@@ -91,10 +99,13 @@ SHELL_CHILD_NAMES = (
 class PetState:
     state: str = "idle"
     sub_state: str = ""          # optional flavor text
-    cpu_percent: float = 0.0
     idle_seconds: float = 0.0          # macOS HID idle (kbd/mouse system-wide)
-    agent_idle_seconds: float = 0.0       # seconds since TPA last left "idle" state
-    tpa_running: bool = False
+    # Pink-2026-08-27: field name predates Claude Code/Codex support --
+    # despite the "cp" prefix this is generic now (seconds since the
+    # state machine last left an "active" state), not TPA-specific.
+    # Kept as-is rather than renamed: it's a load-bearing state.json field
+    # the frontend's drowsy-entry logic reads every tick.
+    agent_idle_seconds: float = 0.0
     claude_code_running: bool = False
     codex_running: bool = False
     timestamp: float = 0.0
@@ -127,46 +138,6 @@ def macos_idle_seconds() -> float:
     return 0.0
 
 
-# ────────────────────────────────────────────────────────────────────────
-# TPA process detection
-# ────────────────────────────────────────────────────────────────────────
-def find_tpa_processes() -> list[psutil.Process]:
-    """Return all running tpa processes.
-
-    NOTE: We deliberately DO NOT prefetch cmdline via process_iter([...])
-    because psutil on macOS can raise an uncaught SystemError from
-    KERN_PROCARGS2 during the bulk prefetch (per-process try/except cannot
-    catch errors that fire inside process_iter's prefetch path). Fetching
-    cmdline lazily inside the per-process try block isolates the failure.
-    """
-    matches = []
-    for p in psutil.process_iter(["pid", "name"]):
-        try:
-            cmdline = " ".join(p.cmdline() or [])
-        except (psutil.NoSuchProcess, psutil.AccessDenied, SystemError):
-            continue
-        try:
-            if "tpa" in cmdline or "tpa" in cmdline:
-                # Filter to actual python processes, not bash wrappers
-                if "python" in cmdline or "tpa" in cmdline.split("/")[-1]:
-                    # post-e2e-polish 2026-06-27 Fix 9: skip headless
-                    # one-shot TPA runs (daily-summary cron, doghouse pings,
-                    # scripted automations). They have --prompt in argv;
-                    # they are NOT interactive Pink sessions, so Squid
-                    # should stay idle while they run. Pink reported
-                    # "no TPA is running" while the daily summary cron
-                    # was active and Squid showed "thinking" -- that
-                    # confused her. Filter them out here so the entire
-                    # downstream cascade (CPU, shell_active, busy)
-                    # ignores them.
-                    if " --prompt " in (" " + cmdline + " "):
-                        continue
-                    matches.append(p)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return matches
-
-
 def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Process]:
     """Return processes whose cmdline()[0] basename is in ``names``.
 
@@ -179,10 +150,10 @@ def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Proc
     and shows the real name, which is what led to the wrong assumption
     during initial development that a name-match would work.
     `cmdline()[0]` is reliable, so matching goes through it instead --
-    same lazily-fetched, per-process-try/except pattern as
-    find_tpa_processes (see its docstring for why cmdline must
-    be fetched per-process rather than via process_iter's bulk prefetch,
-    which can raise an uncaught SystemError on macOS).
+    cmdline is fetched per-process (not via process_iter's bulk prefetch)
+    because psutil can raise an uncaught SystemError from KERN_PROCARGS2
+    during that bulk prefetch on macOS; the per-process try/except here
+    isolates the failure to one process instead of the whole scan.
     """
     matches = []
     for p in psutil.process_iter(["pid"]):
@@ -223,9 +194,8 @@ def find_codex_processes() -> list[psutil.Process]:
     (JSON-RPC/stdio server for other programs to drive Codex
     programmatically -- used by IDE extensions and remote/automation
     tooling) and `codex exec`/`exec-server`/`mcp`/`mcp-server` (one-shot
-    or embedded automation, no human watching a terminal). Same
-    reasoning as find_tpa_processes skipping --prompt one-shot
-    runs. Empirically motivated (2026-08-15): a third-party tool on the
+    or embedded automation, no human watching a terminal). Empirically
+    motivated (2026-08-15): a third-party tool on the
     dev machine runs a vendored `codex app-server --listen stdio://` as
     a background component, which would otherwise make Squid look
     "aware" of Codex activity that has nothing to do with the user
@@ -244,6 +214,55 @@ def find_codex_processes() -> list[psutil.Process]:
     return interactive
 
 
+# Pink-2026-08-27: bundle IDs for the terminal-notifier -activate flag,
+# so a clicked approval-needed notification brings the actual app hosting
+# Claude Code to the front instead of a generic/unhelpful target (see
+# find_terminal_app_bundle_for_claude_code's docstring for why this
+# exists: plain `osascript -e 'display notification'` has no click-
+# action support at all -- clicking "Show" just foregrounds whatever
+# process ran the script, which macOS attributes to Script Editor,
+# opening an empty window).
+_TERMINAL_APP_BUNDLE_IDS = {
+    "Terminal": "com.apple.Terminal",
+    "iTerm2": "com.googlecode.iterm2",
+    "iTerm": "com.googlecode.iterm2",
+    "WezTerm": "com.github.wez.wezterm",
+    "Alacritty": "org.alacritty",
+    "kitty": "net.kovidgoyal.kitty",
+    "Warp": "dev.warp.Warp-Stable",
+    "Code": "com.microsoft.VSCode",
+    "Code Helper": "com.microsoft.VSCode",
+}
+
+
+def find_terminal_app_bundle_for_claude_code() -> str | None:
+    """Walk the parent-process chain of any running `claude` process to
+    find which terminal emulator (or IDE-integrated terminal) is hosting
+    it, so a notification click can activate THAT specific app.
+
+    Best-effort and coarse: if multiple Claude Code sessions are running
+    in different terminal apps, this just returns whichever is found
+    first -- there's no way to know from the hook payload (no PID) which
+    session actually fired the notification. Returns None if no claude
+    process is found or its ancestry doesn't hit a recognized terminal
+    app within a few hops (caller falls back to a plain notification
+    with no working click action).
+    """
+    for proc in find_claude_code_processes():
+        try:
+            cur = proc
+            depth = 0
+            while cur is not None and depth < 10:
+                name = cur.name()
+                if name in _TERMINAL_APP_BUNDLE_IDS:
+                    return _TERMINAL_APP_BUNDLE_IDS[name]
+                cur = cur.parent()
+                depth += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+
 def aggregate_cpu(procs: list[psutil.Process]) -> float:
     """Sum CPU% across given processes (single sample, non-blocking)."""
     total = 0.0
@@ -257,311 +276,200 @@ def aggregate_cpu(procs: list[psutil.Process]) -> float:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Per-process idle tracking for multi-TPA approval detection
+# Claude Code direct-signal approval detection (Notification hook)
 # ────────────────────────────────────────────────────────────────────────
-# When Pink has multiple TPA consoles open, the aggregate state machine
-# masks per-process idleness: if TPA-A is working but TPA-B is waiting for
-# approval, aggregate CPU stays high, agent_idle_seconds=0, and approval
-# never fires. Track each PID's last-busy timestamp so approval can fire
-# whenever ANY single TPA has been quiet past threshold.
-_PER_PID_LAST_BUSY: dict[int, float] = {}
-_PER_PID_EVER_BUSY: set[int] = set()
-_PER_PID_BUSY_CPU_THRESHOLD = 5.0  # %, per-process (lower than aggregate)
-# Pink-2026-06-30: A single tick over the CPU threshold isn't proof of
-# real activity -- Python GC, prompt_toolkit redraws, and OS bookkeeping
-# routinely produce one-tick blips. Require N consecutive busy ticks
-# before promoting a PID into _PER_PID_EVER_BUSY. A real LLM call sustains
-# CPU for many seconds; a blip does not. Streak resets on any idle tick.
-_PER_PID_BUSY_STREAK: dict[int, int] = {}
-_PER_PID_SUSTAINED_BUSY_TICKS = 3
-# Pink-2026-06-30: Once a PID has been observed writing its awaiting_input
-# flag (= we know it has the sitecustomize.py patch), the DIRECT signal is
-# authoritative for that PID forever. Skip the CPU fallback entirely --
-# no GC blip can falsely fire approval_needed for a patched TPA.
-_PER_PID_EVER_WROTE_FLAG: set[int] = set()
-# Pink-2026-06-29 follow-up: once a TPA has been waving for SNOOZE_WINDOW_SEC
-# without becoming busy again (Pink "saw it and chose to defer"), drop it
-# from the eligible set. It only re-fires after the TPA cycles busy -> idle
-# again (= Pink replied and got a new response).
-_PENDING_APPROVAL_SNOOZE_SEC = 120.0  # 2 minutes
-
-# Pink-2026-06-30 v3: DIRECT-SIGNAL snooze. The awaiting_input flag is
-# authoritative but relentless -- once written, TPA keeps it there for the
-# entire duration of its idle prompt. Without a snooze, Squid would wave
-# forever. Same principle as the fallback snooze: if Pink has seen the
-# flag for N seconds and hasn't replied, she's chosen to defer -- quiet
-# down until the TPA cycles busy again (which happens the moment she
-# actually types something and TPA starts responding).
-_PENDING_APPROVAL_DIRECT_SNOOZE_SEC = 120.0  # 2 minutes (Pink 2026-06-30: 5 min felt too long)
-
-# Pink-2026-06-30 v3: birth time of each awaiting_input flag. Populated
-# when we first see the flag for a PID, cleared when the flag disappears
-# (Pink replied) or the PID dies. Enables the direct-signal snooze above.
-_PER_PID_FLAG_FIRST_SEEN: dict[int, float] = {}
-
-# Pink-2026-06-29 v2: DIRECT signal from TPA itself. TPA's sitecustomize.py
-# touches `~/.tpa/awaiting_input/<pid>` whenever its interactive
-# prompt is awaiting user input. Presence of an alive-PID file = TPA is
-# asking for input RIGHT NOW. Stops the CPU-heuristic guessing entirely.
-_AWAITING_INPUT_DIR = os.path.join(
-    os.path.expanduser("~"), ".tpa", "awaiting_input"
+# Pink-2026-08-27: this used to run alongside a parallel TPA-driven
+# mechanism (~/.tpa/awaiting_input/<pid>, PID-keyed, with a CPU-
+# heuristic fallback) -- fully removed. TPA was never actually
+# installed/run on this machine, and this Claude-Code-native signal (fed
+# by an official hook, not a monkeypatch) has been live and tested since
+# 2026-08-26.
+# fed by an official Claude Code hook (scripts/claude_pet_hook.py, wired
+# into ~/.claude/settings.json under hooks.Notification/UserPromptSubmit/
+# SessionEnd) instead of a private sitecustomize.py patch. Key difference:
+# hook payloads carry a session_id, never a PID, so liveness can't be
+# checked via psutil.pid_exists() -- cleanup instead relies on the hook
+# itself deleting the flag on UserPromptSubmit/SessionEnd, with a
+# time-based staleness prune here as a belt-and-braces fallback for a
+# session that dies without firing either (e.g. a force-killed terminal).
+#
+# No engagement gate is needed here: a Notification event only ever
+# fires mid- or post-turn, never for a freshly-opened session that has
+# never done anything, so there's no "fresh session, never engaged"
+# false-positive class to filter out.
+CLAUDE_AWAITING_INPUT_DIR = os.path.join(
+    os.path.expanduser("~"), ".squid-pet", "claude_awaiting_input"
 )
+CLAUDE_AWAITING_INPUT_STALE_SEC = 7200.0  # 2h -- crashed-session disk cleanup only
+_CLAUDE_SESSION_SNOOZE_SEC = 120.0  # once seen & deferred this long, quiet down until it re-arms
+_CLAUDE_SESSION_FLAG_FIRST_SEEN: dict[str, float] = {}
 
 
-def tpa_pids_awaiting_input() -> list[int]:
-    """Return PIDs of TPA processes currently sitting at the prompt.
+def _scan_session_flag_dir(
+    dir_path: str, stale_sec: float, fresh_sec: float | None = None,
+) -> list[str]:
+    """Shared scan/prune logic for the session-id-keyed flag directories
+    (claude_awaiting_input/, claude_finished/): list entries, skip
+    dotfiles, evict (delete) anything older than stale_sec as crash-safety
+    disk cleanup, and -- when fresh_sec is given -- additionally exclude
+    (without deleting) entries older than fresh_sec from the returned
+    list, for signals whose "still counts" window is narrower than their
+    crash-safety cleanup window (e.g. claude_finished's celebrate_hold_sec
+    vs its much larger stale threshold).
 
-    Each TPA, via sitecustomize.py, writes a file `<dir>/<pid>` on entry
-    to its prompt loop and deletes it on exit. We scan the dir and
-    keep only files whose PIDs are still alive. Dead-PID files are
-    EVICTED so a crashed TPA doesn't leave a stuck-on signal.
-
-    Returns sorted list (deterministic for tests). Missing dir or any
-    OS error -> [] (signal is best-effort; never crash the tick).
-    """
-    if not os.path.isdir(_AWAITING_INPUT_DIR):
-        return []
-    alive: list[int] = []
+    Returns sorted list (deterministic for tests). Missing dir or any OS
+    error -> [] (signal is best-effort; never crash the tick) -- listdir's
+    own FileNotFoundError is an OSError, so a missing dir needs no
+    separate pre-check."""
+    now = time.time()
+    live: list[str] = []
     try:
-        names = os.listdir(_AWAITING_INPUT_DIR)
+        names = os.listdir(dir_path)
     except OSError:
         return []
     for name in names:
-        # Filenames must be all-digit PIDs. Skip anything else (e.g.
-        # .DS_Store, README, accidental editor swap files).
-        if not name.isdigit():
+        if name.startswith("."):
             continue
-        pid = int(name)
-        path = os.path.join(_AWAITING_INPUT_DIR, name)
-        if psutil.pid_exists(pid):
-            alive.append(pid)
-            # Pink-2026-06-30: This PID has proven it speaks the new
-            # protocol. Trust the direct signal exclusively from now on;
-            # skip the CPU fallback for this PID forever.
-            _PER_PID_EVER_WROTE_FLAG.add(pid)
-        else:
-            # Crashed TPA -- evict the stale flag so we don't lie forever.
+        path = os.path.join(dir_path, name)
+        try:
+            age = now - os.stat(path).st_mtime
+        except OSError:
+            continue
+        if age > stale_sec:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            # Also drop from the trust set so a future PID reusing this
-            # number isn't accidentally trusted as patched.
-            _PER_PID_EVER_WROTE_FLAG.discard(pid)
-    return sorted(alive)
-
-
-def per_process_pending_approval_idle(
-    procs: list[psutil.Process],
-) -> float:
-    """Idle duration for the most-stale TPA that is genuinely awaiting input.
-
-    Stricter than `per_process_max_idle_seconds` -- a PID is only ELIGIBLE
-    for approval-wave consideration when:
-
-    1. It has been observed BUSY at least once (cpu >= threshold).
-       Filters out CPs that were opened and never used.
-    2. It is currently idle.
-    3. Idle duration <= SNOOZE_WINDOW. Past that, Pink has clearly seen
-       the wave and is choosing to defer -- the wave should quiet down
-       until the TPA cycles busy -> idle again (= she replied).
-
-    Returns the MAX idle across eligible PIDs (so a single waiting TPA
-    fires regardless of what others are doing), or 0.0 if nothing is
-    eligible. Threshold filtering (10s default) lives in the caller --
-    we return raw idle so the caller stays in charge of policy.
-    """
-    now = time.time()
-    live_pids: set[int] = set()
-    max_idle = 0.0
-    for p in procs:
-        try:
-            pid = p.pid
-            cpu = p.cpu_percent(interval=None)
-            live_pids.add(pid)
-            # Pink-2026-06-30 v3: BUSY TRACKING for ALL CPs, patched or not.
-            # We need _PER_PID_EVER_BUSY populated for patched CPs too --
-            # the direct-signal path uses it as an "has this TPA ever been
-            # engaged?" gate to suppress startup false-fires. Previously
-            # patched CPs skipped this block entirely (short-circuit went
-            # HERE) and _PER_PID_EVER_BUSY stayed empty for them.
-            if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
-                _PER_PID_LAST_BUSY[pid] = now
-                _PER_PID_BUSY_STREAK[pid] = _PER_PID_BUSY_STREAK.get(pid, 0) + 1
-                if _PER_PID_BUSY_STREAK[pid] >= _PER_PID_SUSTAINED_BUSY_TICKS:
-                    _PER_PID_EVER_BUSY.add(pid)
-            else:
-                _PER_PID_BUSY_STREAK[pid] = 0
-            # Pink-2026-06-30: PATCHED-TPA SHORT-CIRCUIT for fallback firing.
-            # If this PID has ever written its awaiting_input flag, we
-            # KNOW it has the sitecustomize.py patch. The direct signal
-            # is the only path of truth for it -- skip the CPU FALLBACK
-            # so GC blips can't false-fire approval_needed. Busy tracking
-            # above still runs so _PER_PID_EVER_BUSY stays accurate.
-            if pid in _PER_PID_EVER_WROTE_FLAG:
-                continue
-            if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
-                # Already tracked above -- skip fallback-idle computation.
-                pass
-            else:
-                # Streak was already reset above.
-                # Two cases for the rest:
-                #   a) Never observed sustained-busy -> skip (not eligible).
-                #   b) Observed sustained-busy at some point -> compute
-                #      idle and apply snooze window.
-                if pid not in _PER_PID_EVER_BUSY:
-                    continue
-                last = _PER_PID_LAST_BUSY.get(pid)
-                if last is None:
-                    continue
-                idle = now - last
-                if idle > _PENDING_APPROVAL_SNOOZE_SEC:
-                    # Snoozed -- wait for the next busy cycle to re-arm.
-                    continue
-                if idle > max_idle:
-                    max_idle = idle
-        except (psutil.NoSuchProcess, psutil.AccessDenied,
-                AttributeError, TypeError):
             continue
-    # Evict dead PIDs from all caches
-    dead = set(_PER_PID_LAST_BUSY.keys()) - live_pids
-    for pid in dead:
-        del _PER_PID_LAST_BUSY[pid]
-        _PER_PID_EVER_BUSY.discard(pid)
-        _PER_PID_BUSY_STREAK.pop(pid, None)
-    return round(max_idle, 1)
+        if fresh_sec is not None and age > fresh_sec:
+            continue
+        live.append(name)
+    return sorted(live)
 
 
-def snooze_all_awaiting_now() -> int:
-    """Pink-2026-06-30 v3: MANUAL "calm Squid" action for the right-click menu.
+def claude_sessions_awaiting_input() -> list[str]:
+    """Return session_ids of Claude Code sessions currently awaiting input.
 
-    Reuses the direct-signal snooze mechanic: for every PID currently in
-    _PER_PID_FLAG_FIRST_SEEN, backdate its birth time past the snooze
-    window so filter_eligible_awaiting_pids will drop it on the next tick.
-
-    The natural re-arm still works: when Pink replies (flag disappears)
-    the entry is evicted, and when TPA hits its next prompt (flag
-    reappears) the birth time is fresh -- so waves come back for
-    genuinely new work.
-
-    Also snoozes PIDs whose flag we haven't yet recorded (rare edge
-    case: menu clicked in the same tick as a new flag appearing).
-
-    Returns the number of PIDs snoozed, so the menu can show a hint.
+    scripts/claude_pet_hook.py writes `<dir>/<session_id>` on a
+    Notification event (permission_prompt or idle_prompt) and removes it
+    on UserPromptSubmit/SessionEnd. Entries older than
+    CLAUDE_AWAITING_INPUT_STALE_SEC are evicted here as a safety net for a
+    session that died without either firing (crash, force-kill).
     """
-    now = time.time()
-    stale = now - _PENDING_APPROVAL_DIRECT_SNOOZE_SEC - 1.0
-
-    # Also cover any live flag we might have missed observing yet (the
-    # scan of the awaiting dir is cheap enough to do inline).
-    live = set(tpa_pids_awaiting_input())
-    for pid in live:
-        _PER_PID_FLAG_FIRST_SEEN[pid] = stale
-
-    # Backdate any PIDs we're already tracking (belt-and-braces).
-    count = 0
-    for pid in list(_PER_PID_FLAG_FIRST_SEEN.keys()):
-        _PER_PID_FLAG_FIRST_SEEN[pid] = stale
-        count += 1
-    return count
+    return _scan_session_flag_dir(CLAUDE_AWAITING_INPUT_DIR, CLAUDE_AWAITING_INPUT_STALE_SEC)
 
 
-def count_currently_waving_pids() -> int:
-    """Menu helper: how many TPA PIDs are actively waving right now
-    (i.e. have a flag AND would pass the eligibility filter)?
-    Used to enable/disable the 'Calm Squid' menu item."""
+# ── "just finished" flag (Pink-2026-08-27f: real Stop-hook signal) ─────
+# Replaces the old busy->idle heuristic edge (ClaudeCodeDetector watching
+# shell/file/transcript-mtime activity drop) as the celebrate trigger for
+# Claude Code. That heuristic fired on any >20s gap with no tool call --
+# a normal reasoning stretch mid-task, not a real completion -- confirmed
+# live as a false "finished with claude!" bubble while still working.
+# scripts/claude_pet_hook.py writes <dir>/<session_id> on the official
+# Stop hook (fires exactly when Claude finishes responding and hands
+# control back). Unlike claude_awaiting_input, nothing ever explicitly
+# REMOVES this flag -- there's no natural "un-finished" event to hang a
+# removal on -- so freshness is entirely age-based: an entry only counts
+# as "just finished, worth celebrating now" within CLAUDE_FINISHED_FRESH_SEC
+# of being written. Older entries are simply excluded from the live list
+# (not deleted) until they cross CLAUDE_AWAITING_INPUT-style
+# CLAUDE_FINISHED_STALE_SEC, at which point they're pruned as disk
+# cleanup, same crash-safety pattern as the awaiting-input dir.
+CLAUDE_FINISHED_DIR = os.path.join(
+    os.path.expanduser("~"), ".squid-pet", "claude_finished"
+)
+CLAUDE_FINISHED_STALE_SEC = 7200.0  # 2h -- crashed-session disk cleanup only
+CLAUDE_FINISHED_FRESH_SEC_DEFAULT = 20.0  # shared default with celebrate_hold_sec config
+
+
+def claude_sessions_just_finished() -> list[str]:
+    """Return session_ids of Claude Code sessions whose Stop hook fired
+    within the last celebrate_hold_sec seconds (hot-reloadable config,
+    same knob that controls how long the celebrating sprite-state holds
+    visually -- see StateMachine._compute_inner's CELEBRATING branch).
+    """
     try:
-        raw = tpa_pids_awaiting_input()
+        from . import config as _cfg
+        fresh_sec = float(_cfg.get("celebrate_hold_sec", CLAUDE_FINISHED_FRESH_SEC_DEFAULT))
     except Exception:
-        return 0
-    return len(filter_eligible_awaiting_pids(raw))
+        fresh_sec = CLAUDE_FINISHED_FRESH_SEC_DEFAULT
+    return _scan_session_flag_dir(CLAUDE_FINISHED_DIR, CLAUDE_FINISHED_STALE_SEC, fresh_sec)
 
 
-def filter_eligible_awaiting_pids(awaiting_pids: list[int]) -> list[int]:
-    """Filter direct-signal awaiting_input PIDs down to those that deserve
-    a flag-wave right now.
+def filter_eligible_claude_sessions(session_ids: list[str]) -> list[str]:
+    """Filter direct-signal Claude Code session_ids down to those that
+    deserve a flag-wave right now.
 
-    Two gates:
+    Single gate: DIRECT-SIGNAL SNOOZE, same principle as
+    filter_eligible_awaiting_pids -- once a session has been waving for
+    _CLAUDE_SESSION_SNOOZE_SEC without the flag disappearing, the user
+    has clearly seen it and consciously deferred. Quiet down until the
+    flag disappears (they replied) and reappears (a fresh prompt/
+    permission wait) with a new birth-time clock.
 
-    1. **ENGAGEMENT GATE.** The PID must have been observed sustained-busy
-       at least once (i.e. present in _PER_PID_EVER_BUSY). Otherwise it's
-       a freshly-launched TPA that wrote its flag at startup but Pink has
-       never actually engaged with -- waving for it is a false fire.
-
-    2. **DIRECT-SIGNAL SNOOZE.** Once we've been aware of the flag for
-       _PENDING_APPROVAL_DIRECT_SNOOZE_SEC without the flag disappearing,
-       Pink has clearly seen the wave and consciously deferred. Quiet
-       down until the flag disappears (= she typed) and reappears (= TPA
-       finished her request and is now waiting for the next).
-
-    Also maintains _PER_PID_FLAG_FIRST_SEEN: records birth time for any
-    new flag, evicts entries whose flag has gone away.
+    Also maintains _CLAUDE_SESSION_FLAG_FIRST_SEEN: records birth time for
+    any new flag, evicts entries whose flag has gone away.
     """
     now = time.time()
-    live_awaiting = set(awaiting_pids)
+    live = set(session_ids)
 
-    # Evict first-seen entries whose flag has disappeared (Pink replied
-    # or TPA crashed -- either way the snooze clock resets).
-    for pid in [p for p in _PER_PID_FLAG_FIRST_SEEN.keys()
-                if p not in live_awaiting]:
-        del _PER_PID_FLAG_FIRST_SEEN[pid]
+    for sid in [s for s in _CLAUDE_SESSION_FLAG_FIRST_SEEN.keys()
+                if s not in live]:
+        del _CLAUDE_SESSION_FLAG_FIRST_SEEN[sid]
 
-    eligible: list[int] = []
-    for pid in awaiting_pids:
-        # Record birth time on first sighting.
-        first_seen = _PER_PID_FLAG_FIRST_SEEN.setdefault(pid, now)
-
-        # Gate 1: engagement. Skip fresh-startup CPs.
-        if pid not in _PER_PID_EVER_BUSY:
+    eligible: list[str] = []
+    for sid in session_ids:
+        first_seen = _CLAUDE_SESSION_FLAG_FIRST_SEEN.setdefault(sid, now)
+        if now - first_seen > _CLAUDE_SESSION_SNOOZE_SEC:
             continue
-
-        # Gate 2: snooze. Skip stale-defer.
-        if now - first_seen > _PENDING_APPROVAL_DIRECT_SNOOZE_SEC:
-            continue
-
-        eligible.append(pid)
+        eligible.append(sid)
 
     return eligible
 
 
-def per_process_max_idle_seconds(procs: list[psutil.Process]) -> float:
-    """Maximum idle duration across the given TPA processes.
+def snooze_all_awaiting_now() -> int:
+    """Pink-2026-06-30 v3 / 2026-08-27: MANUAL "calm Squid" action for the
+    right-click menu. Backdates every currently-tracked session's birth
+    time past the snooze window so filter_eligible_claude_sessions will
+    drop it on the next tick.
 
-    Each PID is considered "busy this tick" if its individual CPU%
-    crosses _PER_PID_BUSY_CPU_THRESHOLD; otherwise its idle timer
-    advances. Returns the LONGEST idle duration across all processes
-    (so if ANY TPA has been quiet for 12s, this returns >=12). Dead
-    PIDs are evicted from the cache.
+    The natural re-arm still works: when you reply (flag disappears) the
+    entry is evicted, and when the session hits its next wait (flag
+    reappears) the birth time is fresh -- so waves come back for
+    genuinely new work.
+
+    Also snoozes sessions whose flag we haven't yet recorded (rare edge
+    case: menu clicked in the same tick as a new flag appearing).
+
+    Returns the number of sessions snoozed, so the menu can show a hint.
     """
     now = time.time()
-    live_pids: set[int] = set()
-    max_idle = 0.0
-    for p in procs:
-        try:
-            pid = p.pid
-            cpu = p.cpu_percent(interval=None)
-            live_pids.add(pid)
-            if cpu >= _PER_PID_BUSY_CPU_THRESHOLD:
-                _PER_PID_LAST_BUSY[pid] = now
-            else:
-                # First time seeing this PID idle? Treat "birth" as last-busy
-                # so brand-new processes don't immediately count as idle for
-                # eternity.
-                _PER_PID_LAST_BUSY.setdefault(pid, now)
-                idle = now - _PER_PID_LAST_BUSY[pid]
-                if idle > max_idle:
-                    max_idle = idle
-        except (psutil.NoSuchProcess, psutil.AccessDenied,
-                AttributeError, TypeError):
-            # AttributeError/TypeError: test mocks sometimes inject non-Process
-            # sentinels (strings, ints). Skip them rather than crashing the
-            # entire watcher tick.
-            continue
-    # Evict dead PIDs so the dict doesn't grow forever
-    dead = set(_PER_PID_LAST_BUSY.keys()) - live_pids
-    for pid in dead:
-        del _PER_PID_LAST_BUSY[pid]
-    return round(max_idle, 1)
+    claude_stale = now - _CLAUDE_SESSION_SNOOZE_SEC - 1.0
+
+    # Also cover any live flag we might have missed observing yet (the
+    # scan of the awaiting dir is cheap enough to do inline).
+    live_sessions = set(claude_sessions_awaiting_input())
+    for sid in live_sessions:
+        _CLAUDE_SESSION_FLAG_FIRST_SEEN[sid] = claude_stale
+
+    # Backdate everything we're already tracking (belt-and-braces).
+    count = 0
+    for sid in list(_CLAUDE_SESSION_FLAG_FIRST_SEEN.keys()):
+        _CLAUDE_SESSION_FLAG_FIRST_SEEN[sid] = claude_stale
+        count += 1
+    return count
+
+
+def count_currently_waving_sessions() -> int:
+    """Menu helper: how many Claude Code sessions are actively waving
+    right now (i.e. have a flag AND would pass the eligibility filter)?
+    Used to enable/disable the 'Calm Squid' menu item."""
+    try:
+        raw_sessions = claude_sessions_awaiting_input()
+    except Exception:
+        raw_sessions = []
+    return len(filter_eligible_claude_sessions(raw_sessions))
+
 
 # ────────────────────────────────────────────────────────────────────────
 # State machine
@@ -602,6 +510,49 @@ def has_active_shell_children(procs) -> bool:
     return False
 
 
+def latest_shell_child_cmdline(procs) -> list[str] | None:
+    """Pink-2026-08-27k: cmdline of the first actively-running CLI tool
+    found under any of the given processes -- same SHELL_CHILD_NAMES /
+    recursive-children walk as has_active_shell_children, but returns
+    the actual command instead of just a bool, so a "still working"
+    reannounce can say "running pytest" instead of staying silent.
+    Replaces the removed TPA-only latest_shell_child_cmdline that
+    fed this same feature before TPA was pulled out.
+
+    Skips SHELL_WRAPPER_NAMES matches (bash/sh/zsh/fish) -- see that
+    constant's comment: Claude Code's actual Bash-tool invocation wraps
+    everything in a shell-snapshot-sourcing preamble, so the wrapper
+    shell is almost always the FIRST match in the walk, and its own
+    cmdline is a long, useless housekeeping string, not the real command.
+    Confirmed live. Keeps walking past it for an actual reportable tool.
+
+    Any error (including a fake/test process object with no .children())
+    -> None, matching has_active_shell_children's best-effort contract.
+    """
+    if not procs:
+        return None
+    try:
+        import psutil
+        for p in procs:
+            try:
+                for ch in p.children(recursive=True):
+                    try:
+                        name = (ch.name() or "").lower()
+                        if name in SHELL_WRAPPER_NAMES:
+                            continue
+                        if name in SHELL_CHILD_NAMES:
+                            cmdline = ch.cmdline()
+                            if cmdline:
+                                return cmdline
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        return None
+    return None
+
+
 class StateMachine:
     """
     Computes the pet's emotional state each tick by querying a list of
@@ -612,10 +563,8 @@ class StateMachine:
     thinking > idle. Claude Code / Codex are promoted into the rich
     working/thinking cascade; other detectors fire celebrating/grooving/
     thinking via the generic OR fallback at the bottom of the cascade.
-
-    tpa_running in state.json is still populated (a lightweight
-    direct process check, not a detector) because the approval_needed
-    alert below still keys off it -- see that block's docstring.
+    approval_needed (Claude Code's Notification hook) can override any
+    of the above -- see that block below.
     """
 
     # Settings file path (centralised so tests can monkey-patch).
@@ -693,17 +642,18 @@ class StateMachine:
         # Hold "working" for working_hold_sec between tool calls
         # so Squid does not flicker to "thinking" in LLM-gen gaps.
         self.working_hold_until = 0.0
-        # TPA-state-idle tracking: clock starts whenever state enters "idle".
-        # Independent of macOS HID activity -- Pink can keep typing in Slack
-        # and TPA-idle clock still ticks up.
+        # agent_idle tracking: clock starts whenever state enters "idle".
+        # Independent of macOS HID activity -- you can keep typing in Slack
+        # and this clock still ticks up. (Field/method names keep the "cp"
+        # prefix for state.json schema stability; the tracking itself is
+        # generic, not TPA-specific -- see PetState.agent_idle_seconds.)
         self._agent_idle_since: float = 0.0
         self._last_state: str = ""
         # Auto-wake bookkeeping
         self._sleeping_since: float = 0.0
         self._force_awake_until: float = 0.0
-        # v0.2.1 -- "your turn" alert latch. Fires once per busy-to-idle
-        # cycle when TPA is still running but idle past the threshold
-        # (= probably waiting for user input).
+        # v0.2.1 -- "your turn" alert latch. Fires once per approval_needed
+        # episode (see the approval-needed block in compute()).
         self._approval_alert_fired: bool = False
         self._approval_alert_at: float = 0.0
 
@@ -712,12 +662,17 @@ class StateMachine:
         "thinking", "working", "grooving", "celebrating", "concerned"
     })
 
-    def compute(self) -> PetState:
+    def compute(self, *, notify: bool = True) -> PetState:
         """Run the cascade, then layer in agent_idle_seconds tracking.
 
         Hot-reloads detectors from settings.json if the file changed
         since the last tick (only when this StateMachine owns its
-        detector list -- explicit lists passed in stay immutable)."""
+        detector list -- explicit lists passed in stay immutable).
+
+        notify=False skips firing the real OS approval notification --
+        for read-only diagnostic callers (squid why) that need to call
+        compute() to prime detector caches without causing side effects.
+        """
         self._maybe_reload_settings()
         st = self._compute_inner()
         now = time.time()
@@ -730,60 +685,73 @@ class StateMachine:
         else:
             st.agent_idle_seconds = 0.0
             self._agent_idle_since = 0.0
-            # Reset alert latch when TPA goes active again
-            self._approval_alert_fired = False
         self._last_state = st.state
 
+        awaiting_sessions_raw = claude_sessions_awaiting_input()
+
+        # ── STALE-FLAG SELF-HEAL ─────────────────────────────────────
+        # Pink-2026-08-27, real bug caught via live use: Claude Code's
+        # Notification hook fires permission_prompt/idle_prompt and we
+        # latch a flag file, but if Claude resumes work WITHOUT the user
+        # submitting a fresh top-level prompt (approval granted some
+        # other way, auto-mode proceeding on its own, a multi-step
+        # agentic task continuing unattended), UserPromptSubmit/
+        # SessionEnd never fires to clear it -- the flag (and the wave +
+        # OS notification) stays stuck showing "your turn" even while
+        # you're actively watching it work.
+        #
+        # Self-heal: our OWN independently-verified activity signal
+        # (st.state == working/thinking, from real shell/file/streaming
+        # evidence -- nothing to do with the hook) is proof any pending
+        # wait has been resolved, regardless of which mechanism resolved
+        # it. Coarse -- aggregate across all Claude Code processes, not
+        # per-session, since the hook payload carries no PID to
+        # disambiguate which session is the one now active -- but far
+        # better than trusting a hook event that may simply never fire.
+        #
+        # awaiting_sessions_raw is only re-scanned from disk (a second
+        # syscall) when self-heal actually had something to clean up --
+        # the common case (nothing awaiting, or not working/thinking)
+        # needs just the one scan above. The re-scan itself is NOT
+        # optional when self-heal does run: individual os.unlink calls
+        # below can silently fail (caught per-file), so re-deriving from
+        # disk -- rather than assuming the whole loop succeeded and
+        # setting the list to [] -- is what keeps the APPROVAL-NEEDED
+        # block below correct if some entries didn't actually clear.
+        if st.state in ("working", "thinking") and awaiting_sessions_raw:
+            try:
+                for sid in awaiting_sessions_raw:
+                    try:
+                        os.unlink(os.path.join(CLAUDE_AWAITING_INPUT_DIR, sid))
+                    except OSError:
+                        pass
+                    _CLAUDE_SESSION_FLAG_FIRST_SEEN.pop(sid, None)
+            except Exception:
+                pass
+            awaiting_sessions_raw = claude_sessions_awaiting_input()
+
         # ── APPROVAL-NEEDED ALERT ──────────────────────────────────
-        # Priority order (highest first):
-        #   1. DIRECT signal: TPA's sitecustomize.py touches
-        #      ~/.tpa/awaiting_input/<pid> when its prompt is
-        #      awaiting input. Presence of an alive-PID flag = TPA is
-        #      ASKING FOR INPUT RIGHT NOW. No CPU guessing.
-        #   2. FALLBACK: per_process_pending_approval_idle for TPA
-        #      versions that don't have the signal yet (or have it
-        #      disabled). CPU heuristic with snooze cap.
-        try:
-            procs = find_tpa_processes()
-        except Exception:
-            procs = []
-        tpa_running_now = bool(procs)
-        per_proc_idle = (per_process_pending_approval_idle(procs)
-                         if procs else 0.0)
+        # DIRECT signal: Claude Code's own Notification hook (scripts/
+        # claude_pet_hook.py) writes ~/.squid-pet/claude_awaiting_input/
+        # <session_id> when a session is asking for input RIGHT NOW.
+        # No CPU guessing, no fallback -- this is the only path.
         try:
             from . import config as _cfg
             _enabled = bool(_cfg.get("approval_alert_enabled", True))
-            _threshold = float(_cfg.get("approval_alert_threshold_sec", 10.0))
             _sound = str(_cfg.get("approval_alert_sound", "Glass") or "")
             _text = str(_cfg.get("approval_alert_text", "your turn"))
-            # Pink-2026-07-14: the CPU-heuristic fallback is OFF by default.
-            # It fired approval_needed whenever a TPA went idle at its ordinary
-            # ">>> " prompt after doing work -- i.e. the plain "waiting for
-            # input" state, which Pink does NOT want Squid to wave for. Squid
-            # now waves ONLY on the direct ask_user_question / approval signal.
-            _fallback = bool(_cfg.get("approval_alert_fallback_enabled", False))
         except Exception:
-            _enabled, _threshold, _sound, _text = True, 10.0, "Glass", "your turn"
-            _fallback = False
+            _enabled, _sound, _text = True, "Glass", "your turn"
 
-        # Direct signal beats everything. No threshold, no snooze --
-        # TPA explicitly said "I'm waiting on you".
-        awaiting_pids_raw = tpa_pids_awaiting_input() if _enabled else []
-        # Pink-2026-06-30 v3: apply engagement gate + direct-signal snooze.
-        # The raw flag list is the "TPA claims to be waiting" set; the
-        # eligible list is the "Pink should be nudged about it right now"
-        # set. Difference matters at TPA startup (fresh flag, never engaged)
-        # and after Pink has already seen the wave and deferred.
-        awaiting_pids = filter_eligible_awaiting_pids(awaiting_pids_raw)
+        # Pink-2026-08-26: no engagement gate needed (see
+        # filter_eligible_claude_sessions's docstring for why).
+        awaiting_sessions = filter_eligible_claude_sessions(
+            awaiting_sessions_raw if _enabled else []
+        )
         fired_reason: str | None = None
-        if awaiting_pids:
-            fired_reason = ("awaiting_input flag from TPA pid(s) "
-                            + ",".join(str(p) for p in awaiting_pids))
-        elif (_fallback and tpa_running_now and per_proc_idle > 0
-              and _enabled and per_proc_idle >= _threshold):
-            fired_reason = ("approval needed ("
-                            + str(int(per_proc_idle))
-                            + "s per-proc idle, fallback)")
+        if awaiting_sessions:
+            fired_reason = ("awaiting_input flag from Claude Code session(s) "
+                            + ",".join(awaiting_sessions))
 
         if fired_reason is not None:
             # OVERRIDE whatever the cascade picked. approval_needed is
@@ -801,7 +769,8 @@ class StateMachine:
                     + fired_reason + ", sound=" + _sound_label + ")",
                     flush=True,
                 )
-                _fire_approval_notification(_text, _sound)
+                if notify:
+                    _fire_approval_notification(_text, _sound)
         else:
             # No alert is fired this tick. Reset the OS-notification latch
             # so the next genuine alert (after Pink replies + new response)
@@ -837,35 +806,36 @@ class StateMachine:
     def _compute_inner(self) -> PetState:
         now = time.time()
 
-        # TPA is no longer a general activity detector (see module
-        # docstring) -- `running` is still tracked for the state.json
-        # schema and because approval_needed (in compute()) still keys
-        # off it. A lightweight direct process check replaces the old
-        # TPADetector scan; no busy/thinking/celebrating role.
-        try:
-            tpa_procs = find_tpa_processes()
-        except Exception:
-            tpa_procs = []
-        running = bool(tpa_procs)
-        cpu = round(aggregate_cpu(tpa_procs), 1) if tpa_procs else 0.0
-
         claude = self._claude_detector
         # Trigger one scan if we have a Claude Code detector (populates
-        # claude_code_running for the state.json schema). Mirrors the TPA
-        # block above; see claude-code-detector design.md for why this
-        # detector is promoted into the rich cascade instead of the flat
-        # non-TPA OR-fallback.
+        # claude_code_running for the state.json schema); see
+        # claude-code-detector design.md for why this detector is
+        # promoted into the rich cascade instead of the flat generic
+        # OR-fallback.
         if claude is not None and claude.enabled:
             _ = claude.is_busy(now)
             claude_running = claude.claude_code_running
             claude_shell_active = claude.shell_active
             claude_file_active = claude.file_active
             claude_streaming = claude.streaming
+            # Pink-2026-08-27f: was claude.is_celebrating(now) -- the
+            # detector's own busy->idle heuristic edge (shell/file/
+            # transcript-mtime activity dropping). Replaced with the
+            # real Stop-hook signal (claude_sessions_just_finished()):
+            # the heuristic fired on any >20s gap with no tool call, a
+            # normal mid-task reasoning stretch, not a real completion --
+            # confirmed live as a false "finished with claude!" bubble
+            # while Claude was still actively working. Stop fires
+            # exactly when Claude finishes responding and hands control
+            # back, same fix pattern as the approval_needed migration off
+            # CPU heuristics onto the Notification hook.
+            claude_celebrating = bool(claude_sessions_just_finished())
         else:
             claude_running = False
             claude_shell_active = False
             claude_file_active = False
             claude_streaming = False
+            claude_celebrating = False
 
         codex = self._codex_detector
         # Same pattern as the Claude Code block -- see codex-detector
@@ -876,15 +846,15 @@ class StateMachine:
             codex_shell_active = codex.shell_active
             codex_file_active = codex.file_active
             codex_streaming = codex.streaming
+            codex_celebrating = codex.is_celebrating(now)
         else:
             codex_running = False
             codex_shell_active = False
             codex_file_active = False
             codex_streaming = False
+            codex_celebrating = False
 
-        # Merged signals feeding branch 4 below. TPA no longer
-        # participates -- `running` is schema/approval-only now (see
-        # _compute_inner's opening comment).
+        # Merged signals feeding branch 4 below.
         #
         # working_evidence_merged covers two kinds of "hard" evidence a
         # tool is actually running: a live subprocess (shell_active,
@@ -936,11 +906,24 @@ class StateMachine:
             return other_busy_cache[0]
 
         def other_celebrating() -> bool:
+            # Cache holds (fired: bool, name: str|None) once computed --
+            # one cell for the whole result instead of two parallel cells
+            # that had to be kept in sync.
             if other_celebrating_cache[0] is None:
-                other_celebrating_cache[0] = any(
-                    d.is_celebrating(now) for d in self._other_detectors()
-                )
-            return other_celebrating_cache[0]
+                fired, name = False, None
+                for d in self._other_detectors():
+                    if d.is_celebrating(now):
+                        fired, name = True, d.name
+                        break
+                other_celebrating_cache[0] = (fired, name)
+            return other_celebrating_cache[0][0]
+
+        def other_celebrating_name() -> str | None:
+            """Only meaningful after other_celebrating() has actually run
+            -- if the CELEBRATING branch's `or` short-circuited before
+            reaching it (e.g. a manually-armed celebrate_until), the
+            cache is still empty and there's no "other" name to report."""
+            return other_celebrating_cache[0][1] if other_celebrating_cache[0] else None
 
         def other_grooving() -> bool:
             if other_grooving_cache[0] is None:
@@ -950,16 +933,27 @@ class StateMachine:
             return other_grooving_cache[0]
 
         st = PetState(
-            cpu_percent=round(cpu, 1),
             idle_seconds=round(idle, 1),
-            tpa_running=running,
             claude_code_running=claude_running,
             codex_running=codex_running,
             timestamp=now,
         )
 
-        # ── 1. SLEEPING ── user is away.
-        if idle >= IDLE_THRESHOLD_SEC:
+        # ── 1. SLEEPING ── user is away AND the agent isn't actively busy.
+        # Pink-2026-08-27g: sleeping used to override EVERYTHING
+        # unconditionally ("regardless of any other signal", including
+        # active agent work). A user caught this looking wrong live:
+        # squid showed sleeping while Claude Code was actively working
+        # in the background, because the user had stepped away from the
+        # keyboard for 5+ minutes (easy to happen mid-session). Sleeping
+        # is about USER presence; working/thinking are about AGENT
+        # activity -- when the agent is genuinely busy, that should win,
+        # so squid doesn't misleadingly "doze" through real work. Reuses
+        # the exact same merged signals branch 4 below uses to decide
+        # working/thinking, so this can never disagree with what the
+        # rest of the cascade would call "busy".
+        agent_actively_busy = working_evidence_merged or streaming_merged
+        if idle >= IDLE_THRESHOLD_SEC and not agent_actively_busy:
             if self._sleeping_since == 0.0:
                 self._sleeping_since = now
             sleeping_for = now - self._sleeping_since
@@ -978,19 +972,47 @@ class StateMachine:
             self._sleeping_since = 0.0
             self._force_awake_until = 0.0
 
-        # ── 2. CELEBRATING ── sticky post-busy-drop (armed by Claude Code /
-        # Codex / Git's own celebrate edge), or any other detector says so.
-        if now < self.celebrate_until or other_celebrating():
+        # ── 2. CELEBRATING ── reserved for actual milestones, not routine
+        # turn completion. Codex's own busy->idle edge, any other
+        # detector's (e.g. Git's fresh-commit) celebrate signal, or a
+        # manually-armed self.celebrate_until (force_state / test hook --
+        # nothing in the current cascade sets this automatically; kept as
+        # a settable override point).
+        #
+        # Pink-2026-08-30: claude_celebrating (Claude Code's Stop hook --
+        # fires every time Claude finishes a single response, NOT when a
+        # whole multi-turn task is done) used to land HERE. Confirmed
+        # live: it fired mid-task on every ordinary turn of a long
+        # session, not just at genuine completion -- a mismatch with
+        # "celebrating" reserved for real milestones. Claude Code has no
+        # hook that distinguishes "finished this turn" from "finished the
+        # whole task" (Stop fires identically either way), so there's no
+        # signal to promote it to celebrating on. Moved to GROOVING below
+        # instead -- a per-turn "still making progress" beat is exactly
+        # what that state is for, and celebrating now stays reserved for
+        # detectors with an actual milestone signal (git's real commit,
+        # codex's -- currently also aspirational, see CodexDetector).
+        if now < self.celebrate_until or codex_celebrating or other_celebrating():
             st.state = "celebrating"
-            st.state_reason = "celebrating"
+            if codex_celebrating:
+                st.state_reason = "codex celebrating"
+            elif other_celebrating_name():
+                st.state_reason = f"{other_celebrating_name()} celebrating"
+            else:
+                st.state_reason = "celebrating"
             st.message = "🎉 nice!"
             return st
 
-        # ── 3. GROOVING ── any detector says so (currently no detector
-        # implements real grooving logic -- kept as an extensibility hook).
-        if other_grooving():
+        # ── 3. GROOVING ── a lighter, per-turn "still making progress"
+        # beat. claude_celebrating (Stop hook -- see CELEBRATING's
+        # comment above for why it moved here, Pink-2026-08-30) fires
+        # this on every Claude Code turn completion; any other detector's
+        # is_grooving() also lands here (currently no detector implements
+        # real grooving logic beyond this -- kept as an extensibility
+        # hook for future signals).
+        if claude_celebrating or other_grooving():
             st.state = "grooving"
-            st.state_reason = "creative burst"
+            st.state_reason = "claude grooving" if claude_celebrating else "creative burst"
             st.message = "🤸 creative burst"
             return st
 
@@ -1039,8 +1061,8 @@ class StateMachine:
 
         # ── 6. Default -- idle/watching ──
         st.state = "idle"
-        st.state_reason = "tpa running, no signals from it" if running else "no signals"
-        st.message = "👂 listening" if running else "👀 watching"
+        st.state_reason = "no signals"
+        st.message = "👀 watching"
         return st
 
 
@@ -1060,23 +1082,62 @@ def _applescript_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _fire_approval_notification(text: str, sound: str) -> None:
+def _fire_approval_notification(text: str, sound: str, source_label: str = "Claude Code") -> None:
     """Fire a macOS notification banner in a background thread.
 
-    osascript is ~50ms so we do not block the watcher loop. Silent on
-    failure (notification is supplementary; the bubble is the primary
-    signal).
+    Runs in ~50ms so we do not block the watcher loop. Silent on failure
+    (notification is supplementary; the bubble is the primary signal).
+
+    source_label names which agent is actually waiting. Only Claude Code
+    calls this today (see StateMachine.compute()'s approval block); kept
+    as a parameter rather than a hardcoded string so a future agent-
+    specific direct signal (e.g. Codex) can reuse this function without
+    lying about the source -- Pink-2026-08-26 found a real bug where this
+    was hardcoded to "TPA" unconditionally, so a Claude Code
+    session firing this alert showed a banner reading "TPA: your
+    turn" even though TPA was never running.
+
+    Pink-2026-08-27: prefers `terminal-notifier` (if installed) over
+    plain `osascript -e 'display notification'`, because the latter has
+    NO click-action support -- clicking "Show" just foregrounds whatever
+    process ran the AppleScript, which macOS attributes generically to
+    Script Editor, opening an empty window (a real, confusing bug caught
+    via live use). terminal-notifier's `-activate <bundle-id>` makes
+    "Show" bring the actual terminal app hosting Claude Code to the
+    front instead. Falls back to the old osascript-only behavior if
+    terminal-notifier isn't installed (`brew install terminal-notifier`).
     """
-    import subprocess, threading
+    import shutil
+    import subprocess
+    import threading
 
     def _go():
+        title = "Squid"
+        body = source_label + ": " + text
+        notifier = shutil.which("terminal-notifier")
+        if notifier:
+            try:
+                bundle_id = find_terminal_app_bundle_for_claude_code()
+            except Exception:
+                bundle_id = None
+            cmd = [notifier, "-title", title, "-message", body]
+            if sound:
+                cmd += ["-sound", sound]
+            if bundle_id:
+                cmd += ["-activate", bundle_id]
+            try:
+                subprocess.run(cmd, timeout=3, capture_output=True)
+                return
+            except Exception as e:
+                print("[squid-pet] terminal-notifier failed, falling back: "
+                      + str(e), flush=True)
         try:
-            title = "Squid"
-            body = "TPA: " + _applescript_escape(text)
+            body_escaped = _applescript_escape(body)
             sound_clause = (
                 ' sound name "' + _applescript_escape(sound) + '"' if sound else ""
             )
-            script = 'display notification "' + body + '" with title "' + title + '"' + sound_clause
+            script = ('display notification "' + body_escaped + '" with title "'
+                      + _applescript_escape(title) + '"' + sound_clause)
             subprocess.run(
                 ["osascript", "-e", script],
                 timeout=3,

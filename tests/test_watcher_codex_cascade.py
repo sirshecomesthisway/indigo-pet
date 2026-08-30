@@ -13,8 +13,16 @@ from squid_pet.detectors import CodexDetector
 
 
 def install_world(monkeypatch, idle=0.0):
+    """Isolate BOTH Claude Code signal dirs from the real ~/.squid-pet/
+    claude_*/ -- without this, a real live flag on the developer's own
+    machine (from this very session's own Notification/Stop hook
+    activity) overrides every test here via approval_needed/celebrating.
+    Confirmed live: this file was missing the claude_finished isolation
+    that test_watcher_claude_code_cascade.py already had, and a real
+    Stop-hook flag from this session leaked in and flipped a test."""
     monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
-    monkeypatch.setattr(watcher, "find_tpa_processes", lambda: [])
+    monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
+    monkeypatch.setattr(watcher, "CLAUDE_FINISHED_DIR", "/nonexistent")
 
 
 def _codex_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),
@@ -49,7 +57,6 @@ def test_codex_only_shell_active_yields_working(monkeypatch):
     st = sm.compute()
     assert st.state == "working"
     assert st.codex_running is True
-    assert st.tpa_running is False
 
 
 def test_codex_only_file_write_yields_working(monkeypatch):

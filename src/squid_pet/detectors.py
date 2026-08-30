@@ -95,14 +95,6 @@ class ClaudeCodeDetector:
     DISCOVERY_CACHE_SEC = 60.0
     CANDIDATE_MAX_AGE_SEC = 900.0  # drop transcripts idle >15min from the cache
     FILE_ACTIVE_WINDOW_SEC = 10.0  # a bit more generous than IDEDetector's 5s
-    # Pink-2026-08-22: was a documented non-goal ("no reliable signal yet")
-    # because there was no busy/idle edge to hang a celebrate window off of.
-    # is_busy() already merges three independent signals (shell_active,
-    # file_active, streaming) that are each windowed/debounced on their own,
-    # so unlike TPA's raw CPU%, there's no separate blip-suppression streak
-    # needed here -- a busy->not-busy flip on the merged signal is already a
-    # real edge. Mirrors GitDetector's _celebrate_until sticky-window mechanism.
-    CELEBRATE_DURATION_SEC = 20  # shared default with celebrate_hold_sec config
 
     def __init__(
         self,
@@ -111,6 +103,7 @@ class ClaudeCodeDetector:
         find_processes_fn: Callable | None = None,
         aggregate_cpu_fn: Callable | None = None,
         has_active_shell_children_fn: Callable | None = None,
+        shell_cmdline_fn: Callable | None = None,
         projects_dir: Path | None = None,
         glob_fn: Callable | None = None,
         stat_fn: Callable | None = None,
@@ -121,6 +114,11 @@ class ClaudeCodeDetector:
         self._find_processes = find_processes_fn
         self._aggregate_cpu = aggregate_cpu_fn
         self._has_active_shell_children = has_active_shell_children_fn
+        # Separate injectable fn (not folded into has_active_shell_children_fn)
+        # so existing callers/tests that only inject a bool-returning
+        # has_active_shell_children_fn keep working unchanged -- this one
+        # defaults independently, lazily, at first use in _scan().
+        self._shell_cmdline_fn = shell_cmdline_fn
         self._projects_dir = Path(projects_dir) if projects_dir else CLAUDE_PROJECTS_DIR
         self._glob = glob_fn or (lambda root: root.glob("*/*.jsonl"))
         self._stat = stat_fn or os.stat
@@ -135,12 +133,10 @@ class ClaudeCodeDetector:
         self.cpu_percent: float = 0.0
         self.claude_code_running: bool = False
         self.shell_active: bool = False
+        self.shell_cmdline: list[str] | None = None
         self.file_active: bool = False
         self.transcript_age: float = float("inf")
         self.streaming: bool = False
-        # Sticky "celebrate after busy-drop" state.
-        self._was_busy: bool = False
-        self._celebrate_until: float = 0.0
 
     def _lazy_defaults(self) -> None:
         if self._find_processes is None:
@@ -191,23 +187,17 @@ class ClaudeCodeDetector:
         self.shell_active = (
             self._has_active_shell_children(procs) if procs else False
         )
+        if self.shell_active:
+            cmdline_fn = self._shell_cmdline_fn
+            if cmdline_fn is None:
+                from . import watcher as _w
+                cmdline_fn = _w.latest_shell_child_cmdline
+            self.shell_cmdline = cmdline_fn(procs)
+        else:
+            self.shell_cmdline = None
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
-        # was_busy -> celebrate edge detection.
-        # Unlike TPA's raw CPU%, each signal here is already time-windowed/
-        # debounced on its own, so a plain busy->not-busy flip is a real edge.
-        any_busy = self.shell_active or self.file_active or self.streaming
-        if self._was_busy and not any_busy:
-            try:
-                from . import config as _cfg
-                hold = float(_cfg.get('celebrate_hold_sec', self.CELEBRATE_DURATION_SEC))
-            except Exception:
-                hold = self.CELEBRATE_DURATION_SEC
-            self._celebrate_until = now + hold
-            self._was_busy = False
-        elif any_busy:
-            self._was_busy = True
         self._last_scan_ts = now
 
     def is_busy(self, now: float) -> bool:
@@ -217,10 +207,19 @@ class ClaudeCodeDetector:
         return self.shell_active or self.file_active or self.streaming
 
     def is_celebrating(self, now: float) -> bool:
-        if not self.enabled:
-            return False
-        self._scan(now)
-        return now < self._celebrate_until
+        # Pink-2026-08-27f: was a busy->idle heuristic edge (shell/file/
+        # transcript-mtime activity dropping) -- fired on any >20s gap
+        # with no tool call, a normal mid-task reasoning stretch, not a
+        # real completion (confirmed live: a false "finished with
+        # claude!" bubble while Claude was still working). The real
+        # signal is now Claude Code's official Stop hook -- see
+        # watcher.claude_sessions_just_finished(), read directly by
+        # StateMachine._compute_inner() rather than through this
+        # detector, since it's a session-keyed hook signal (like
+        # approval_needed) rather than a process/file/transcript scan.
+        # This always returns False; kept only so callers using the
+        # Detector protocol uniformly don't need an isinstance check.
+        return False
 
     def is_grooving(self, now: float) -> bool:
         return False  # no reliable signal yet -- documented non-goal
@@ -232,10 +231,10 @@ class ClaudeCodeDetector:
             "claude_code_running": self.claude_code_running,
             "cpu_percent": self.cpu_percent,
             "shell_active": self.shell_active,
+            "shell_cmdline": self.shell_cmdline,
             "file_active": self.file_active,
             "transcript_age": self.transcript_age,
             "streaming": self.streaming,
-            "celebrate_until": self._celebrate_until,
         }
 
 
@@ -279,6 +278,7 @@ class CodexDetector:
         find_processes_fn: Callable | None = None,
         aggregate_cpu_fn: Callable | None = None,
         has_active_shell_children_fn: Callable | None = None,
+        shell_cmdline_fn: Callable | None = None,
         sessions_dir: Path | None = None,
         glob_fn: Callable | None = None,
         stat_fn: Callable | None = None,
@@ -289,6 +289,7 @@ class CodexDetector:
         self._find_processes = find_processes_fn
         self._aggregate_cpu = aggregate_cpu_fn
         self._has_active_shell_children = has_active_shell_children_fn
+        self._shell_cmdline_fn = shell_cmdline_fn
         self._sessions_dir = Path(sessions_dir) if sessions_dir else CODEX_SESSIONS_DIR
         self._glob = glob_fn or (lambda root: root.glob("**/*.jsonl"))
         self._stat = stat_fn or os.stat
@@ -303,6 +304,7 @@ class CodexDetector:
         self.cpu_percent: float = 0.0
         self.codex_running: bool = False
         self.shell_active: bool = False
+        self.shell_cmdline: list[str] | None = None
         self.file_active: bool = False
         self.transcript_age: float = float("inf")
         self.streaming: bool = False
@@ -356,6 +358,14 @@ class CodexDetector:
         self.shell_active = (
             self._has_active_shell_children(procs) if procs else False
         )
+        if self.shell_active:
+            cmdline_fn = self._shell_cmdline_fn
+            if cmdline_fn is None:
+                from . import watcher as _w
+                cmdline_fn = _w.latest_shell_child_cmdline
+            self.shell_cmdline = cmdline_fn(procs)
+        else:
+            self.shell_cmdline = None
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
@@ -380,6 +390,7 @@ class CodexDetector:
             "codex_running": self.codex_running,
             "cpu_percent": self.cpu_percent,
             "shell_active": self.shell_active,
+            "shell_cmdline": self.shell_cmdline,
             "file_active": self.file_active,
             "transcript_age": self.transcript_age,
             "streaming": self.streaming,

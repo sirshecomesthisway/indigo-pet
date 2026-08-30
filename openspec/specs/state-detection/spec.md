@@ -1,23 +1,23 @@
 # state-detection Specification
 
 ## Purpose
-Define how Squid infers what the user's AI coding agent (Claude Code, Codex,
-or TPA) is doing on the user's Mac and publishes that state to the
+Define how Squid infers what the user's AI coding agent (Claude Code or
+Codex) is doing on the user's Mac and publishes that state to the
 frontend. Covers process detection, idle time measurement, priority cascade
 for one-state-per-tick emission, JSON state file publication, and the
 drowsy/user-wake-override layer for prolonged idle periods.
 
-Pink-2026-08-22: TPA was never actually installed/run on this
-machine, so TPADetector's role as a general busy/thinking/working/
-celebrating/grooving/concerned source (the "Detect TPA process
-activity" contract this spec previously described in detail) never fired
-anything in practice and was removed. `tpa_running` is still
-tracked (a lightweight direct process check) because the separate
-approval_needed/flag-wave mechanism -- TPA's own
-`~/.tpa/awaiting_input/<pid>` signal plus a CPU-idle fallback --
-is untouched and still fully TPA-driven, kept pending a
-Claude-Code-native replacement signal (e.g. a Notification hook). See
-`user-interactions` spec for that contract.
+Pink-2026-08-22/27: the project originally watched TPA (a
+separate, internal CLI coding agent) as a general busy/thinking/
+working/celebrating/grooving/concerned source, plus a TPA-driven
+approval_needed/flag-wave signal. TPA was never actually
+installed/run on this machine, so none of it ever fired anything in
+practice, and it has been fully removed -- including
+`tpa_running`, which no longer exists in the schema. The
+approval-needed/flag-wave mechanism is now 100% Claude-Code-native, via
+an official `Notification` hook (`scripts/claude_pet_hook.py`) rather
+than any process-presence signal. See `user-interactions` spec for that
+contract.
 
 ## Requirements
 ### Requirement: Detect Claude Code / Codex activity
@@ -39,13 +39,6 @@ written within its streaming-stale window (`streaming`).
 - **WHEN** no `claude` or `codex`/`codex-tui` process exists
 - **THEN** `claude_code_running` and `codex_running` are both `false`
 
-#### Scenario: TPA presence (approval-only)
-- **WHEN** at least one process matches `tpa`/`tpa` in its
-  cmdline (Bash wrappers filtered out)
-- **THEN** `tpa_running` is `true` -- this value feeds ONLY the
-  approval_needed alert (see `user-interactions` spec), not the
-  working/thinking/celebrating cascade below
-
 ### Requirement: Measure macOS user idle time
 
 The watcher SHALL read macOS HID idle time via the `ioreg -c IOHIDSystem`
@@ -66,22 +59,50 @@ The watcher SHALL emit exactly one state each tick, selected by a priority
 cascade. Higher-priority conditions SHALL override lower-priority ones.
 The order is:
 
-1. `sleeping`
+1. `sleeping` (suppressed while the agent is actively busy -- see below)
 2. `celebrating` (sticky hold)
 3. `grooving` (extensibility hook -- no detector currently implements this)
 4. `working` / `thinking` (Claude Code / Codex rich cascade)
 5. `thinking` (generic non-agent-detector busy fallback)
 6. `idle` (default fallback)
 
-#### Scenario: User is idle for 5+ minutes
+#### Scenario: User is idle for 5+ minutes and the agent is not busy
 - **WHEN** `idle_seconds >= 300`
-- **THEN** state is `sleeping` regardless of any other signal
+- **AND** Claude Code's/Codex's merged busy signal (shell_active OR
+  file_active OR streaming) is false
+- **THEN** state is `sleeping` regardless of any other lower-priority signal
 
-#### Scenario: An agent's busy signal drops to idle
-- **WHEN** Claude Code's or Codex's merged busy signal (shell_active OR
-  file_active OR streaming) was true last tick and is false this tick
+#### Scenario: User is idle for 5+ minutes but the agent is actively busy
+- **WHEN** `idle_seconds >= 300`
+- **AND** Claude Code's or Codex's merged busy signal (shell_active OR
+  file_active OR streaming) is true
+- **THEN** state is NOT `sleeping` -- the cascade falls through to
+  evaluate `working`/`thinking` normally
+- **Why**: Pink-2026-08-27g. Sleeping used to override everything
+  unconditionally, including active agent work -- confirmed live as a
+  user-visible bug: squid showed sleeping while Claude Code was actively
+  working in the background, simply because the user had stepped away
+  from the keyboard for 5+ minutes mid-session. Sleeping communicates
+  USER presence; working/thinking communicate AGENT activity -- when the
+  agent is genuinely busy, that should win.
+
+#### Scenario: Claude Code's Stop hook fires
+- **WHEN** Claude Code's official `Stop` hook fires (Claude finished
+  responding and handed control back), keyed by session_id
 - **THEN** state is `celebrating` AND this state is held for
   `celebrate_hold_sec` (default 20s, hot-reloadable)
+- **Why**: Pink-2026-08-27f. Previously this fired on Claude Code's/
+  Codex's merged busy signal (shell_active OR file_active OR streaming)
+  flipping true->false between ticks -- a pure heuristic edge that could
+  (and did, confirmed live) flip mid-task during an ordinary >20s gap
+  with no tool call, producing a false "finished with claude!" bubble
+  while Claude was still actively working. The Stop hook is Claude
+  Code's own authoritative "this turn is over" signal (same fix pattern
+  as the `approval_needed` migration off CPU heuristics onto the
+  `Notification` hook -- see the Requirement below). Codex has no known
+  equivalent hook, so Codex's celebrate signal is unchanged (currently a
+  documented non-goal, `CodexDetector.is_celebrating()` always returns
+  `False`).
 
 #### Scenario: Claude Code or Codex is actively running a tool
 - **WHEN** `shell_active` OR `file_active` is true for Claude Code or Codex
@@ -99,8 +120,8 @@ The order is:
 ### Requirement: Publish state to JSON file
 
 The watcher SHALL atomically write the current `PetState` (state, sub_state,
-cpu_percent, idle_seconds, tpa_running, claude_code_running,
-codex_running, timestamp, message) to `~/.squid-pet/state.json` once per
+idle_seconds, agent_idle_seconds, claude_code_running, codex_running,
+timestamp, message, state_reason) to `~/.squid-pet/state.json` once per
 tick using a `.tmp` + rename pattern.
 
 #### Scenario: State changes

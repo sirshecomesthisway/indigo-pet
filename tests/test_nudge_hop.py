@@ -13,6 +13,7 @@ import math
 
 import pytest
 
+from squid_pet import window
 from squid_pet.wanderer import (
     WanderController, NUDGE_HOP_DISTANCE_PX, WIN_W, CHAR_TOP_IN_WIN,
     EDGE_MARGIN_PX, BOTTOM_MARGIN_PX, TOP_MARGIN_PX, NUDGE_STUCK_THRESHOLD_PX,
@@ -84,7 +85,7 @@ def test_hop_target_clamped_to_visible_frame(monkeypatch):
     )
     wc._do_request_nudge(cursor_x=5000.0, cursor_y=0.0)  # would hop far right
     tx, ty = recorder[-1]
-    max_x = 0.0 + 300.0 - WIN_W - EDGE_MARGIN_PX
+    max_x = 0.0 + 300.0 - window.CHAR_RIGHT_IN_WIN
     assert tx <= max_x + 1e-6, f"hop not clamped: tx={tx} > max_x={max_x}"
 
 
@@ -223,10 +224,14 @@ def test_animate_hop_runs_to_completion_when_not_superseded(monkeypatch):
 def _corner_frame():
     """A frame + bottom-right-corner origin using the SAME margin
     constants production code uses, so the numbers stay meaningful if
-    those constants are retuned later."""
+    those constants are retuned later.
+
+    max_x mirrors WanderController._x_bounds() (fix 2026-08-29): derived
+    from window.CHAR_RIGHT_IN_WIN directly, not the old EDGE_MARGIN_PX
+    overshoot approximation that drifted out of sync with it."""
     vx, vy, vw, vh = 0.0, 0.0, 1000.0, 800.0
     min_x = vx + EDGE_MARGIN_PX
-    max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+    max_x = vx + vw - window.CHAR_RIGHT_IN_WIN
     min_y = vy + BOTTOM_MARGIN_PX
     max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
     return (vx, vy, vw, vh), (min_x, max_x, min_y, max_y)
@@ -302,7 +307,7 @@ def test_edges_mode_pins_normal_hop_to_current_edge_not_just_corners(monkeypatch
     recorder = []
     vx, vy, vw, vh = 0.0, 0.0, 1000.0, 800.0
     min_x = vx + EDGE_MARGIN_PX
-    max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+    max_x = vx + vw - window.CHAR_RIGHT_IN_WIN
     min_y = vy + BOTTOM_MARGIN_PX
     max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
     origin = (min_x, 300.0)  # mid LEFT edge, well clear of top/bottom corners
@@ -325,6 +330,57 @@ def test_edges_mode_pins_normal_hop_to_current_edge_not_just_corners(monkeypatch
     wc._do_request_nudge(cursor_x=min_x - 1000.0, cursor_y=300.0)
     tx, ty = recorder[-1]
     assert tx == min_x, f"edges mode must keep her pinned to the left edge, tx={tx}"
+
+
+# ── corner-tie preference in nudge projection (fix 2026-08-29) ─────────
+# _project_nudge_to_stroll_mode used the same fragile pattern as the
+# wander-walk bug fixed the same day: at a corner, left/right and
+# top/bottom distances both hit 0, and the old plain _compute_edge_at
+# broke that tie with a fixed bottom>top>left>right priority instead of
+# asking which edge she's actually tracked as being on. Switched to the
+# sticky classifier (self._last_edge as the tie-break preference) to
+# match _update_edge's own per-tick tracking.
+
+def test_nudge_projection_prefers_tracked_edge_at_a_corner_tie(monkeypatch):
+    """At the bottom-right corner (tie between "right" and "bottom"),
+    tracked as "right" (she got here sliding down the right edge), an
+    ordinary (non-stuck) nudge must stay pinned to the RIGHT edge --
+    not silently reclassified to "bottom" by fixed priority, which would
+    kill the vertical component of the away-from-cursor hop entirely."""
+    monkeypatch.setattr("squid_pet.wanderer.time.sleep", lambda _s: None)
+    recorder = []
+    (vx, vy, vw, vh), (min_x, max_x, min_y, max_y) = _corner_frame()
+    origin = (max_x, min_y)  # bottom-right corner
+    wc = WanderController(
+        get_state=lambda: "idle",
+        is_drag_active=lambda: False,
+        get_window_origin=lambda: origin,
+        set_window_origin=lambda x, y: recorder.append((x, y)),
+        get_visible_frame=lambda: (vx, vy, vw, vh),
+        set_sub_state=lambda s: None,
+        set_edge=lambda e: None,
+    )
+    wc.set_stroll_mode("edges")
+    wc._last_edge = "right"  # arrived here sliding down the right edge
+
+    win_center_x = max_x + WIN_W / 2
+    win_center_y = min_y + CHAR_TOP_IN_WIN / 2
+    # Cursor diagonally past the corner (further +x, -y than her) so
+    # "away from cursor" points into the open interior (-x, +y) with a
+    # real, non-stuck vertical component -- the case where the tie-break
+    # actually changes the outcome.
+    cursor_x, cursor_y = win_center_x + 500.0, win_center_y - 500.0
+    wc._do_request_nudge(cursor_x=cursor_x, cursor_y=cursor_y)
+
+    tx, ty = recorder[-1]
+    assert tx == max_x, (
+        f"must stay pinned to the tracked RIGHT edge, not reclassify to "
+        f"bottom via fixed priority: tx={tx}"
+    )
+    assert ty > min_y, (
+        f"pinning to the right edge must preserve the vertical "
+        f"away-from-cursor movement: ty={ty}"
+    )
 
 
 def test_anywhere_mode_does_not_pin_normal_hop_to_edge(monkeypatch):
@@ -495,9 +551,10 @@ def test_stuck_escape_direction_recomputes_after_long_gap(monkeypatch):
 # _do_request_flee_to_corner call always flees straight to the corner.
 
 def _range_bounds(vx, vy, vw, vh):
-    """Same min_x/max_x/min_y/max_y formula production code uses."""
+    """Same min_x/max_x/min_y/max_y formula production code uses (mirrors
+    WanderController._x_bounds() for x, fix 2026-08-29)."""
     min_x = vx + EDGE_MARGIN_PX
-    max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+    max_x = vx + vw - window.CHAR_RIGHT_IN_WIN
     min_y = vy + BOTTOM_MARGIN_PX
     max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
     return min_x, max_x, min_y, max_y
@@ -580,6 +637,60 @@ def test_corner_flee_lands_on_edge_in_edges_stroll_mode(monkeypatch):
     tx, ty = recorder[-1]
     assert tx == min_x
     assert ty in (min_y, max_y)
+
+
+# ── settle-into-top/bottom on arrival via nudge/flee (fix 2026-08-30
+# follow-up) ─────────────────────────────────────────────────────────
+# Pink follow-up report + screenshot: after _walk_to got the "settle
+# into top/bottom at a corner" fix (same day, see test_stroll_mode.py),
+# she STILL showed the wrong (un-rotated) pose at the top-left corner --
+# because that fix only touched _walk_to's completion, and everything
+# Pink had actually been testing was a NUDGE/FLEE driving her into the
+# corner, which goes through the completely separate _animate_hop
+# completion path that never got the same treatment. Fixed by extracting
+# the settle logic into _settle_edge_at_rest() and calling it from BOTH
+# _walk_to and _animate_hop.
+
+def test_corner_flee_settles_into_top_pose_on_arrival(monkeypatch):
+    """Fleeing to the top-left corner via nudge/flee (_animate_hop) must
+    settle into 'top' once she actually arrives, not stay pinned to
+    whichever wall she was sliding along to get there."""
+    monkeypatch.setattr("squid_pet.wanderer.time.sleep", lambda _s: None)
+    vx, vy, vw, vh = 0.0, 0.0, 1000.0, 800.0
+    min_x, max_x, min_y, max_y = _range_bounds(vx, vy, vw, vh)
+    origin_box = {"v": (min_x, 300.0)}  # mid left edge
+    edge_calls = []
+
+    def _set_origin(x, y):
+        origin_box["v"] = (x, y)
+
+    wc = WanderController(
+        get_state=lambda: "idle",
+        is_drag_active=lambda: False,
+        get_window_origin=lambda: origin_box["v"],
+        set_window_origin=_set_origin,
+        get_visible_frame=lambda: (vx, vy, vw, vh),
+        set_sub_state=lambda s: None,
+        set_edge=lambda e: edge_calls.append(e),
+    )
+    wc.set_stroll_mode("edges")
+    wc._last_edge = "left"  # already tracked as hugging the left wall
+
+    # Cursor well to the right (away_x resolves to min_x, where she
+    # already sits -> at_x_boundary) and below her (away_y resolves to
+    # max_y) -> _corner_escape_target's "pinned on x, slide along y"
+    # branch targets (min_x, max_y): straight up the left wall to the
+    # top-left corner.
+    wc._do_request_flee_to_corner(cursor_x=500.0, cursor_y=0.0)
+
+    assert origin_box["v"] == (min_x, max_y), (
+        f"sanity: must have actually reached the top-left corner, "
+        f"got {origin_box['v']}"
+    )
+    assert wc._last_edge == "top", (
+        f"must settle into 'top' on arrival, not stay pinned to 'left' "
+        f"(the wall she was fleeing along): edge_calls={edge_calls}"
+    )
 
 
 def test_corner_flee_stays_on_current_edge_not_diagonal_cut(monkeypatch):

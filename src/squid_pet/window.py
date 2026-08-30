@@ -31,13 +31,17 @@ FRONTEND_HTML = HERE / "frontend" / "index.html"
 
 WINDOW_WIDTH  = 200
 WINDOW_HEIGHT = 300  # was 220; bumped to give hearts headroom above sprite
-EDGE_MARGIN   = 20
+# EDGE_MARGIN (was 20px, a cosmetic corner-snap inset) removed 2026-08-27o --
+# corner_origin() now uses _char_bounds() directly. See its docstring.
 
 # Minimum gap between "still working on X" bubbles fired while state stays
 # "working" across ticks (the on-entry bubble from on_state_change doesn't
 # count against this -- it resets the clock on the way in). Keeps a long
 # working stretch from narrating every watcher tick (1Hz).
-WORKING_REANNOUNCE_SEC = 25.0
+# Pink-2026-08-27k: was 25.0; bumped to match idle chatter's ~30s cadence
+# ("too quiet" report -- both idle and working feedback loops should feel
+# similarly present).
+WORKING_REANNOUNCE_SEC = 30.0
 
 POSITION_FILE = Path.home() / ".squid-pet" / "position.json"
 SETTINGS_FILE = Path.home() / ".squid-pet" / "settings.json"
@@ -113,10 +117,28 @@ CHAR_TOP_IN_WIN    = 145    # WINDOW_H(300) - SPRITE_TOP(120) - typical min_y(35
                             # head 20-40px below menu bar in idle. Trade-off: flag tips
                             # (attention_needed) clip ~34px behind menu bar. Menu bar is
                             # opaque so it is a clean cut, not a visual glitch. Pink 2026-07-07.
-TOP_MARGIN_PX      = 50     # MIRRORS wanderer.TOP_MARGIN_PX — MUST match or the wander target
+TOP_MARGIN_PX      = 42     # MIRRORS wanderer.TOP_MARGIN_PX — MUST match or the wander target
                             # picker and this hard clamp disagree on the top boundary. Binary-search
-                            # step between confirmed-broken (<=35) and confirmed-safe (65) -- see
+                            # step between confirmed-broken (<=35) and confirmed-safe (50) -- see
                             # wanderer.TOP_MARGIN_PX for the full story.
+
+
+def _char_bounds(vx: float, vy: float, vw: float, vh: float) -> tuple[float, float, float, float]:
+    """(min_ox, max_ox, min_oy, max_oy): the same ALREADY-TRUSTED hard-clamp
+    bounds clamp_origin_to_screen enforces on every origin-set (drag,
+    wander, corner-snap alike) -- CHAR_LEFT_IN_WIN/CHAR_RIGHT_IN_WIN/
+    CHAR_BOTTOM_IN_WIN/CHAR_TOP_IN_WIN+TOP_MARGIN_PX are the real,
+    measured "character body stays on screen" limits. wanderer.py's own
+    edge-hugging margins (EDGE_MARGIN_PX, BOTTOM_MARGIN_PX, etc.) are
+    deliberately tuned to reach exactly these same bounds (see their
+    comments) -- shared here so corner_origin() below produces the
+    IDENTICAL position wandering to that corner would reach, instead of
+    a separately-tuned approximation that can drift out of sync with it."""
+    min_ox = vx - CHAR_LEFT_IN_WIN
+    max_ox = vx + vw - CHAR_RIGHT_IN_WIN
+    min_oy = vy - CHAR_BOTTOM_IN_WIN
+    max_oy = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
+    return min_ox, max_ox, min_oy, max_oy
 
 
 def clamp_origin_to_screen(ox, oy):
@@ -130,10 +152,7 @@ def clamp_origin_to_screen(ox, oy):
         f = main.visibleFrame()
         vx, vy = f.origin.x, f.origin.y
         vw, vh = f.size.width, f.size.height
-        min_ox = vx - CHAR_LEFT_IN_WIN
-        max_ox = vx + vw - CHAR_RIGHT_IN_WIN
-        min_oy = vy - CHAR_BOTTOM_IN_WIN
-        max_oy = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
+        min_ox, max_ox, min_oy, max_oy = _char_bounds(vx, vy, vw, vh)
         return (max(min_ox, min(max_ox, ox)),
                 max(min_oy, min(max_oy, oy)))
     except Exception:
@@ -157,25 +176,79 @@ def corner_origin(corner: str) -> tuple[float, float]:
     """
     Compute NSWindow setFrameOrigin (bottom-left of window in Cocoa coords)
     for each corner of the visible frame.
+
+    Pink-2026-08-27o: was EDGE_MARGIN(20)px in from each edge -- a
+    cosmetic inset from this feature's original (pre-wander-system)
+    design. Confirmed live: a corner-snapped Squid (menu snap, next_corner,
+    startup) sat 60-70px further from the true screen edge than she does
+    while actually WANDERING to that same corner (wanderer.py's own
+    margins deliberately overshoot the naive frame edge to reach
+    _char_bounds' tight, "tentacles touching" limits -- see that
+    function's docstring) -- looked visibly like she "wasn't hugging the
+    edge" even after the earlier rotation-sync fix, because this was
+    never actually a rotation problem, it was the POSITION itself being
+    ~65px short of it. Now uses the exact same _char_bounds() the wander
+    system is tuned to reach, so a corner-snap lands at the IDENTICAL
+    position wandering there would.
     """
     vx, vy, vw, vh = _visible_frame()
+    min_ox, max_ox, min_oy, max_oy = _char_bounds(vx, vy, vw, vh)
     if corner == "top-right":
-        return (vx + vw - WINDOW_WIDTH - EDGE_MARGIN,
-                vy + vh - WINDOW_HEIGHT - EDGE_MARGIN)
+        return (max_ox, max_oy)
     elif corner == "bottom-right":
-        return (vx + vw - WINDOW_WIDTH - EDGE_MARGIN,
-                vy + EDGE_MARGIN)
+        return (max_ox, min_oy)
     elif corner == "bottom-left":
-        return (vx + EDGE_MARGIN,
-                vy + EDGE_MARGIN)
+        return (min_ox, min_oy)
     elif corner == "top-left":
-        return (vx + EDGE_MARGIN,
-                vy + vh - WINDOW_HEIGHT - EDGE_MARGIN)
+        return (min_ox, max_oy)
     else:
-        return (vx + EDGE_MARGIN, vy + EDGE_MARGIN)
+        return (min_ox, min_oy)
 
 
 from squid_pet.threading_guards import cocoa_main_thread
+
+
+def _edge_for_corner(corner: str) -> str:
+    """Map a corner name (from CORNERS) to the wander system's edge
+    concept, using the SAME bottom>top>left>right priority
+    wanderer._compute_edge_at() uses to resolve corners (see its
+    docstring). Every corner-snap call site (startup, next_corner,
+    _menu_snap) uses this instead of wanderer.refresh_edge()'s
+    distance-based classification: move_to_corner's own EDGE_MARGIN
+    (20px, purely cosmetic clearance for this older menu-snap feature)
+    was never coordinated with wanderer.py's tighter/negative
+    edge-detection margins (EDGE_MARGIN_PX=-51, BOTTOM_MARGIN_PX=-45,
+    EDGE_BAND_PX=60) added later for the wander/rotation system, so a
+    freshly corner-snapped window sits ~65-71px from the nearest edge
+    by that classifier's measure -- just outside EDGE_BAND_PX -- and
+    gets silently classified as "" (no edge), leaving the sprite
+    un-rotated. Confirmed live 2026-08-27 (bottom-right corner ->
+    "startup edge refreshed -> (none)"). Since the caller already KNOWS
+    the corner authoritatively, skip the distance heuristic entirely
+    rather than re-tune shared, safety-constrained wander constants."""
+    if corner.startswith("bottom"):
+        return "bottom"
+    if corner.startswith("top"):
+        return "top"
+    return ""
+
+
+def _sync_edge_for_corner(wanderer, corner: str, context: str) -> str | None:
+    """Sync sprite rotation to a just-snapped corner via force_edge()
+    (authoritative from the corner name), not refresh_edge()'s distance
+    heuristic -- see _edge_for_corner's docstring for why the latter
+    reliably misses corner-snapped positions. Shared by every corner-snap
+    call site (next_corner, _menu_snap, _menu_recenter, startup) instead
+    of duplicating this try/except + log at each one. Returns the edge
+    now in effect, or None if there's no wanderer yet (e.g. a startup
+    race) or the sync itself failed -- both logged, neither raises."""
+    if wanderer is None:
+        return None
+    try:
+        return wanderer.force_edge(_edge_for_corner(corner))
+    except Exception as e:
+        print(f"[squid-pet] {context} edge-sync err: {e}", flush=True)
+        return None
 
 
 @cocoa_main_thread
@@ -603,11 +676,11 @@ class PetApi:
             self._passthrough.set_state(shown)
         # Observer: fire on actual state transitions only
         if prev_state != state.state:
-            # Pink-2026-08-22: shell_cmd enrichment removed -- it only
-            # ever read TPA's shell children (find_tpa_processes
-            # + latest_shell_child_cmdline, both TPA-only), which was always
-            # empty/None on this machine since TPA was never run.
-            shell_cmd = None
+            # Pink-2026-08-27k: was hardcoded None -- the original wiring
+            # only ever read TPA's shell children (TPA-only), always
+            # empty on this machine. Now reads the live Claude Code/Codex
+            # detector's own shell_cmdline (see _current_shell_cmdline).
+            shell_cmd = self._current_shell_cmdline()
             # Fix B (2026-06-28): collect richer signals for LLM context
             # so the model can be specific ("shipped", "fetching deps")
             # instead of generic ("settle in"). All best-effort -- a
@@ -654,20 +727,33 @@ class PetApi:
         elif state.state == "working":
             self._maybe_reannounce_working(state)
 
+    def _current_shell_cmdline(self) -> list[str] | None:
+        """Live shell-child cmdline from whichever agent detector (Claude
+        Code or Codex) currently has one -- feeds both the initial
+        working-transition bubble and the periodic reannounce below with
+        a concrete "running X" instead of a generic filler."""
+        if self._sm is None:
+            return None
+        try:
+            cd = self._sm._claude_detector
+            if cd is not None and cd.shell_cmdline:
+                return cd.shell_cmdline
+            xd = self._sm._codex_detector
+            if xd is not None and xd.shell_cmdline:
+                return xd.shell_cmdline
+        except Exception:
+            pass
+        return None
+
     def _maybe_reannounce_working(self, state: watcher.PetState) -> None:
         """While state STAYS 'working' across ticks (no transition, so
         on_state_change never fires again), periodically surface what
-        she's currently watching. Throttled to WORKING_REANNOUNCE_SEC and
-        silent if there's nothing concrete to report or it hasn't changed
-        -- see Observer.on_still_working.
-
-        Pink-2026-08-22: shell_cmd is always None now -- it used to read
-        TPA's shell children only (find_tpa_processes +
-        latest_shell_child_cmdline), which never fired on this machine."""
+        she's currently watching. Throttled to WORKING_REANNOUNCE_SEC.
+        Falls back to a generic working/wrap-up line when there's no
+        concrete shell command to report -- see Observer.on_still_working."""
         if state.timestamp - self._last_working_bubble_at < WORKING_REANNOUNCE_SEC:
             return
-        shell_cmd = None
-        bubble = self._observer.on_still_working(shell_cmd)
+        bubble = self._observer.on_still_working(self._current_shell_cmdline())
         self._last_working_bubble_at = state.timestamp
         if bubble is None or bubble == self._last_working_bubble_text:
             return
@@ -796,12 +882,7 @@ class PetApi:
         self._corner = CORNERS[(idx + 1) % len(CORNERS)]
         save_corner(self._corner)
         ok = move_to_corner(self._corner)
-        # Refresh edge so sprite rotates to match new corner position.
-        try:
-            if self._wanderer is not None:
-                self._wanderer.refresh_edge()
-        except Exception as e:
-            print(f"[squid-pet] corner snap edge-refresh err: {e}", flush=True)
+        _sync_edge_for_corner(self._wanderer, self._corner, "corner snap")
         print(f"[squid-pet] corner snap -> {self._corner} (ok={ok})", flush=True)
         return self._corner
 
@@ -870,16 +951,10 @@ class PetApi:
     def _menu_snap(self, corner: str) -> None:
         if move_to_corner(corner):
             save_corner(corner)
-            # Refresh edge so sprite rotation + passthrough's edge-aware
-            # hit-test offset match the new position -- same fix
-            # next_corner()/drag's _on_end already apply. Without it,
-            # the window moves but the sprite stays rotated for whatever
-            # edge it was on until the next wander tick happens to run.
-            try:
-                if self._wanderer is not None:
-                    self._wanderer.refresh_edge()
-            except Exception as e:
-                print(f"[squid-pet] menu snap edge-refresh err: {e}", flush=True)
+            # Sync sprite rotation + passthrough's edge-aware hit-test
+            # offset to the new position, same fix next_corner()/
+            # startup/drag's _on_end apply.
+            _sync_edge_for_corner(self._wanderer, corner, "menu snap")
             self._emit_hint(f"📍 {corner}")
 
     def _menu_toggle_pin(self) -> None:
@@ -1084,11 +1159,12 @@ class PetApi:
     # Pink-2026-06-30 v3: manual de-escalate (right-click menu)
 
     def is_squid_waving(self) -> bool:
-        """Menu helper: is there at least one TPA currently waving that
-        we could calm right now? Used to enable/disable 'Calm Squid'."""
+        """Menu helper: is there at least one Claude Code session
+        currently waving that we could calm right now? Used to
+        enable/disable 'Calm Squid'."""
         from . import watcher as _w
         try:
-            return _w.count_currently_waving_pids() > 0
+            return _w.count_currently_waving_sessions() > 0
         except Exception:
             return False
 
@@ -1098,7 +1174,7 @@ class PetApi:
         flag first-seen times past the snooze window so the eligibility
         filter drops them on the next tick. Auto re-arm still works:
         waves come back for genuinely new work (flag disappears when
-        Pink replies, reappears when TPA hits the next prompt with a
+        you reply, reappears when the session hits its next wait with a
         fresh birth-time clock)."""
         from . import watcher as _w
         try:
@@ -1114,7 +1190,7 @@ class PetApi:
                 f"shh -- calmed {n} wave" + ("s" if n != 1 else "")
             )
         print(
-            f"[squid-pet] manual de-escalate: snoozed {n} awaiting PID(s)",
+            f"[squid-pet] manual de-escalate: snoozed {n} awaiting session(s)",
             flush=True,
         )
 
@@ -1143,11 +1219,7 @@ class PetApi:
     def _menu_recenter(self) -> None:
         corner = load_corner()
         if move_to_corner(corner):
-            try:
-                if self._wanderer is not None:
-                    self._wanderer.refresh_edge()
-            except Exception as e:
-                print(f"[squid-pet] recenter edge-refresh err: {e}", flush=True)
+            _sync_edge_for_corner(self._wanderer, corner, "recenter")
             self._emit_hint(f"🎯 recentered → {corner}")
 
     # ─── Mood ───
@@ -1304,6 +1376,42 @@ def main() -> None:
     t.start()
 
     def on_loaded() -> None:
+        # Pink-2026-08-27m: "she starts in a position not on the edge".
+        # main() creates the window at pywebview's placeholder (100,100)
+        # ("use ANY initial coords -- we'll snap once NSWindow is
+        # available", below) and webview.start() makes that window
+        # visible on screen immediately -- _snap_corner (further down)
+        # only corrects the position/rotation LATER, asynchronously, via
+        # callAfter. In the gap between those two moments she's genuinely
+        # visible at (100,100), nowhere near any edge, which is exactly
+        # what got reported. This has been true since the project's
+        # original corner-snap design (see _snap_corner's own long-
+        # standing comment about the 2026-06-16 "(100,100) / didn't show
+        # up" investigation) -- that fix solved the HARD-failure case
+        # (stuck there forever) but never addressed this residual timing
+        # flash on the ok=True path.
+        #
+        # Fix: hide (alpha 0) before anything else in on_loaded can run,
+        # then reveal (alpha 1) at the very end of _snap_corner, win or
+        # fail -- so the window is provably invisible for the ENTIRE
+        # window between "visible on screen" and "correctly positioned",
+        # regardless of how long that gap actually is. Queued first (only
+        # after the accessory-policy dispatch, which does not touch
+        # window geometry) so it wins the race to hide her before any
+        # frame paints.
+        @cocoa_main_thread
+        def _hide_until_positioned():
+            try:
+                w = _get_ns_window()
+                if w is not None:
+                    w.setAlphaValue_(0.0)
+                    print("[squid-pet] pre-snap hide: alpha -> 0.0", flush=True)
+                else:
+                    print("[squid-pet] pre-snap hide: no NSWindow yet", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] pre-snap hide failed: {e}", flush=True)
+        _hide_until_positioned()
+
         # Hide from Dock / Cmd-Tab via NSApplicationActivationPolicyAccessory.
         # Dispatch to main run loop (calling NSApp directly here can deadlock
         # because on_loaded fires from a WebKit callback).
@@ -1374,40 +1482,20 @@ def main() -> None:
         except Exception as e:
             print(f"[squid-pet] couldn't dispatch constrainFrame override: {e}", flush=True)
 
-        # Snap to saved corner via NSWindow (accurate, no origin issues).
-        # MUST run on the main thread — on macOS 14+ NSWindow operations
-        # called from a WebKit callback thread silently fail (no exception
-        # raised, NSPoint just doesn't take effect). Squid stays at
-        # pywebview's default (100,100) and the user thinks she "didn't
-        # show up". Confirmed via CGWindowListCopyWindowInfo 2026-06-16.
-        # The two NSApp/NSWindow calls above (_set_accessory, _set_all_spaces)
-        # already use callAfter for the same reason; this one was missing.
-        def _snap_corner():
-            try:
-                ok = move_to_corner(corner)
-                vf = _visible_frame()
-                print(f"[squid-pet] visibleFrame = {vf}", flush=True)
-                print(f"[squid-pet] snapped to '{corner}' (ok={ok})", flush=True)
-            except Exception as e:
-                print(f"[squid-pet] corner snap failed: {e}", flush=True)
-        try:
-            from PyObjCTools import AppHelper
-            AppHelper.callAfter(_snap_corner)
-        except Exception as e:
-            print(f"[squid-pet] couldn't dispatch corner snap: {e}", flush=True)
-            # Best-effort fallback: try inline anyway (may silent-fail on 14+)
-            ok = move_to_corner(corner)
-            print(f"[squid-pet] inline snap fallback (ok={ok})", flush=True)
-
-        # Start pixel-perfect click passthrough
-        pt = PassthroughController(_get_ns_window)
-        pt.set_state(api.get_state().get("state", "idle"))
-        api.set_passthrough(pt)
-        pt.start()
-
         # Start wanderer in SERVICE MODE -- exposes request_walk /
         # request_look_around primitives. No internal scheduler;
         # RoutineController drives idle-time invocations.
+        #
+        # Constructed here, BEFORE _snap_corner's callAfter dispatch
+        # below, not after it as originally written. on_loaded() runs
+        # on a WebKit callback thread (see comment above _set_accessory)
+        # while AppHelper.callAfter posts to the MAIN thread -- so the
+        # main thread could run _snap_corner (which reads api._wanderer
+        # to sync rotation post-snap) before this background thread got
+        # around to assigning it, a real race that silently no-opped the
+        # rotation sync. Assigning api._wanderer earlier in this same
+        # synchronous function body, before _snap_corner is even defined/
+        # dispatched, makes the ordering deterministic instead of racy.
         from squid_pet.wanderer import WanderController
         wc = WanderController(
             get_state=lambda: api.get_state().get("state", "idle"),
@@ -1419,6 +1507,69 @@ def main() -> None:
             set_edge=api.set_wander_edge,
         )
         api._wanderer = wc  # keep reference so it isn't GC'd
+
+        # Snap to saved corner via NSWindow (accurate, no origin issues).
+        # MUST run on the main thread — on macOS 14+ NSWindow operations
+        # called from a WebKit callback thread silently fail (no exception
+        # raised, NSPoint just doesn't take effect). Squid stays at
+        # pywebview's default (100,100) and the user thinks she "didn't
+        # show up". Confirmed via CGWindowListCopyWindowInfo 2026-06-16.
+        # The two NSApp/NSWindow calls above (_set_accessory, _set_all_spaces)
+        # already use callAfter for the same reason; this one was missing.
+        @cocoa_main_thread
+        def _reveal_after_snap():
+            """Undo _hide_until_positioned's alpha=0. Called from a
+            finally so she's revealed whether the snap succeeded or
+            not -- an invisible-forever pet on some snap failure would
+            be a much worse bug than a slightly-off position."""
+            try:
+                w = _get_ns_window()
+                if w is not None:
+                    w.setAlphaValue_(1.0)
+                    print("[squid-pet] post-snap reveal: alpha -> 1.0", flush=True)
+                else:
+                    print("[squid-pet] post-snap reveal: no NSWindow", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] post-snap reveal failed: {e}", flush=True)
+
+        def _snap_corner():
+            try:
+                ok = move_to_corner(corner)
+                vf = _visible_frame()
+                print(f"[squid-pet] visibleFrame = {vf}", flush=True)
+                print(f"[squid-pet] snapped to '{corner}' (ok={ok})", flush=True)
+                # Sync sprite rotation to the corner we just snapped to.
+                # Without this call at all, _wander_edge stays at its ""
+                # startup default (deg=0 / bottom pose) until some later
+                # wander/drag/menu event updates it, so she could launch
+                # sitting at e.g. the top-right corner without visually
+                # hugging it. api._wanderer is now assigned EARLIER in
+                # this same on_loaded() call (before this closure is
+                # even defined) specifically so _sync_edge_for_corner's
+                # None-check is a defensive guard, not the correctness
+                # mechanism, regardless of callAfter timing -- see the
+                # WanderController construction comment above.
+                new_edge = _sync_edge_for_corner(api._wanderer, corner, "startup")
+                print(f"[squid-pet] startup edge synced -> {new_edge or '(none)'}", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] corner snap failed: {e}", flush=True)
+            finally:
+                _reveal_after_snap()
+        try:
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(_snap_corner)
+        except Exception as e:
+            print(f"[squid-pet] couldn't dispatch corner snap: {e}", flush=True)
+            # Best-effort fallback: try inline anyway (may silent-fail on 14+)
+            ok = move_to_corner(corner)
+            print(f"[squid-pet] inline snap fallback (ok={ok})", flush=True)
+            _reveal_after_snap()
+
+        # Start pixel-perfect click passthrough
+        pt = PassthroughController(_get_ns_window)
+        pt.set_state(api.get_state().get("state", "idle"))
+        api.set_passthrough(pt)
+        pt.start()
 
         # Wire the nudge trigger: passthrough's poll loop fires this when
         # it sees repeated rapid re-entries into her clickable bbox (see

@@ -148,10 +148,38 @@ BUBBLE_LINES: dict[str, LineSpec] = {
     # Voice: same dry/fond/fragmentary rules as everything else, but
     # there's genuinely nothing happening, so these are small-talk /
     # boredom beats rather than reactions to anything.
+    # Pink-2026-08-27k: expanded with funnier lines ("too quiet" report) --
+    # same voice, leaning harder into dry/absurdist octopus-desk-pet humor.
     "idle_chatter": ["hmm", "*stares*", "waiting~", "bored?", "tick... tock",
                      "*tentacle wiggle*", "anything?", "still here",
                      "la la la", "*doodles*", "hm hm hm", "nothing yet",
-                     "*people-watching*", "quiet today"],
+                     "*people-watching*", "quiet today",
+                     "*counts pixels*", "ink's dry", "8 arms, 0 tasks",
+                     "send help. or snacks", "procrastinating hard",
+                     "*polishes suckers*", "*this is fine*",
+                     "not stuck. resting", "*naps standing up*",
+                     "could use a snack"],
+
+    # "Still working" reannounce fallback (2026-08-27k) -- fired by
+    # _maybe_reannounce_working when there's no concrete shell command to
+    # report (Edit/Write-only tool calls, or plain generation with no
+    # tool call in flight). Same percussive "working" sonic signature,
+    # just more variety than the 4-line on-entry set. Mixed at pick time
+    # with working_wrapup below -- see on_still_working.
+    "working_generic": ["writing code", "typing away", "*click clack*",
+                        "on it", "building things", "*focused*",
+                        "assembling parts", "mid-thought", "*tap tap tap*",
+                        "cooking something"],
+
+    # Occasional "sounds like she's wrapping up" flavor, mixed into the
+    # SAME reannounce pool as working_generic above rather than gated on
+    # any real "is this the last step" detection -- there's no such
+    # signal available (no transcript content is ever read, by design).
+    # Purely a minority flavor for variety, not a claim of fact.
+    "working_wrapup": ["wrapping up", "tying loose ends",
+                       "writing the summary", "almost there",
+                       "polishing it", "final touches",
+                       "closing things out", "buttoning up"],
 }
 
 # ----------------------------------------------------------------------
@@ -234,6 +262,46 @@ def _format_concern_reason(reason: str) -> Optional[str]:
     if len(r) > MAX_BUBBLE_CHARS:
         r = r[:MAX_BUBBLE_CHARS - 3].rstrip() + "..."
     return r or None
+
+
+# ----------------------------------------------------------------------
+# Celebrate-reason formatting -- "why is she celebrating?"
+# ----------------------------------------------------------------------
+# Pink-2026-08-27: celebrating used to ALWAYS show a generic exclamation
+# ("yay!!"/"woo!"/...) with zero indication of what actually happened --
+# a real user complaint ("squid is celebrating but i don't know why").
+# watcher.py's celebrating branch sets a specific state_reason naming
+# which detector's signal fired; this maps that to a clear, deterministic
+# bubble instead of a random mood-only pick. Unlike _format_concern_reason,
+# this is NOT probabilistic and doesn't go through the LLM-enrich path --
+# "why" deserves a consistent answer, not personality-driven variety.
+#
+# Pink-2026-08-30: "claude celebrating" REMOVED from this table. Claude
+# Code's Stop hook (fires every single turn completion, not "the task is
+# done") moved from CELEBRATING to GROOVING entirely -- see watcher.py's
+# CELEBRATING/GROOVING cascade comments for the full story (Pink report:
+# celebrating mid-task on routine turns, confused with what should have
+# been a lighter per-turn beat). state_reason can no longer BE "claude
+# celebrating", so keeping a dead entry here would be misleading.
+#
+# codex's celebrate signal is UNCHANGED (CodexDetector.is_celebrating()
+# is still a hardcoded False, "no reliable signal yet" -- Codex has no
+# known equivalent hook, so this branch stays unreachable/aspirational
+# for now) -- keep it noncommittal so a future real signal doesn't
+# inherit an overclaiming default. GitDetector's celebrate is tied to an
+# actual HEAD mtime change -- a real commit happened -- so it's already
+# safe to state as fact.
+_CELEBRATE_REASON_BUBBLES = {
+    "codex celebrating": "ooh, codex!",
+    "git celebrating": "nice, fresh commit!",
+}
+
+
+def _format_celebrate_reason(state_reason: str) -> Optional[str]:
+    """Deterministic "why" bubble for a specific celebrate source.
+    Returns None for the generic/unspecific "celebrating" reason (e.g.
+    force_state debug override) -- falls back to the mood-pick line."""
+    return _CELEBRATE_REASON_BUBBLES.get((state_reason or "").strip().lower())
 
 
 # ----------------------------------------------------------------------
@@ -494,6 +562,10 @@ class Observer:
             specific = _format_concern_reason(concern_reason)
             if specific is not None:
                 return specific
+        elif trigger_key == "celebrating":
+            specific = _format_celebrate_reason(state_reason)
+            if specific is not None:
+                return specific
         elif trigger_key == "working" and shell_cmdline:
             specific = _shell_cmd_bubble(shell_cmdline)
             if specific is not None and len(specific) <= MAX_BUBBLE_CHARS:
@@ -550,17 +622,25 @@ class Observer:
         'working' across ticks, to surface what she's currently watching
         even though on_state_change only fires once on entry.
 
-        Deliberately returns None -- rather than falling back to a
-        generic mood emote like "tap tap" -- when there's nothing
-        concrete to report. Repeating the same canned line on a timer
-        would read as a glitch, not aliveness; a fresh "running X" is
-        worth interrupting silence for, staying quiet is not.
+        Prefers a concrete "running X" from a live shell child. Falls
+        back to a generic working/wrap-up line (working_generic +
+        working_wrapup, mixed) when there's no shell command to report --
+        e.g. Edit/Write-only tool calls, or plain generation with no tool
+        call in flight. Pink-2026-08-27k: this used to return None in the
+        fallback case (repeating a canned line "would read as a glitch,
+        not aliveness") -- but the caller (_maybe_reannounce_working)
+        already dedupes against the last shown text and only fires on a
+        throttle, so a varied generic pool reads as ambient presence
+        instead, addressing a "too quiet" report.
         """
         if self._get_muted():
             return None
-        if not shell_cmdline:
-            return None
-        return _shell_cmd_bubble(shell_cmdline)
+        if shell_cmdline:
+            specific = _shell_cmd_bubble(shell_cmdline)
+            if specific is not None:
+                return specific
+        pool = BUBBLE_LINES["working_generic"] + BUBBLE_LINES["working_wrapup"]
+        return random.choice(pool)
 
     # ------------------------------------------------------------------
     # Interaction trigger

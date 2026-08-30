@@ -20,6 +20,7 @@ def _make(
     procs=None, cpu=0.0, shell_active=False,
     transcripts=None,  # dict[str path] -> mtime
     enabled=True, projects_dir=None, file_ages=None,
+    shell_cmdline=None,  # Pink-2026-08-27k: injected latest_shell_child_cmdline result
 ):
     transcripts = transcripts or {}
     paths = [Path(p) for p in transcripts]
@@ -34,6 +35,7 @@ def _make(
         find_processes_fn=lambda: list(procs or []),
         aggregate_cpu_fn=lambda p: cpu,
         has_active_shell_children_fn=lambda p: shell_active,
+        shell_cmdline_fn=lambda p: shell_cmdline,
         projects_dir=projects_dir or Path("/fake/.claude/projects"),
         glob_fn=lambda root: iter(paths),
         stat_fn=_stat,
@@ -56,6 +58,40 @@ def test_shell_active_fires_busy_immediately():
     no streak needed, same as TPADetector's shell_active."""
     d = _make(procs=[_FakeProc()], cpu=0.5, shell_active=True)
     assert d.is_busy(now=1000.0) is True
+
+
+# ── shell_cmdline (2026-08-27k: feeds the working reannounce bubble) ───
+def test_shell_cmdline_populated_when_shell_active():
+    d = _make(procs=[_FakeProc()], shell_active=True, shell_cmdline=["pytest", "-v"])
+    d.is_busy(now=1000.0)
+    assert d.shell_cmdline == ["pytest", "-v"]
+
+
+def test_shell_cmdline_none_when_shell_not_active():
+    """Even if shell_cmdline_fn would return something, it must not be
+    consulted/reported when has_active_shell_children_fn says False --
+    avoids reporting a stale/unrelated cmdline."""
+    d = _make(procs=[_FakeProc()], shell_active=False, shell_cmdline=["stale", "cmd"])
+    d.is_busy(now=1000.0)
+    assert d.shell_cmdline is None
+
+
+def test_shell_cmdline_defaults_to_real_watcher_fn_when_not_injected():
+    """Production construction (no shell_cmdline_fn passed) must not
+    crash -- falls back to watcher.latest_shell_child_cmdline, which is
+    itself best-effort against these fake process objects (no real
+    .children()) and returns None rather than raising."""
+    d = ClaudeCodeDetector(
+        find_processes_fn=lambda: [_FakeProc()],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: True,
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    d.is_busy(now=1000.0)  # must not raise
+    assert d.shell_cmdline is None
 
 
 def test_fresh_transcript_fires_streaming_and_busy():
@@ -125,10 +161,16 @@ def test_file_active_requires_process_running():
     assert d.file_active is False
 
 
-def test_celebrate_fires_after_busy_drop():
-    """Busy (shell_active) then quiet should fire celebrate sticky for
-    CELEBRATE_DURATION_SEC -- was a documented non-goal until 2026-08-22,
-    mirrors TPADetector.test_celebrate_fires_after_cpu_drop."""
+def test_is_celebrating_always_false_regardless_of_busy_drop():
+    """Pink-2026-08-27f: the busy->idle celebrate-edge heuristic (shell_active
+    dropping) was removed entirely -- it fired on any >20s gap with no tool
+    call, a normal mid-task reasoning stretch, confirmed live as a false
+    "finished with claude!" bubble while Claude was still working.
+    is_celebrating() is now a permanent stub (real signal is Claude Code's
+    Stop hook, read directly in watcher.claude_sessions_just_finished() /
+    StateMachine._compute_inner() -- see test_watcher_claude_code_cascade.py
+    for that integration). This locks in that a busy->idle drop on this
+    detector alone can never again produce a celebrate signal."""
     state = {"shell_active": True}
     d = ClaudeCodeDetector(
         enabled=True,
@@ -142,15 +184,9 @@ def test_celebrate_fires_after_busy_drop():
     )
     assert d.is_busy(now=1.0) is True
     state["shell_active"] = False
-    d.is_celebrating(now=2.0)
-    assert d.is_celebrating(now=2.5) is True
-    assert d.is_celebrating(now=30.0) is False  # past CELEBRATE_DURATION_SEC=20
-
-
-def test_no_celebrate_without_a_prior_busy_edge():
-    """Never having been busy shouldn't spontaneously celebrate."""
-    d = _make(procs=[_FakeProc()])
-    assert d.is_celebrating(now=1.0) is False
+    assert d.is_celebrating(now=2.0) is False
+    assert d.is_celebrating(now=2.5) is False
+    assert d.is_celebrating(now=30.0) is False
 
 
 def test_disabled_detector_always_returns_false():
@@ -168,8 +204,7 @@ def test_diagnostic_contains_required_keys():
     d.is_busy(now=1000.0)
     diag = d.diagnostic()
     for key in ("name", "enabled", "claude_code_running", "cpu_percent",
-                "shell_active", "file_active", "transcript_age", "streaming",
-                "celebrate_until"):
+                "shell_active", "file_active", "transcript_age", "streaming"):
         assert key in diag, f"missing {key}"
     assert diag["name"] == "claude_code"
 

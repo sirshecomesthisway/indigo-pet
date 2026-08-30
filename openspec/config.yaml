@@ -3,15 +3,24 @@ schema: spec-driven
 context: |
   ## Project: Squid Pet
   An always-on-top, transparent, pixel-art desktop pet (a pink chibi octopus named Squid)
-  that visually reflects the state of the TPA AI agent running on the user's Mac.
+  that visually reflects the state of the AI coding agent(s) running on the user's Mac
+  (Claude Code and/or Codex).
 
   ## Owner
   Huiping "Pink" Tan — Senior Product Manager at internal (user pink)
 
   ## Why
-  Pink runs TPA in long-lived TUI sessions and wanted an ambient companion
+  Pink runs long-lived agentic CLI sessions and wanted an ambient companion
   that gives an at-a-glance read of what the agent is doing without forcing her to
   flip to the terminal. The pet replaces a previous Cocoa-Pop-Cat-style indicator.
+
+  Pink-2026-08-27: the project started life watching TPA (a separate,
+  internal CLI coding agent) specifically. All TPA-specific
+  code was fully removed 2026-08-27 -- TPA was never actually
+  installed/run in this environment, so it never fired anything in
+  practice. Squid now watches Claude Code and Codex as its primary
+  detectors; the sections below describe the current architecture, not
+  the original TPA-only one.
 
   ## Tech stack
   - Language: Python 3.13
@@ -38,16 +47,24 @@ context: |
   - frontend/sprites/   — 7 PNGs: idle, thinking, working, grooving, celebrating,
                     sleeping, concerned.
 
-  ## State model (7 emotional states)
-  Priority order — first match wins each tick:
+  ## State model (current)
+  Priority order — first match wins each tick (see watcher.py:StateMachine.compute):
     1. sleeping     — macOS idle > 5 min
-    2. celebrating  — held for 4 sec after CPU drops from busy → near-zero
-    3. idle         — TPA not running
-    4. grooving     — subagent file modified in last 30 sec
-    5. concerned    — error log modified in last 60 sec AND cpu low
-    6. working      — TPA CPU > 5% AND session log modified in last 5 sec
-    7. thinking     — TPA CPU > 5% but no recent log writes (LLM call)
-    fallback        — idle/listening
+    2. celebrating  — held ~20 sec after Claude Code's/Codex's busy signal
+                       drops to idle, or Git sees a fresh commit
+    3. grooving     — extensibility hook; no detector currently implements this
+    4. working      — live shell child, or a project file was just written
+                       (Claude Code or Codex)
+    5. thinking      — Claude Code/Codex wrote a session transcript recently,
+                       no shell/file evidence
+    6. (non-agent detector busy — generic OR fallback: git/terminal/ide)
+    fallback        — idle/watching
+  approval_needed (the flag-wave) can override any of the above -- driven
+  entirely by Claude Code's own Notification hook, see
+  openspec/specs/state-detection/spec.md and
+  openspec/specs/user-interactions/spec.md.
+  concerned has no detector implementation (was TPA-only, no
+  Claude Code/Codex equivalent exists) -- documented non-goal.
 
   ## Constraints & conventions
   - macOS only (uses PyObjC, NSWindow, NSEvent, NSScreen)

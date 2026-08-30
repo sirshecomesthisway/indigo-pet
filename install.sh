@@ -240,20 +240,20 @@ first_run_wizard() {
         return
     fi
 
-    # trigger-broadening 7.1: probe for tpa. If user doesn't run it,
-    # default tpa trigger to false so CPU detection doesn't churn
-    # finding no TPA process every tick.
-    local tpa_default="true"
-    if ! pgrep -f tpa >/dev/null 2>&1; then
-        tpa_default="false"
-        ok "tpa process not detected -- defaulting triggers.tpa=false (re-enable in settings.json if you install TPA later)"
-    fi
-
     # claude-code-detector / codex-detector: neither has an observed
     # misfire risk (see detectors.py's ClaudeCodeDetector/CodexDetector),
-    # so both default on unconditionally -- unlike tpa above,
-    # there's no CPU-churn cost to leaving them on when the tool isn't
-    # running (they just report nothing).
+    # so both default on unconditionally -- there's no cost to leaving
+    # them on when the tool isn't running (they just report nothing).
+    #
+    # Pink-2026-08-27: there used to be a third probe+prompt here for a
+    # "tpa" trigger (TPA, a separate CLI coding agent this
+    # project originally watched). TPADetector was removed
+    # entirely 2026-08-22/27 -- TPA was never actually installed/
+    # run on this machine, so it never fired anything in practice, and
+    # detectors.py no longer has a "tpa" trigger key to read at
+    # all. Squid's approval-needed "flag wave" is still available for
+    # TPA via its own sitecustomize-driven signal, independent of
+    # this triggers block -- see docs/PRIVACY.md.
     local claude_default="true"
     local codex_default="true"
 
@@ -276,7 +276,6 @@ first_run_wizard() {
   "starting_corner": "bottom-right",
   "show_on_all_spaces": true,
   "triggers": {
-    "tpa": ${tpa_default},
     "claude_code": ${claude_default},
     "codex": ${codex_default},
     "git": true,
@@ -294,8 +293,7 @@ EOF
         read -r -p "  stroll mode [edges] (edges|free|still): " stroll
         read -r -p "  show on all spaces [y]: " spaces
         # trigger-broadening 7.2: trigger prompts (default Y for all)
-        local trig_cp trig_claude trig_codex trig_git trig_ide trig_term trig_proj
-        read -r -p "  trigger: react to tpa CPU [$tpa_default]: " trig_cp
+        local trig_claude trig_codex trig_git trig_ide trig_term trig_proj
         read -r -p "  trigger: react to Claude Code activity [$claude_default]: " trig_claude
         read -r -p "  trigger: react to Codex activity [$codex_default]: " trig_codex
         read -r -p "  trigger: react to git activity (commits, refs) [y]: " trig_git
@@ -303,10 +301,10 @@ EOF
         read -r -p "  trigger: react to terminal activity [n]: " trig_term
         # trigger-broadening 7.3: project_dirs prompt
         read -r -p "  project dirs to watch for git activity [$proj_default]: " trig_proj
-        python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" "${trig_cp:-}" "${trig_claude:-}" "${trig_codex:-}" "${trig_git:-}" "${trig_ide:-}" "${trig_term:-}" "${trig_proj:-}" <<PYEOF2
+        python3 - "$SETTINGS_FILE" "${corner:-}" "${stroll:-}" "${spaces:-}" "${trig_claude:-}" "${trig_codex:-}" "${trig_git:-}" "${trig_ide:-}" "${trig_term:-}" "${trig_proj:-}" <<PYEOF2
 import json, sys
 fp = sys.argv[1]
-corner, stroll, spaces, trig_cp, trig_claude, trig_codex, trig_git, trig_ide, trig_term, trig_proj = sys.argv[2:12]
+corner, stroll, spaces, trig_claude, trig_codex, trig_git, trig_ide, trig_term, trig_proj = sys.argv[2:11]
 with open(fp) as f: d = json.load(f)
 if corner: d["starting_corner"] = corner
 if stroll: d["stroll_mode"] = stroll
@@ -316,8 +314,6 @@ def _bool(s, default):
     if not s: return default
     return s in ("y","yes","true","1","on")
 # Trigger overrides (only if user typed something)
-if trig_cp.strip():
-    d["triggers"]["tpa"] = _bool(trig_cp, d["triggers"]["tpa"])
 if trig_claude.strip():
     d["triggers"]["claude_code"] = _bool(trig_claude, d["triggers"]["claude_code"])
 if trig_codex.strip():
@@ -336,7 +332,7 @@ with open(fp, "w") as f: json.dump(d, f, indent=2)
 PYEOF2
         ok "settings.json written (interactive: triggers + project_dirs configured)"
     else
-        ok "settings.json written (defaults: triggers.tpa=$tpa_default, project_dirs=[$proj_default]). Edit ~/.squid-pet/settings.json to customize."
+        ok "settings.json written (defaults: project_dirs=[$proj_default]). Edit ~/.squid-pet/settings.json to customize."
     fi
 }
 

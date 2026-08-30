@@ -43,8 +43,7 @@ def test_why_json_is_valid_json_with_expected_shape():
     assert "detectors" in report
     assert "verdict" in report
     # State dict has the schema fields
-    for k in ("state", "cpu_percent", "tpa_running",
-              "idle_seconds", "agent_idle_seconds", "timestamp"):
+    for k in ("state", "idle_seconds", "agent_idle_seconds", "timestamp"):
         assert k in report["state"], f"missing state.{k}"
     # Each detector entry has the trigger flags
     assert len(report["detectors"]) >= 1
@@ -75,9 +74,9 @@ def test_why_human_surfaces_approval_alert_toggle():
 
 
 def test_why_json_includes_approval_alert_fields():
-    """--why-json must expose the approval-alert config + live per-proc idle
-    so scripts/agents can diagnose 'why didn't Squid wave her flag?' without
-    reading config.json directly."""
+    """--why-json must expose the approval-alert config + live Claude Code
+    awaiting-input state so scripts/agents can diagnose 'why didn't Squid
+    wave her flag?' without reading config.json directly."""
     result = _run("--why-json")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     report = json.loads(result.stdout)
@@ -86,11 +85,11 @@ def test_why_json_includes_approval_alert_fields():
         "Got keys: " + str(list(report.keys()))
     )
     aa = report["approval_alert"]
-    for k in ("enabled", "threshold_sec", "per_proc_max_idle_sec"):
+    for k in ("enabled", "claude_sessions_awaiting", "claude_sessions_eligible"):
         assert k in aa, f"approval_alert.{k} missing; got {aa}"
     assert isinstance(aa["enabled"], bool)
-    assert isinstance(aa["threshold_sec"], (int, float))
-    assert isinstance(aa["per_proc_max_idle_sec"], (int, float))
+    assert isinstance(aa["claude_sessions_awaiting"], list)
+    assert isinstance(aa["claude_sessions_eligible"], list)
 
 
 def test_why_help_advertises_both_flags():
@@ -98,3 +97,29 @@ def test_why_help_advertises_both_flags():
     assert result.returncode == 0
     assert "--why" in result.stdout
     assert "--why-json" in result.stdout
+
+
+# ── Pink-2026-08-26: --why must be side-effect-free ────────────────────
+def test_why_json_stays_valid_json_when_approval_needed_is_live(monkeypatch, capsys):
+    """Regression test: a genuinely-active approval_needed used to make
+    `squid why` re-fire a REAL macOS notification and print noise into
+    stdout on every single invocation (a fresh StateMachine's "fire once"
+    latch always starts un-armed) -- silently corrupting --why-json
+    output for anything piping it to jq/scripts. Verified at the unit
+    level (not subprocess) so it stays hermetic -- a subprocess run
+    would need a real flag file under the developer's actual
+    ~/.squid-pet."""
+    from squid_pet import watcher
+    from squid_pet.__main__ import _run_why
+    from unittest.mock import patch
+
+    with patch.object(watcher, "claude_sessions_awaiting_input",
+                      return_value=["sess-regression-test"]), \
+         patch.object(watcher, "_fire_approval_notification") as mock_notify:
+        _run_why(json_output=True)
+
+    out = capsys.readouterr().out
+    report = json.loads(out)  # must not raise -- stdout must be pure JSON
+    assert report["state"]["state"] == "approval_needed"
+    mock_notify.assert_not_called(), \
+        "--why must never fire a real OS notification as a side effect"

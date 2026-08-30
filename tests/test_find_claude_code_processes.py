@@ -65,3 +65,63 @@ def test_process_iter_errors_are_skipped(monkeypatch):
     monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
     matches = watcher.find_claude_code_processes()
     assert [p.pid for p in matches] == [2]
+
+
+# ── find_terminal_app_bundle_for_claude_code() ──────────────────────────
+# Pink-2026-08-27: added so a clicked approval-needed notification can
+# activate the actual terminal app hosting Claude Code (see
+# _fire_approval_notification's docstring for the bug this fixes).
+
+class _FakeAncestor:
+    def __init__(self, name_value, parent=None):
+        self._name = name_value
+        self._parent = parent
+
+    def name(self):
+        return self._name
+
+    def parent(self):
+        return self._parent
+
+
+def test_finds_terminal_app_up_the_chain(monkeypatch):
+    terminal = _FakeAncestor("Terminal")
+    login = _FakeAncestor("login", parent=terminal)
+    zsh = _FakeAncestor("zsh", parent=login)
+    claude_proc = _FakeAncestor("2.1.228", parent=zsh)
+    monkeypatch.setattr(watcher, "find_claude_code_processes", lambda: [claude_proc])
+
+    assert watcher.find_terminal_app_bundle_for_claude_code() == "com.apple.Terminal"
+
+
+def test_finds_iterm_variant(monkeypatch):
+    iterm = _FakeAncestor("iTerm2")
+    claude_proc = _FakeAncestor("2.1.228", parent=iterm)
+    monkeypatch.setattr(watcher, "find_claude_code_processes", lambda: [claude_proc])
+
+    assert watcher.find_terminal_app_bundle_for_claude_code() == "com.googlecode.iterm2"
+
+
+def test_returns_none_when_no_recognized_ancestor(monkeypatch):
+    top = _FakeAncestor("launchd", parent=None)
+    unknown = _FakeAncestor("some_wrapper", parent=top)
+    claude_proc = _FakeAncestor("2.1.228", parent=unknown)
+    monkeypatch.setattr(watcher, "find_claude_code_processes", lambda: [claude_proc])
+
+    assert watcher.find_terminal_app_bundle_for_claude_code() is None
+
+
+def test_returns_none_when_no_claude_process(monkeypatch):
+    monkeypatch.setattr(watcher, "find_claude_code_processes", lambda: [])
+    assert watcher.find_terminal_app_bundle_for_claude_code() is None
+
+
+def test_tolerates_dead_process_mid_walk(monkeypatch):
+    class _DeadParent:
+        def name(self):
+            raise psutil.NoSuchProcess(pid=1)
+
+    claude_proc = _FakeAncestor("2.1.228", parent=_DeadParent())
+    monkeypatch.setattr(watcher, "find_claude_code_processes", lambda: [claude_proc])
+
+    assert watcher.find_terminal_app_bundle_for_claude_code() is None

@@ -53,11 +53,13 @@ def test_top_margin_stays_above_confirmed_broken_floor():
     screenshot to leave her nearly/fully invisible at the top edge -- the
     CSS rotate(180deg) + translateY top-edge transform clips in a way that
     CHAR_TOP_IN_WIN-based hand derivation didn't correctly predict, twice.
-    100 was subsequently confirmed (by Pink, visually) to be fully visible.
-    Goal now is hugging the edge as tightly as possible without clipping,
-    found by bisecting the (35, 100] range downward, one visually-confirmed
-    step at a time -- see wanderer.TOP_MARGIN_PX for the current step and
-    what to try next in either direction.
+    100 was subsequently confirmed (by Pink, visually) to be fully visible;
+    2026-08-30, 50 was ALSO confirmed fully visible (live screenshot),
+    narrowing the safe boundary further. Goal now is hugging the edge as
+    tightly as possible without clipping, found by bisecting the (35, 50]
+    range downward, one visually-confirmed step at a time -- see
+    wanderer.TOP_MARGIN_PX for the current step and what to try next in
+    either direction.
 
     This test only guards against silently sliding back down to the
     specific value already proven broken -- it does NOT assert the current
@@ -65,40 +67,128 @@ def test_top_margin_stays_above_confirmed_broken_floor():
     not from a fresh derivation alone (that's what broke things twice).
     """
     CONFIRMED_BROKEN = 35
-    CONFIRMED_SAFE = 65
+    CONFIRMED_SAFE = 50
     assert CONFIRMED_BROKEN < wanderer.TOP_MARGIN_PX <= CONFIRMED_SAFE, (
         f"wanderer.TOP_MARGIN_PX={wanderer.TOP_MARGIN_PX} is outside the "
         f"known range ({CONFIRMED_BROKEN}, {CONFIRMED_SAFE}]. Values at or "
         f"below {CONFIRMED_BROKEN} are confirmed to clip her off the top of "
         f"the screen (screenshot evidence, 2026-08-18); {CONFIRMED_SAFE} is "
-        f"confirmed fully visible (100 and 155 also confirmed/proven safe, "
-        f"but {CONFIRMED_SAFE} is the tightest one visually confirmed so far)."
+        f"confirmed fully visible (65, 100, and 155 also confirmed/proven "
+        f"safe, but {CONFIRMED_SAFE} is the tightest one visually confirmed "
+        f"so far)."
     )
 
 
-def test_edge_margin_keeps_edge_classification_working():
-    """EDGE_MARGIN_PX drives both (a) where the wander-target picker aims
-    for left/right and (b) the edge classifier's reference boundary for
-    "is she close enough to this edge to rotate-and-face it". Pushing it
-    very negative (2026-08-18, so wander targets reach window.py's
-    ALREADY-TRUSTED CHAR_LEFT_IN_WIN/CHAR_RIGHT_IN_WIN hard clamp instead
-    of stopping short of it) can silently break classification for
-    whichever side has the LESS generous hard clamp, if pushed further
-    than that side tolerates -- CHAR_RIGHT_IN_WIN(190) is tighter than
-    CHAR_LEFT_IN_WIN(51), so the right side is the binding constraint.
-
-    This computes the same d_right the classifier would see when she's
-    sitting at her actual (hard-clamp-limited) rightmost position, and
-    asserts it stays within EDGE_BAND_PX -- i.e. she's still recognized
-    as "on the right edge" there, so rotation still triggers.
+def test_edge_margin_keeps_left_edge_classification_working():
+    """EDGE_MARGIN_PX now drives ONLY the left side (Pink-2026-08-29 --
+    see WanderController._x_bounds and its EDGE_MARGIN_PX comment). This
+    computes the same d_left the classifier would see when she's sitting
+    at her actual (hard-clamp-limited) leftmost position, and asserts it
+    stays within EDGE_BAND_PX -- i.e. she's still recognized as "on the
+    left edge" there, so rotation still triggers.
     """
-    d_right_at_hard_clamp = (
-        window.CHAR_RIGHT_IN_WIN - wanderer.WIN_W - wanderer.EDGE_MARGIN_PX
-    )
-    assert 0 <= d_right_at_hard_clamp <= wanderer.EDGE_BAND_PX, (
-        f"d_right at the hard-clamped right position = {d_right_at_hard_clamp}, "
+    d_left_at_hard_clamp = abs(wanderer.EDGE_MARGIN_PX - (-window.CHAR_LEFT_IN_WIN))
+    assert d_left_at_hard_clamp <= wanderer.EDGE_BAND_PX, (
+        f"d_left at the hard-clamped left position = {d_left_at_hard_clamp}, "
         f"outside [0, {wanderer.EDGE_BAND_PX}]. If EDGE_MARGIN_PX "
-        f"({wanderer.EDGE_MARGIN_PX}) was made more negative, she may no "
-        f"longer be classified as 'on the right edge' while actually sitting "
-        f"there, silently breaking right-edge rotation."
+        f"({wanderer.EDGE_MARGIN_PX}) drifted from -CHAR_LEFT_IN_WIN "
+        f"({-window.CHAR_LEFT_IN_WIN}), she may no longer be classified as "
+        f"'on the left edge' while actually sitting there, silently "
+        f"breaking left-edge rotation."
     )
+
+
+def test_x_bounds_matches_windows_hard_clamp_exactly():
+    """Regression (Pink-2026-08-29, live report: "不會停在真正的右上角" --
+    she never actually stops at the true corner). WanderController's own
+    max_x used to be a SEPARATE approximation (EDGE_MARGIN_PX's overshoot-
+    past-window's-clamp trick) tuned against window.CHAR_RIGHT_IN_WIN=190.
+    When CHAR_RIGHT_IN_WIN was tightened to 158 (2026-08-18) nothing
+    re-derived the wanderer-side approximation, so it silently drifted
+    9px away from the real hard clamp -- window.py's clamp still caught
+    and positioned her at the (correct, tightened) real edge every time,
+    but wanderer's OWN bookkeeping never found out, so it kept believing
+    9 more pixels of progress were always still available and kept
+    re-triggering a walk toward them that could never actually complete
+    (see WanderController._x_bounds' docstring for the full mechanism).
+
+    _x_bounds() now derives max_x directly from window.CHAR_RIGHT_IN_WIN,
+    so this asserts EXACT equality with window._char_bounds()'s own
+    max_ox -- not just "within EDGE_BAND_PX tolerance" like the
+    classification-only guard above, since a several-px silent drift is
+    exactly what caused this bug while still passing that looser check.
+    """
+    fake_frame = (0.0, 0.0, 1440.0, 875.0)
+    vx, vy, vw, vh = fake_frame
+    wc = wanderer.WanderController(
+        get_state=lambda: "idle",
+        is_drag_active=lambda: False,
+        get_window_origin=lambda: None,
+        set_window_origin=lambda x, y: None,
+        get_visible_frame=lambda: fake_frame,
+        set_sub_state=lambda s: None,
+        set_edge=lambda e: None,
+    )
+    min_x, max_x = wc._x_bounds(vx, vw)
+    _min_ox, max_ox, _min_oy, _max_oy = window._char_bounds(vx, vy, vw, vh)
+    assert max_x == max_ox, (
+        f"wanderer._x_bounds max_x={max_x} != window._char_bounds max_ox="
+        f"{max_ox} -- these must be IDENTICAL, not just close, or the "
+        f"9px-gap bug (2026-08-29) recurs."
+    )
+
+
+# ── corner_origin() must reach the same tight position wandering does ──
+# Pink-2026-08-27o: corner_origin() (menu snap / next_corner / startup)
+# used to inset by a cosmetic EDGE_MARGIN(20)px -- landing 60-70px short
+# of where wanderer.py's own edge-hugging margins actually reach.
+# Confirmed live: "not hugging the edge" persisted even after the
+# rotation-sync fix (force_edge/_edge_for_corner), because that bug was
+# never actually about rotation -- it was the POSITION itself falling
+# short. corner_origin() now derives from the exact same _char_bounds()
+# clamp_origin_to_screen already enforces everywhere else.
+
+def test_corner_origin_matches_char_bounds_exactly(monkeypatch):
+    fake_frame = (100.0, 50.0, 1440.0, 875.0)
+    monkeypatch.setattr(window, "_visible_frame", lambda: fake_frame)
+    vx, vy, vw, vh = fake_frame
+    min_ox, max_ox, min_oy, max_oy = window._char_bounds(vx, vy, vw, vh)
+
+    assert window.corner_origin("bottom-right") == (max_ox, min_oy)
+    assert window.corner_origin("top-right") == (max_ox, max_oy)
+    assert window.corner_origin("bottom-left") == (min_ox, min_oy)
+    assert window.corner_origin("top-left") == (min_ox, max_oy)
+
+
+def test_corner_origin_recognized_by_wanderers_distance_classifier(monkeypatch):
+    """The corner-snapped position must be recognized as 'on that edge'
+    by wanderer._compute_edge_at's own distance-based classifier (used
+    by refresh_edge() for drag-end etc), not just by the separate
+    force_edge()/_edge_for_corner() workaround -- confirms the two
+    classification mechanisms now agree, since corner_origin() reaches
+    (near enough) the exact same bounds wanderer.py's margins target."""
+    fake_frame = (0.0, 0.0, 1440.0, 875.0)
+    monkeypatch.setattr(window, "_visible_frame", lambda: fake_frame)
+
+    origin_box = {}
+    wc = wanderer.WanderController(
+        get_state=lambda: "idle",
+        is_drag_active=lambda: False,
+        get_window_origin=lambda: origin_box.get("v"),
+        set_window_origin=lambda x, y: None,
+        get_visible_frame=lambda: fake_frame,
+        set_sub_state=lambda s: None,
+        set_edge=lambda e: None,
+    )
+    for corner, expected_edge in [
+        ("bottom-right", "bottom"), ("top-right", "top"),
+        ("bottom-left", "bottom"), ("top-left", "top"),
+    ]:
+        origin_box["v"] = window.corner_origin(corner)
+        edge = wc.refresh_edge()
+        assert edge == expected_edge, (
+            f"{corner} snapped to {origin_box['v']} but wanderer's distance "
+            f"classifier says edge={edge!r}, not {expected_edge!r} -- "
+            f"corner_origin() and wanderer.py's margins have drifted "
+            f"out of sync again."
+        )

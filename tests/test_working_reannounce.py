@@ -50,10 +50,11 @@ def test_same_state_within_throttle_window_does_not_reannounce():
 
 
 def test_same_state_past_throttle_window_reannounces():
-    """Pink-2026-08-22: shell_cmd enrichment was TPA-only and is
-    gone (see window.py's _maybe_reannounce_working) -- on_still_working
-    is now always called with None, but the throttle/reannounce timing
-    itself is unchanged and still generic."""
+    """api._sm is None in this synthetic fixture (see _make_api), so
+    _current_shell_cmdline() has no detector to read and legitimately
+    returns None here -- see test_petapi_llm_context_enrichment.py /
+    the detector-level tests for real shell_cmdline population. This
+    test is only about the throttle/reannounce timing itself."""
     api = _make_api()
     api._observer.on_still_working.return_value = "running pytest"
 
@@ -86,6 +87,32 @@ def test_reannounce_skips_publish_when_nothing_concrete():
     api.update(PetState(state="working", timestamp=1000.0 + WORKING_REANNOUNCE_SEC + 1))
 
     assert api._pending_bubble is None
+
+
+def test_current_shell_cmdline_reads_claude_detector():
+    """Pink-2026-08-27k: _current_shell_cmdline() is the new wiring that
+    replaced the hardcoded shell_cmd=None -- reads the live Claude Code
+    detector's own shell_cmdline (populated by
+    watcher.latest_shell_child_cmdline via ClaudeCodeDetector._scan)."""
+    api = _make_api()
+    api._sm = MagicMock()
+    api._sm._claude_detector = MagicMock(shell_cmdline=["pytest", "-v"])
+    api._sm._codex_detector = MagicMock(shell_cmdline=None)
+    assert api._current_shell_cmdline() == ["pytest", "-v"]
+
+
+def test_current_shell_cmdline_falls_back_to_codex_detector():
+    api = _make_api()
+    api._sm = MagicMock()
+    api._sm._claude_detector = MagicMock(shell_cmdline=None)
+    api._sm._codex_detector = MagicMock(shell_cmdline=["git", "push"])
+    assert api._current_shell_cmdline() == ["git", "push"]
+
+
+def test_current_shell_cmdline_none_when_no_state_machine():
+    api = _make_api()
+    assert api._sm is None
+    assert api._current_shell_cmdline() is None
 
 
 def test_non_working_state_never_reannounces():

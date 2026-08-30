@@ -62,6 +62,47 @@ NUDGE_COOLDOWN_SEC = 1.5
 CORNER_FLEE_THRESHOLD = 3
 CORNER_FLEE_RESET_SEC = 6.0
 
+# Hover-fade-through (2026-08-27n): hold the cursor over her for
+# HOVER_DWELL_SEC continuously and she fades to HOVER_FADE_ALPHA and
+# becomes click-through, so whatever's underneath is reachable without
+# having to nudge her out of the way first. Unlike the nudge/corner-flee
+# triggers above (repeated re-entries), this is a SUSTAINED presence
+# check -- resets the instant the cursor leaves her bbox, not just after
+# a lull.
+HOVER_DWELL_SEC = 1.0
+HOVER_FADE_ALPHA = 0.5
+
+
+class HoverDwellTracker:
+    """Tracks continuous dwell time over the clickable bbox and reports
+    whether it has crossed HOVER_DWELL_SEC. Pure logic, no AppKit/
+    threading -- same rationale as the other trackers in this module.
+    """
+
+    def __init__(self, dwell_sec: float = HOVER_DWELL_SEC):
+        self._dwell_sec = dwell_sec
+        self._entered_at: float | None = None
+
+    def is_dwelling(self, now_interactive: bool, now: float) -> bool:
+        """Call once per poll tick with the freshly-computed interactive
+        state. Returns True on every tick from the moment continuous
+        presence crosses dwell_sec until the cursor leaves the bbox --
+        a sustained state, not a one-shot edge trigger like the nudge/
+        corner-flee trackers."""
+        if not now_interactive:
+            self._entered_at = None
+            return False
+        if self._entered_at is None:
+            self._entered_at = now
+            return False
+        return (now - self._entered_at) >= self._dwell_sec
+
+    def reset(self) -> None:
+        """Force out of a dwelling/entering state -- used when some
+        other event (drag start, hide) needs the fade cleared instead
+        of waiting for the cursor to naturally leave the bbox."""
+        self._entered_at = None
+
 
 class CornerFleeApproachTracker:
     """Counts consecutive fresh re-entries into the clickable bbox,
@@ -164,6 +205,21 @@ def load_alpha_masks() -> dict[str, "Image.Image"]:
     return masks
 
 
+def _occluded_by_menu_bar(cy: float, visible_frame_top: float) -> bool:
+    """Is this cursor Y at/above the system menu bar strip?
+
+    The menu bar always renders on top of every app window, including
+    ours -- a cursor up there can never actually be over Squid's visible
+    pixels no matter what our window-frame + bbox math says. Without
+    this check, docking her at a top corner puts that hit-test geometry
+    right under the menu bar's icon strip (Wi-Fi, clock, Control Center
+    on the right side), so ordinary menu-bar use reads as a sustained
+    hover and fires the hover-fade (2026-08-29 Pink report: "she's
+    translucent in the top-right corner and I never hovered her").
+    """
+    return cy >= visible_frame_top
+
+
 def _propagate_ignore(view, ignore: bool) -> None:
     """Recursively set the macOS view's ignoresMouseEvents-equivalent.
 
@@ -216,6 +272,9 @@ class PassthroughController:
         self._corner_flee_callback = None
         self._corner_flee_tracker = CornerFleeApproachTracker()
         self._was_interactive = False
+        # Hover-fade-through (2026-08-27n) -- see HoverDwellTracker.
+        self._hover_tracker = HoverDwellTracker()
+        self._last_faded: bool | None = None
         print(f"[squid-pet] passthrough: loaded {len(self._masks)} alpha masks", flush=True)
 
     # ── Public API ──
@@ -257,8 +316,11 @@ class PassthroughController:
         """Disable passthrough toggling (called when user is dragging)."""
         with self._lock:
             self._paused = True
-        # While paused, ensure window is clickable
+        # While paused, ensure window is clickable and fully opaque --
+        # dragging a half-faded, click-through Squid would be incoherent.
         self._apply_ignore(False)
+        self._apply_fade(False)
+        self._hover_tracker.reset()
 
     def resume(self) -> None:
         with self._lock:
@@ -274,6 +336,12 @@ class PassthroughController:
             # Immediately make the window click-through; don't wait for
             # the next poll tick.
             self._apply_ignore(True)
+            # Reset any in-progress hover-fade so unhiding later doesn't
+            # resume mid-dwell with stale timing, and so alpha is back
+            # to 1.0 underneath the separate hide/show alpha mechanism
+            # (_menu_toggle_hide) rather than layering fades.
+            self._apply_fade(False)
+            self._hover_tracker.reset()
 
     def start(self) -> None:
         t = threading.Thread(target=self._loop, daemon=True, name="squid-passthrough")
@@ -377,9 +445,37 @@ class PassthroughController:
             except Exception as e:
                 print(f"[squid-pet] setIgnoresMouseEvents failed: {e}", flush=True)
 
+    def _apply_fade(self, faded: bool) -> None:
+        """Set the NSWindow's alpha for the hover-fade-through feature
+        (HOVER_FADE_ALPHA when faded, fully opaque otherwise). Mirrors
+        _apply_ignore's check-and-set-with-lock + callAfter dispatch --
+        see that method's comment for why setAlphaValue_ must not be
+        called directly from this (non-main) poll thread."""
+        with self._lock:
+            if faded == self._last_faded:
+                return
+            nw = self._get_ns_window()
+            if nw is None:
+                return
+            try:
+                from PyObjCTools import AppHelper
+                alpha = HOVER_FADE_ALPHA if faded else 1.0
+
+                def _apply_fade_on_main():
+                    try:
+                        nw.setAlphaValue_(alpha)
+                    except Exception as e:
+                        print(f"[squid-pet] _apply_fade_on_main failed: {e}", flush=True)
+
+                AppHelper.callAfter(_apply_fade_on_main)
+                self._last_faded = faded
+                print(f"[squid-pet] passthrough → faded={faded}", flush=True)
+            except Exception as e:
+                print(f"[squid-pet] setAlphaValue (hover-fade) failed: {e}", flush=True)
+
     def _loop(self) -> None:
         try:
-            from AppKit import NSEvent
+            from AppKit import NSEvent, NSScreen
         except ImportError:
             print("[squid-pet] AppKit unavailable; passthrough disabled", flush=True)
             return
@@ -424,9 +520,25 @@ class PassthroughController:
                 inside = (win_x <= cx <= win_x + win_w and
                           win_y <= cy <= win_y + win_h)
 
+                # The menu bar always renders on top of Squid's window --
+                # a cursor up there is never actually over her, no matter
+                # what the raw rectangle math above says. Matters when
+                # she's docked at a top corner, where that rectangle
+                # extends up under the menu bar's icon strip. See
+                # _occluded_by_menu_bar's docstring.
+                if inside:
+                    screen = NSScreen.mainScreen()
+                    if screen is not None:
+                        vf = screen.visibleFrame()
+                        visible_frame_top = vf.origin.y + vf.size.height
+                        if _occluded_by_menu_bar(cy, visible_frame_top):
+                            inside = False
+
                 if not inside:
                     # Cursor outside: keep window in passthrough so it never blocks anything
                     self._apply_ignore(True)
+                    self._hover_tracker.reset()
+                    self._apply_fade(False)
                     self._track_nudge(False, cx, cy)
                     tick += 1
                     if tick % 100 == 0:
@@ -492,6 +604,20 @@ class PassthroughController:
                 else:  # currently interactive
                     want_ignore = alpha_val < 5
                 opaque = not want_ignore  # for diagnostics below
+
+                # Hover-fade-through (2026-08-27n): sustained presence over
+                # the bbox past HOVER_DWELL_SEC fades her and forces
+                # click-through, so whatever she's covering becomes
+                # reachable without a deliberate nudge/drag first. Overrides
+                # want_ignore (computed above) rather than replacing the
+                # alpha-hit-test entirely -- leaving the dwell state
+                # (cursor moves off her, still inside the window) falls
+                # straight back to the normal hysteresis result with no
+                # extra bookkeeping.
+                dwelling = self._hover_tracker.is_dwelling(opaque, time.time())
+                if dwelling:
+                    want_ignore = True
+                self._apply_fade(dwelling)
                 self._apply_ignore(want_ignore)
                 self._track_nudge(opaque, cx, cy)
 
@@ -502,7 +628,8 @@ class PassthroughController:
                     print(f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
                           f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
                           f"inside={inside} sprite=({sprite_x},{sprite_y}) "
-                          f"state={state} opaque={opaque} ignore={_ignore_for_log}",
+                          f"state={state} opaque={opaque} dwelling={dwelling} "
+                          f"ignore={_ignore_for_log}",
                           flush=True)
 
             except Exception as e:

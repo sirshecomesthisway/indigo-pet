@@ -132,9 +132,26 @@ def _run_why(json_output: bool = False) -> None:
     import time as _t
 
     sm = watcher.StateMachine()
-    sm.compute()        # prime CPU sampling
-    _t.sleep(0.3)
-    st = sm.compute()
+    # Pink-2026-08-26: --why is read-only diagnostics -- it must never
+    # cause side effects. Without this, a genuinely-active approval_needed
+    # would re-fire a REAL macOS notification AND print noise into stdout
+    # (corrupting --why-json output) every single time someone runs
+    # `squid why`. Presetting the "fire once" latch alone isn't enough:
+    # compute()'s own agent_idle_seconds bookkeeping resets that latch to
+    # False, in the SAME call, whenever the underlying cascade state is
+    # "active" (working/thinking/...) -- which it usually is, since
+    # checking approval status while actively using the agent is exactly
+    # when someone runs this. So pass notify=False for these two
+    # priming/diagnostic calls specifically (compute()'s own structural
+    # opt-out, not a unittest.mock.patch reaching into the module) and
+    # swallow compute()'s stdout print too -- the real report is printed
+    # afterward, untouched, outside this block.
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        sm.compute(notify=False)        # prime CPU sampling
+        _t.sleep(0.3)
+        st = sm.compute(notify=False)
 
     per_detector = []
     now = _t.time()
@@ -151,23 +168,22 @@ def _run_why(json_output: bool = False) -> None:
         per_detector.append(entry)
 
     # Pink-2026-06-29: surface the approval-alert kill switch in --why.
-    # If approval_alert_enabled is False, no per_proc_idle ever triggers a
-    # flag-wave -- and the user has no way to discover this without grepping
+    # If approval_alert_enabled is False, the flag-wave never fires --
+    # and the user has no way to discover this without grepping
     # config.json. So plumb it through here.
     from . import config as _cfg
+    # Pink-2026-08-26: surface the Claude Code side of the direct signal
+    # (scripts/claude_pet_hook.py's Notification-hook flag files) -- same
+    # "don't make the user grep for why it's not waving" rationale.
     try:
-        procs = watcher.find_tpa_processes()
+        claude_sessions_raw = watcher.claude_sessions_awaiting_input()
     except Exception:
-        procs = []
-    # Prime per-PID CPU sampling so the second call gives a real reading.
-    _ = watcher.per_process_pending_approval_idle(procs) if procs else 0.0
-    _t.sleep(0.3)
-    per_proc_idle = (watcher.per_process_pending_approval_idle(procs)
-                     if procs else 0.0)
+        claude_sessions_raw = []
+    claude_sessions_eligible = watcher.filter_eligible_claude_sessions(claude_sessions_raw)
     approval_alert = {
         "enabled": bool(_cfg.get("approval_alert_enabled", True)),
-        "threshold_sec": float(_cfg.get("approval_alert_threshold_sec", 10.0)),
-        "per_proc_max_idle_sec": per_proc_idle,
+        "claude_sessions_awaiting": claude_sessions_raw,
+        "claude_sessions_eligible": claude_sessions_eligible,
     }
 
     report = {
@@ -190,6 +206,14 @@ def _explain_verdict(state, per_detector, approval_alert=None) -> str:
     if state.state == "sleeping":
         return (f"sleeping because macOS HID idle = "
                 f"{state.idle_seconds:.0f}s (>= 300s threshold)")
+    if state.state == "approval_needed":
+        # Pink-2026-08-26: approval_needed is an OVERRIDE on top of
+        # whatever the cascade picked underneath (see StateMachine.
+        # compute()) -- explaining it via `fired` detectors is
+        # misleading (it would describe the pre-override cascade, not
+        # the actual reason: a TPA or Claude Code direct-signal flag).
+        # state.state_reason already carries the precise reason.
+        return "state=approval_needed because " + (state.state_reason or "a direct awaiting_input signal fired")
     if state.state == "idle" and not fired:
         return "idle because no detector fired and macOS is active"
     triggers = []
@@ -206,15 +230,15 @@ def _explain_verdict(state, per_detector, approval_alert=None) -> str:
         base = "state=" + state.state + " because " + ", ".join(triggers)
     else:
         base = "state=" + state.state
-    # If the user has disabled the approval-alert toggle AND a TPA is idle
-    # past threshold, call it out so they know WHY no flag is waving.
+    # If the user has disabled the approval-alert toggle AND a Claude Code
+    # session is genuinely awaiting input, call it out so they know WHY
+    # no flag is waving.
     if approval_alert and not approval_alert.get("enabled", True):
-        ppi = approval_alert.get("per_proc_max_idle_sec", 0.0)
-        thr = approval_alert.get("threshold_sec", 10.0)
-        if ppi >= thr:
+        if approval_alert.get("claude_sessions_awaiting"):
             base += (" -- NOTE: approval_alert is OFF; flag-wave would"
-                     " otherwise be firing (per_proc_idle="
-                     + str(ppi) + "s >= " + str(thr) + "s)")
+                     " otherwise be firing (Claude Code session(s) "
+                     + ",".join(approval_alert["claude_sessions_awaiting"])
+                     + " awaiting input)")
     return base
 
 
@@ -226,10 +250,8 @@ def _print_why_human(report: dict) -> None:
     st = report["state"]
     print(f"squid-pet state: {BOLD}{st['state']}{RST}")
     print(f"  message:        {st['message']}")
-    print(f"  cpu_percent:    {st['cpu_percent']}")
     print(f"  idle (HID):     {st['idle_seconds']}s")
     print(f"  agent_idle:        {st['agent_idle_seconds']}s")
-    print(f"  TPA running:     {st['tpa_running']}")
     # Fix C (2026-06-28): show state_reason -- the one-line answer to
     # "why is she in this state right now?" without decoding CPU and
     # detector booleans by hand.
@@ -261,9 +283,13 @@ def _print_why_human(report: dict) -> None:
     aa = report.get("approval_alert") or {}
     if aa:
         toggle = "ON" if aa["enabled"] else f"{YEL}OFF{RST}"
-        print(f"APPROVAL ALERT: {toggle}  "
-              f"(threshold={aa['threshold_sec']}s, "
-              f"per_proc_max_idle={aa['per_proc_max_idle_sec']}s)")
+        print(f"APPROVAL ALERT: {toggle}")
+        claude_awaiting = aa.get("claude_sessions_awaiting") or []
+        claude_eligible = aa.get("claude_sessions_eligible") or []
+        print(f"  Claude Code sessions awaiting: {claude_awaiting or 'none'}")
+        if claude_awaiting and not claude_eligible:
+            print(f"  {YEL}(all snoozed -- seen and deferred, "
+                  f"waiting for a reply or a fresh wait){RST}")
         if not aa["enabled"]:
             print(f"  {YEL}!! alerts are OFF -- flag-wave override disabled.{RST}")
             print("     Re-enable via tray: Bubbles -> 'Your turn' alerts.")

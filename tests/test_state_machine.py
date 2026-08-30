@@ -6,13 +6,13 @@ Strategy: monkeypatch every I/O function at the module level
 detector-agnostic parts of its priority cascade (sleeping, celebrating,
 auto-wake, default idle) plus cross-tick memory.
 
-Pink-2026-08-22: TPADetector removed (TPA was never
-actually installed/run on this machine, so its busy/thinking/working/
-celebrating/grooving/concerned role never fired anything in practice).
-The rich working/thinking/celebrating tests for Claude Code and Codex
-live in test_watcher_claude_code_cascade.py / test_watcher_codex_cascade.py.
-Tests here that exercised TPA-only branches (grooving, concerned, CPU-
-heuristic working/thinking, busy_streak) were removed along with them.
+Pink-2026-08-22/27: TPADetector, and later the entire TPA-
+driven approval mechanism, were removed (TPA was never actually
+installed/run on this machine, so none of it ever fired anything in
+practice; the Claude-Code-native replacement -- an official Notification
+hook -- has been live since 2026-08-26). The rich working/thinking/
+celebrating tests for Claude Code and Codex live in
+test_watcher_claude_code_cascade.py / test_watcher_codex_cascade.py.
 """
 from __future__ import annotations
 
@@ -26,30 +26,21 @@ from squid_pet.watcher import StateMachine
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
-def install_world(monkeypatch, **overrides):
-    """Stub out every external signal the StateMachine consults.
-
-    Defaults represent 'completely quiet system: no TPA, no idle'.
-    Override per-test via kwargs.
-    """
-    defaults = dict(
-        idle=0.0,                # macos_idle_seconds
-        procs=[],                # find_tpa_processes
-        cpu=0.0,                 # aggregate_cpu
-    )
-    defaults.update(overrides)
-
-    monkeypatch.setattr(watcher, "macos_idle_seconds",
-                        lambda: defaults["idle"])
-    monkeypatch.setattr(watcher, "find_tpa_processes",
-                        lambda: defaults["procs"])
-    monkeypatch.setattr(watcher, "aggregate_cpu",
-                        lambda procs: defaults["cpu"])
+def install_world(monkeypatch, idle=0.0):
+    """Stub out the external signals the StateMachine consults directly:
+    macOS idle time, and the Claude Code awaiting-input directory (must
+    be isolated from the real ~/.squid-pet/claude_awaiting_input/ --
+    without this, a real live flag on the developer's own machine makes
+    approval_needed override every test here, which is exactly what
+    happened once: this file's own tests failed against a real flag
+    left by this very session)."""
+    monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
+    monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
 
 
 def make_machine_bare() -> StateMachine:
     """StateMachine with no detectors at all -- exercises the sleeping /
-    celebrating / default-idle branches without any TPA/Claude/Codex
+    celebrating / default-idle branches without any Claude/Codex
     involvement."""
     return StateMachine(detectors=[])
 
@@ -58,7 +49,7 @@ def make_machine_bare() -> StateMachine:
 # Priority 1 — SLEEPING
 # ──────────────────────────────────────────────────────────────────────
 def test_sleeping_when_macos_idle_exceeds_threshold(monkeypatch):
-    install_world(monkeypatch, idle=400.0, procs=["fake"], cpu=20.0)
+    install_world(monkeypatch, idle=400.0)
     sm = make_machine_bare()
 
     st = sm.compute()
@@ -67,13 +58,12 @@ def test_sleeping_when_macos_idle_exceeds_threshold(monkeypatch):
 
 
 def test_sleeping_takes_priority_over_everything(monkeypatch):
-    """Sleeping wins even when a celebrate window is armed."""
-    install_world(
-        monkeypatch,
-        idle=watcher.IDLE_THRESHOLD_SEC + 1,
-        procs=["fake"],
-        cpu=50.0,
-    )
+    """Sleeping wins even when a celebrate window is armed -- as long as
+    no agent detector is reporting active busy-ness (with no detectors
+    at all, make_machine_bare() has nothing to be busy). See
+    test_watcher_claude_code_cascade.py for the 2026-08-27g case where
+    a REAL agent busy signal suppresses sleeping instead."""
+    install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
     sm = make_machine_bare()
     sm.celebrate_until = time.time() + 20
     st = sm.compute()
@@ -84,7 +74,7 @@ def test_sleeping_takes_priority_over_everything(monkeypatch):
 # Priority 2 — CELEBRATING (held window)
 # ──────────────────────────────────────────────────────────────────────
 def test_celebrating_held_for_duration(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+    install_world(monkeypatch)
     sm = make_machine_bare()
     sm.celebrate_until = time.time() + 19  # armed 1s ago, 20s hold
 
@@ -94,7 +84,7 @@ def test_celebrating_held_for_duration(monkeypatch):
 
 
 def test_celebrating_window_expires(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+    install_world(monkeypatch)
     sm = make_machine_bare()
     sm.celebrate_until = time.time() - 1  # already expired
 
@@ -103,26 +93,13 @@ def test_celebrating_window_expires(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Priority 3 — IDLE (no tpa running)
+# Priority 6 — Default IDLE
 # ──────────────────────────────────────────────────────────────────────
-def test_idle_when_no_tpa(monkeypatch):
-    install_world(monkeypatch, procs=[])  # no procs
-    sm = make_machine_bare()
-
-    st = sm.compute()
-    assert st.state == "idle"
-    assert st.tpa_running is False
-
-
-def test_default_idle_when_tpa_running_with_no_signals(monkeypatch):
-    """tpa_running is still populated accurately even though TPA
-    no longer drives working/thinking/etc -- the approval_needed alert
-    still keys off it."""
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+def test_default_idle_with_no_signals(monkeypatch):
+    install_world(monkeypatch)
     sm = make_machine_bare()
     st = sm.compute()
     assert st.state == "idle"
-    assert st.tpa_running is True
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -131,7 +108,7 @@ def test_default_idle_when_tpa_running_with_no_signals(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 def test_agent_idle_seconds_zero_when_active(monkeypatch):
     """While state is active (e.g. celebrating), agent_idle should be 0."""
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+    install_world(monkeypatch)
     sm = make_machine_bare()
     sm.celebrate_until = time.time() + 20
     st = sm.compute()
@@ -140,7 +117,7 @@ def test_agent_idle_seconds_zero_when_active(monkeypatch):
 
 
 def test_agent_idle_seconds_starts_ticking_when_state_becomes_idle(monkeypatch):
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+    install_world(monkeypatch)
     sm = make_machine_bare()
 
     st1 = sm.compute()
@@ -156,7 +133,7 @@ def test_agent_idle_seconds_starts_ticking_when_state_becomes_idle(monkeypatch):
 
 def test_agent_idle_resets_on_transition_to_active(monkeypatch):
     """Going idle → celebrating should zero agent_idle_seconds."""
-    install_world(monkeypatch, procs=["fake"], cpu=0.0)
+    install_world(monkeypatch)
     sm = make_machine_bare()
     sm.compute()                             # land in idle
     sm._agent_idle_since = time.time() - 60.0  # pretend 60s of idle
@@ -178,10 +155,10 @@ def test_petstate_default_fields():
     st = PetState()
     assert st.state == "idle"
     assert st.sub_state == ""
-    assert st.cpu_percent == 0.0
     assert st.idle_seconds == 0.0
     assert st.agent_idle_seconds == 0.0
-    assert st.tpa_running is False
+    assert st.claude_code_running is False
+    assert st.codex_running is False
     assert st.timestamp == 0.0
     assert st.message == ""
     assert st.concern_reason == ""
@@ -209,7 +186,7 @@ def test_auto_wake_opens_window_after_10_min_sleeping(monkeypatch):
     st2 = sm.compute()
     assert st2.state != "sleeping", \
         f"expected auto-wake to suppress sleeping, got state={st2.state}"
-    # Default fall-through is idle (no TPA, no detectors).
+    # Default fall-through is idle (no detectors).
     assert st2.state == "idle"
     # Window is now active.
     assert sm._force_awake_until > time.time()

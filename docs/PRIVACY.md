@@ -16,30 +16,55 @@ and how to turn any of it off.
 
 ## What each detector observes
 
-### TPA — approval-alert ("flag wave") only
+Squid started life watching **TPA**, a separate internal
+CLI coding agent — process CPU, subagent files, `errors.log` content,
+shell children, and a private sitecustomize.py-driven approval-alert
+signal. All of that was removed 2026-08-27: TPA was never
+actually installed/run in this environment, so none of it ever fired
+anything in practice. Nothing described below reads anything under
+`~/.tpa/` any more.
 
-TPADetector (which formerly gave Squid a working/thinking/grooving/
-concerned/celebrating reaction to TPA, mirroring what
-ClaudeCodeDetector does for Claude Code below) was removed 2026-08-22 —
-TPA was never actually installed/run in this environment, so it
-never fired anything in practice. It previously read (and would again,
-for anyone re-adding it) `~/.tpa/logs/errors.log` CONTENT (last
-few lines, parsed for severity hints) in addition to metadata — that
-content-reading path no longer exists anywhere in the codebase.
+### Claude Code's flag wave — `scripts/claude_pet_hook.py`
 
-What's left is a separate, narrower mechanism — the approval-needed
-"flag wave" — that is independent of the table above and still fully
-TPA-specific:
+(2026-08-26) The approval-needed "flag wave" alert, via Claude Code's
+OFFICIAL hook system rather than process/file scanning. This is a
+**separate execution path** from the detectors below: Claude Code
+itself invokes `scripts/claude_pet_hook.py` as a subprocess, once per
+`Notification`/`UserPromptSubmit`/`SessionEnd` event, per the `hooks`
+block registered in `~/.claude/settings.json` (your own user-level
+config, outside this repo).
 
-| Reads | What for |
+| Reads (via stdin, from Claude Code itself) | What for |
 |-------|----------|
-| `psutil.process_iter()` cmdline | finds python processes running `tpa`, to know it's present |
-| `~/.tpa/awaiting_input/<pid>` file presence | direct signal: TPA is waiting on you right now |
-| CPU% of those processes (fallback only, off by default) | idle-since-last-busy heuristic if the direct signal is unavailable |
+| `session_id` | names the flag file; the only identifier Claude Code's hook payload provides (no PID) |
+| `hook_event_name` | branches behavior: write on `Notification`, remove on `UserPromptSubmit`/`SessionEnd` |
+| `notification_type` (Notification events only) | only `permission_prompt` and `idle_prompt` create a flag; every other value is ignored |
 
-Does NOT read: prompt content, model responses, file contents you edit
-with TPA, chat history, API keys, OneDrive/Confluence data,
-`errors.log`, or any subagent/autosave file.
+| Writes | What for |
+|--------|----------|
+| `~/.squid-pet/claude_awaiting_input/<session_id>` (content: the notification_type string) | direct signal: this Claude Code session is waiting on you right now |
+| `~/.squid-pet/claude_hook.log` (one line per hook invocation, auto-truncated past 200KB) | lets you verify the hook is actually firing -- `tail -f` it while using Claude Code |
+
+Does NOT read: the `message` field's human-readable text, `transcript_path`,
+`cwd`, `prompt_id`, or any other field Claude Code's hook payload
+includes beyond the three above; does not read transcript file contents,
+prompt/response text, or tool call arguments/results (same guarantee as
+ClaudeCodeDetector below). Never imports the `squid_pet` package and has
+zero dependencies beyond the Python stdlib, so a bug in squid-pet proper
+can't affect it (or vice versa) -- it's wired up and torn down entirely
+through `~/.claude/settings.json`.
+
+Two self-heal reads in `watcher.py` back this mechanism, both metadata-only:
+`StateMachine.compute()` deletes a flag outright the moment its own
+independently-verified activity signal (real shell/file/streaming
+evidence — no new external read, just its own already-computed state) sees
+the session genuinely active again, covering the case where Claude
+resumes on its own without a fresh `UserPromptSubmit` ever firing; and
+(2026-08-27) when the OS notification fires, `psutil` walks the parent-
+process chain of any running `claude` process (process names only — e.g.
+`Terminal`, `iTerm2` — no cmdline args, no window titles) to find which
+terminal app is hosting it, so `terminal-notifier`'s `-activate` can bring
+the right app to the front on click instead of a generic/unhelpful target.
 
 ### ClaudeCodeDetector — observes the Claude Code CLI
 
@@ -125,9 +150,9 @@ per scan to stay cheap.
 
 Squid writes ONLY to `~/.squid-pet/`:
 
-* `state.json` — current PetState snapshot (state, message, cpu_percent,
-  idle_seconds, timestamps). Overwritten ~1×/second. **Never contains
-  file paths, commit hashes, or process arguments.**
+* `state.json` — current PetState snapshot (state, message, idle_seconds,
+  timestamps). Overwritten ~1×/second. **Never contains file paths,
+  commit hashes, or process arguments.**
 * `settings.json` — your own preferences (stroll_mode, triggers.*).
 * `logs/squid.log` — startup + lifecycle log.
 * `pid` — the running daemon's PID (for the singleton lock).

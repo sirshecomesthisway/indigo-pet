@@ -34,33 +34,42 @@ import threading
 import time
 from typing import Callable, Optional
 
+from . import window
+
 
 # Motion params (unchanged from pre-refactor)
 WANDER_SPEED_PX_PER_SEC = 110          # walking speed
 WANDER_MAX_DURATION_SEC = 3.0          # hard cap — never walk longer than this
 WANDER_TICK_HZ = 30                    # smoothness
-EDGE_MARGIN_PX = -51                   # walk-TARGET selection margin for left/right. Set NEGATIVE
-                                       # 2026-08-18 so the wander-target picker's own boundary is at
-                                       # or past window.CHAR_LEFT_IN_WIN/CHAR_RIGHT_IN_WIN -- the
-                                       # ALREADY-TRUSTED hard clamp that's applied on every origin-set
-                                       # (drag/corner-snap/wander alike) and has never had a clipping
-                                       # complaint. That lets her actually walk all the way to
-                                       # whichever boundary the hard clamp permits (tentacles
-                                       # touching) instead of wander stopping short of it.
-                                       # -51 specifically: exactly matches CHAR_LEFT_IN_WIN(51), so
-                                       # LEFT's target reaches its hard clamp exactly. For RIGHT (hard
-                                       # clamp CHAR_RIGHT_IN_WIN=190, i.e. only needs -10 to reach),
-                                       # -51 overshoots the target past the clamp, so the clamp -- not
-                                       # this margin -- ends up positioning her there too. This is a
-                                       # SHARED single constant for both sides (see min_x/max_x below)
-                                       # so it can't be tuned independently per side.
-                                       # SAFETY CONSTRAINT (do not violate without re-checking): must
-                                       # stay >= -70, or the edge classifier's own right-side distance
-                                       # check (CHAR_RIGHT_IN_WIN - WIN_W - EDGE_MARGIN_PX <=
-                                       # EDGE_BAND_PX) fails and she stops being recognized as "on the
-                                       # right edge" while sitting at the hard-clamped position, so
-                                       # rotation never triggers there. See
-                                       # test_edge_margin_keeps_edge_classification_working.
+EDGE_MARGIN_PX = -51                   # walk-TARGET selection margin for the LEFT edge only. Set
+                                       # NEGATIVE 2026-08-18 so the wander-target picker's own
+                                       # boundary is at window.CHAR_LEFT_IN_WIN -- the ALREADY-TRUSTED
+                                       # hard clamp applied on every origin-set (drag/corner-snap/
+                                       # wander alike) -- instead of stopping short of it. -51 exactly
+                                       # matches CHAR_LEFT_IN_WIN(51), so LEFT's target reaches its
+                                       # hard clamp exactly (see min_x below).
+                                       #
+                                       # RIGHT no longer shares this constant (Pink-2026-08-29): it
+                                       # used to reuse this SAME value via an "overshoot past
+                                       # window.CHAR_RIGHT_IN_WIN's clamp, let the clamp position her"
+                                       # trick -- correct arithmetic only as long as this margin's
+                                       # overshoot and CHAR_RIGHT_IN_WIN's actual clamp stayed in sync,
+                                       # which nobody re-checked when CHAR_RIGHT_IN_WIN was tightened
+                                       # 190->158 on 2026-08-18 for a closer idle-pose fit. The clamp
+                                       # still caught her at the (now different, correct) real edge --
+                                       # but this module's own d_right bookkeeping still measured
+                                       # against the STALE 190-based target, permanently believing she
+                                       # was 9px short of the corner. Close enough to still count as
+                                       # "on the edge" for rotation (EDGE_BAND_PX=60 swallows 9px), but
+                                       # far enough that _pick_edge_destination kept re-picking "walk
+                                       # the remaining 9px" forever, since she could never actually
+                                       # reach a target past where the clamp already caught her -- a
+                                       # perpetual, visible micro-correction that never settled (Pink
+                                       # report: "不會停在真正的右上角", i.e. never actually stops at
+                                       # the real corner). Fixed by deriving max_x directly from
+                                       # window.CHAR_RIGHT_IN_WIN via _x_bounds() below instead of
+                                       # maintaining a second, separately-tuned approximation of it --
+                                       # see _x_bounds' docstring.
 BOTTOM_MARGIN_PX = -45                 # feet AT visible-frame bottom (auto-hide Dock). MUST match
                                        # (or exceed) window.CHAR_BOTTOM_IN_WIN, same pairing as
                                        # EDGE_MARGIN_PX/CHAR_LEFT_IN_WIN above -- was -40 against the
@@ -71,19 +80,22 @@ BOTTOM_MARGIN_PX = -45                 # feet AT visible-frame bottom (auto-hide
                                        # disproved -- see window.CHAR_BOTTOM_IN_WIN), which made the
                                        # hard clamp TIGHTER than wander's stale -40 target. Bumped to
                                        # -45 to match and actually reach the new, correct boundary.
-TOP_MARGIN_PX    = 50                   # Binary-search step. CONFIRMED broken (nearly/fully
+TOP_MARGIN_PX    = 42                   # Binary-search step. CONFIRMED broken (nearly/fully
                                        # invisible, screenshot evidence): <=35. CONFIRMED safe
-                                       # (fully visible, Pink 2026-08-18): 65, 100. 50 is the midpoint
-                                       # of the now-narrowed (35,65) range -- NOT derived from
-                                       # transform math (that's what broke things twice), just
-                                       # bisection. Pink wants her tentacles actually TOUCHING the top
-                                       # edge, i.e. as low as this range allows without clipping.
-                                       # If 50 is visible: next step down is ~42 (midpoint of 35-50).
-                                       # If 50 clips: next step up is ~57 (midpoint of 50-65).
+                                       # (fully visible, Pink 2026-08-18): 65, 100. 50 CONFIRMED
+                                       # safe too (fully visible, live screenshot, Pink
+                                       # 2026-08-30 -- narrows the safe boundary down from 65).
+                                       # 42 is the midpoint of the now-narrowed (35,50) range --
+                                       # NOT derived from transform math (that's what broke
+                                       # things twice), just bisection. Pink wants her tentacles
+                                       # actually TOUCHING the top edge, i.e. as low as this
+                                       # range allows without clipping.
+                                       # If 42 is visible: next step down is ~38 (midpoint of 35-42).
+                                       # If 42 clips: next step up is ~46 (midpoint of 42-50).
                                        # Keep halving the gap either way -- don't jump. (Was 0, then
                                        # 35 [broken], then briefly 10 [broken], then 155 [safe, too
-                                       # far], then 100 [safe], then 65 [safe]. Pink 2026-07-12,
-                                       # 2026-08-18.)
+                                       # far], then 100 [safe], then 65 [safe], then 50 [safe]. Pink
+                                       # 2026-07-12, 2026-08-18, 2026-08-30.)
 LOOK_AROUND_DURATION_SEC = 1.4         # how long mid-walk look-around lasts
 LOOK_AROUND_PROBABILITY = 0.45         # chance of pause-to-look mid-walk
 WIN_W = 200                            # window width (must match window.py)
@@ -123,7 +135,30 @@ ROTATION_PREAMBLE_SEC = 0.7
 # it reads as a flinch, not a stroll.
 NUDGE_HOP_DISTANCE_PX = 70
 NUDGE_SPEED_PX_PER_SEC = 400
-NUDGE_MIN_DURATION_SEC = 0.25
+NUDGE_MIN_DURATION_SEC = 0.45          # Pink-2026-08-30 experiment (report: "flakey...
+                                       # losing some frames" while nudging). Was 0.25;
+                                       # 0.35 (first attempt, 11 updates) still felt short
+                                       # 3 more frames -> 0.45 exactly (each +1/WANDER_TICK_HZ
+                                       # of duration = +1 step, so +3 steps = +3/30 = +0.1s).
+                                       # A typical NUDGE_HOP_DISTANCE_PX(70) hop finishes
+                                       # in 70/400=0.175s by speed alone -- WAY under the
+                                       # floor, so this constant (not NUDGE_SPEED_PX_PER_SEC)
+                                       # is what actually decides a normal hop's duration,
+                                       # and duration*WANDER_TICK_HZ(30) is what decides its
+                                       # step count: at the original 0.25 that's only 7 steps
+                                       # (8 origin updates total) -- too few to read as
+                                       # smooth motion. 0.45 gives 13 steps (14 updates),
+                                       # ~75% more than the original -- still under half a
+                                       # second (reads as a reflex, not a stroll). Only the
+                                       # SHORT hop is affected -- a corner-flee across most
+                                       # of the wander range is already speed-bound (well
+                                       # over the floor) and already has plenty of steps.
+                                       # Keep widening in +1/WANDER_TICK_HZ(=+0.0333s)
+                                       # increments (that's what buys exactly +1 more frame)
+                                       # if still choppy; tighten back down if it starts
+                                       # feeling sluggish instead of reactive -- test live,
+                                       # this wasn't derived from a measurement of what
+                                       # "smooth enough" requires.
 # Below this much actual movement, the away-from-cursor hop is considered
 # "stuck" (corner case -- see _do_request_nudge's fallback) rather than a
 # genuine short hop near a wall.
@@ -176,6 +211,10 @@ class WanderController:
         self._set_sub_state = set_sub_state
         self._set_edge = set_edge or (lambda _e: None)
         self._last_edge = ""
+        # See _rotate_first_preamble / _update_edge: True while a walk
+        # that just pre-rotated to a NEW edge is in flight, so the
+        # per-tick position-based tracker doesn't fight the decision.
+        self._edge_locked_for_walk = False
 
         # Sprint callbacks (injected via setters from window.py)
         self._set_wrapper_deg_cb = lambda _d: None
@@ -199,6 +238,31 @@ class WanderController:
         # Hop/flee animation generation counter (see _bump_nudge_generation).
         self._nudge_generation: int = 0
         self._nudge_generation_lock = threading.Lock()
+
+        # True while a nudge/flee hop (_animate_hop) is actively animating.
+        # Pink-2026-08-30 report: "flakey... losing some frames when she
+        # runs" during a nudge. Root cause: _do_request_walk's ambient
+        # idle-wander thread and _animate_hop's nudge/flee thread had NO
+        # mutual exclusion at all -- each independently ticks its own
+        # interpolation and calls self._set_origin() on its own schedule,
+        # so if the RoutineController's idle-walk scheduler happens to
+        # fire while a nudge/flee is mid-hop (routine timing is
+        # independent of user cursor activity, so this coincidence is
+        # not rare), the two threads' writes interleave and the window
+        # visibly jumps between two unrelated trajectories tick by tick
+        # -- exactly "losing frames" / stutter, not smooth motion along
+        # either path. _nudge_generation already fully protects
+        # nudge/flee against EACH OTHER (a newer one preempts an older
+        # one in flight) but nothing previously extended that protection
+        # to a concurrently-running wander walk. A nudge is a direct
+        # physical reaction to the user's cursor and should always win
+        # over ambient wandering, so this flag makes wander walks defer
+        # to (never fight) an in-flight hop: checked before a walk even
+        # starts and on every tick of one already in progress (see
+        # _do_request_walk and _walk_to). Deliberately NOT the other way
+        # around -- a wander walk starting must never interrupt an
+        # active nudge/flee reaction.
+        self._hop_active: bool = False
 
         # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
         # Restored 2026-06-13 after unify-idle-rhythm regression.
@@ -345,23 +409,51 @@ class WanderController:
             self._nudge_generation += 1
             return self._nudge_generation
 
+    # ── shared x-axis bounds (fix 2026-08-29) ───────────────────────────
+    def _x_bounds(self, vx: float, vw: float) -> tuple[float, float]:
+        """(min_x, max_x): left/right wander-target bounds.
+
+        Both used to be derived independently at each of 5 call sites
+        from EDGE_MARGIN_PX's "overshoot the target past
+        window.CHAR_RIGHT_IN_WIN's hard clamp, let the clamp position her
+        there" trick -- see EDGE_MARGIN_PX's comment above for the full
+        story of how that silently went stale when CHAR_RIGHT_IN_WIN was
+        retuned 190->158 and nobody was left to notice the two had
+        drifted apart, at 5 duplicated call sites, all at once.
+
+        max_x now imports window.CHAR_RIGHT_IN_WIN and computes the exact
+        boundary directly -- the same "reach window.py's ALREADY-TRUSTED
+        hard clamp exactly" property EDGE_MARGIN_PX already gives min_x
+        for the left side (CHAR_RIGHT_IN_WIN's own tightening history
+        shows this value gets revisited by hand periodically; deriving
+        from it directly means the NEXT retune only has one place to
+        change, not two that have to be remembered together)."""
+        min_x = vx + EDGE_MARGIN_PX
+        max_x = vx + vw - window.CHAR_RIGHT_IN_WIN
+        return min_x, max_x
+
     # ── walk implementation ────────────────────────────────────────────
     def _do_request_walk(self, band: str) -> None:
+        if self._hop_active:
+            # A nudge/flee is already animating -- don't start a wander
+            # walk that would race its origin writes (see _hop_active's
+            # declaration in __init__). The routine will just try again
+            # on its next tick; the hop is over in well under a second.
+            return
         origin = self._get_origin()
         frame = self._get_frame()
         if origin is None or frame is None:
             return
         ox, oy = origin
         vx, vy, vw, vh = frame
-        min_x = vx + EDGE_MARGIN_PX
-        max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+        min_x, max_x = self._x_bounds(vx, vw)
         min_y = vy + BOTTOM_MARGIN_PX
         max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         if max_x <= min_x or max_y <= min_y:
             return
-        tx, ty = self._pick_target_for_band(band, ox, oy,
+        tx, ty, edge_hint = self._pick_target_for_band(band, ox, oy,
                                             min_x, max_x, min_y, max_y)
-        self._walk_to(ox, oy, tx, ty, vx, vy, vw, vh)
+        self._walk_to(ox, oy, tx, ty, vx, vy, vw, vh, edge_hint=edge_hint)
 
     def _pick_target_for_band(self, band, ox, oy, min_x, max_x, min_y, max_y):
         # Stroll mode override: when locked to "edges", every walk hugs
@@ -372,6 +464,9 @@ class WanderController:
                                                min_x, max_x, min_y, max_y)
         dmin, dmax = BAND_DISTANCES[band]
         # Polar pick — random angle + distance, clamp to visible frame.
+        # No edge hint here -- a polar destination isn't chosen against any
+        # particular wall, so _rotate_first_preamble falls back to its
+        # distance-based classifier for these.
         cand_x = cand_y = None
         for _ in range(12):
             angle = random.uniform(0, 2 * math.pi)
@@ -379,12 +474,12 @@ class WanderController:
             cand_x = ox + dist * math.cos(angle)
             cand_y = oy + dist * math.sin(angle)
             if min_x <= cand_x <= max_x and min_y <= cand_y <= max_y:
-                return cand_x, cand_y
+                return cand_x, cand_y, None
         # Fallback: clamp last candidate
         return (max(min_x, min(max_x, cand_x)),
-                max(min_y, min(max_y, cand_y)))
+                max(min_y, min(max_y, cand_y)), None)
 
-    def _walk_to(self, ox, oy, tx, ty, vx, vy, vw, vh) -> None:
+    def _walk_to(self, ox, oy, tx, ty, vx, vy, vw, vh, edge_hint=None) -> None:
         """Animate window origin from (ox,oy) → (tx,ty)."""
         dist = ((tx - ox) ** 2 + (ty - oy) ** 2) ** 0.5
         speed = WANDER_SPEED_PX_PER_SEC
@@ -397,7 +492,7 @@ class WanderController:
         )
 
         # Rotate-first if destination is on a different edge
-        self._rotate_first_preamble(tx, ty)
+        self._rotate_first_preamble(tx, ty, edge_hint=edge_hint)
 
         # Tell the frontend: legs go!
         self._set_sub_state(f"walking-{facing}")
@@ -414,6 +509,13 @@ class WanderController:
 
         for i in range(steps + 1):
             if self._stop.is_set():
+                break
+            if self._hop_active:
+                # A nudge/flee started (or was already running through
+                # the rotate-first preamble's sleep) -- yield to it
+                # immediately rather than racing its origin writes (see
+                # _hop_active's declaration in __init__).
+                print("[squid-pet] walk aborted: hop in progress", flush=True)
                 break
             cur = self._get_state()
             if cur != "idle" and not self._sprint_mode:
@@ -449,6 +551,63 @@ class WanderController:
                 time.sleep(sleep_for)
 
         self._set_sub_state("")
+        self._edge_locked_for_walk = False
+        # Re-sync from the ACTUAL final position now that the lock is
+        # off -- covers a walk that got aborted (state change, drag
+        # interrupt, stop event) before reaching the pre-rotated target
+        # edge's band, so tracking doesn't stay stale until some later
+        # unrelated origin-set happens to trigger it. See
+        # _settle_edge_at_rest's docstring for why this settles into
+        # top/bottom rather than the edge she was hugging in transit.
+        self._settle_edge_at_rest()
+
+    def _settle_edge_at_rest(self) -> None:
+        """Re-classify the edge from the ACTUAL current position using
+        the PLAIN fixed-priority classifier (_compute_edge_at), not the
+        sticky one _update_edge uses for per-tick tracking while she's
+        actively moving. Called once at the end of every animation loop
+        that can end AT a corner (_walk_to and _animate_hop) -- NOT on
+        every tick, and not by anything that only nudges the perpendicular
+        axis without settling (drag/refresh_edge/force_edge already have
+        their own callers for their own reasons and are untouched).
+
+        Pink-2026-08-30 (heart/bubble misalignment report + screenshot):
+        at rest exactly on a corner (both adjacent edges tied at distance
+        0 -- always true for a walk that reached _pick_edge_destination's
+        corner target, and common for a nudge/flee driven into a corner
+        too), sticky classification keeps whichever edge she was locked
+        to WHILE MOVING (e.g. "left", so she stays hugging the wall for a
+        vertical traverse or a sideways flee -- correct, that's what
+        edge_hint/the per-tick tracking is FOR) -- but that's the wrong
+        choice to SETTLE on: heart/speech-bubble placement (index.html)
+        only has a dedicated layout for the "top" pose (bubble moved
+        below the flipped face), not "left"/"right", so resting at a top
+        corner still classified "left"/"right" leaves those decorations
+        floating over her un-rotated top-of-window position, visibly
+        misaligned with her actual (rotated) body.
+
+        First fix (this same day) only added this call to _walk_to's
+        end -- missed that _animate_hop (nudge/flee) has the exact same
+        "can end at rest on a corner" shape and needed the identical
+        settle, which is why a corner reached by fleeing a cursor nudge
+        specifically kept showing the wrong pose after that first fix
+        (Pink follow-up report). Hence the extraction into one shared
+        method instead of a second copy-pasted block -- anywhere else
+        an animation loop grows the ability to end at a corner, it should
+        call this too, not reinvent it.
+
+        The plain classifier's bottom>top>left>right priority resolves a
+        genuine corner tie in favor of "top" (or "bottom" at the bottom
+        corners, which already matches the default un-rotated decoration
+        layout) -- exactly the "hug the wall in transit, settle into the
+        decorated pose on arrival" split the report asked for. A
+        non-corner (single, unambiguous nearest edge) or off-edge (no
+        edge in band) ending is unaffected -- there's no tie for the
+        priority to resolve differently than sticky would."""
+        final_origin = self._get_origin()
+        if final_origin is not None:
+            fx, fy = final_origin
+            self.force_edge(self._compute_edge_at(fx, fy))
 
     def _do_look_around(self) -> None:
         """Set looking-around sub_state for ~1.4s, then clear."""
@@ -472,10 +631,24 @@ class WanderController:
 
         No-op in "anywhere" mode, and no-op if she isn't currently
         classified as being on any edge (e.g. dragged into open space --
-        nothing to stay pinned to)."""
+        nothing to stay pinned to).
+
+        Pink-2026-08-29: was self._compute_edge_at(ox, oy) -- a fresh,
+        non-sticky recompute that breaks corner ties (e.g. bottom-right,
+        where left/right and bottom/top distances both hit 0) with the
+        fixed bottom>top>left>right priority, same as the wander-walk bug
+        fixed the same day. At a corner she's occupying BOTH tied edges
+        simultaneously, so the tracked self._last_edge -- which edge she
+        was actually sliding along to GET here -- is the meaningful
+        answer, not an arbitrary priority order. Using the sticky
+        classifier (self._last_edge as the preferred tie-break, still
+        falling back to plain nearest-edge when untracked/not
+        applicable) makes this consistent with _update_edge's per-tick
+        tracking instead of a second, independently-tie-broken
+        classifier potentially disagreeing with it."""
         if self._stroll_mode != "edges":
             return tx, ty
-        edge = self._compute_edge_at(ox, oy)
+        edge = self._compute_edge_at_sticky(ox, oy, self._last_edge)
         if edge == "bottom":
             return tx, min_y
         if edge == "top":
@@ -607,8 +780,7 @@ class WanderController:
             return
         ox, oy = origin
         vx, vy, vw, vh = frame
-        min_x = vx + EDGE_MARGIN_PX
-        max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+        min_x, max_x = self._x_bounds(vx, vw)
         min_y = vy + BOTTOM_MARGIN_PX
         max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         if max_x <= min_x or max_y <= min_y:
@@ -691,8 +863,7 @@ class WanderController:
             return
         ox, oy = origin
         vx, vy, vw, vh = frame
-        min_x = vx + EDGE_MARGIN_PX
-        max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+        min_x, max_x = self._x_bounds(vx, vw)
         min_y = vy + BOTTOM_MARGIN_PX
         max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
         if max_x <= min_x or max_y <= min_y:
@@ -801,23 +972,65 @@ class WanderController:
         dist_actual = ((tx - ox) ** 2 + (ty - oy) ** 2) ** 0.5
         duration = max(NUDGE_MIN_DURATION_SEC, dist_actual / NUDGE_SPEED_PX_PER_SEC)
         steps = max(4, int(duration * WANDER_TICK_HZ))
-        start_t = time.time()
-        for i in range(steps + 1):
-            if self._stop.is_set() or self._is_drag_active():
-                break
-            if self._nudge_generation != my_gen:
-                return  # superseded by a newer nudge/flee -- don't clear its sub_state either
-            t = i / steps
-            e = _ease_in_out(t)
-            cx = ox + (tx - ox) * e
-            cy = oy + (ty - oy) * e
-            self._set_origin(cx, cy)
-            target_t = start_t + (i + 1) / WANDER_TICK_HZ
-            sleep_for = target_t - time.time()
-            if sleep_for > 0:
-                time.sleep(sleep_for)
+        # Pink-2026-08-30: fixed per-tick interval, NOT the wall-clock
+        # "catch up to a target_t" scheme _walk_to still uses. That
+        # scheme skips the sleep entirely on any tick that runs behind
+        # schedule (sleep_for <= 0) -- and window.set_window_origin
+        # dispatches via AppHelper.callAfter, which is FIRE-AND-FORGET
+        # (queues the actual NSWindow move on the main thread's run loop
+        # and returns immediately, no confirmation it landed). Combine
+        # the two: if this loop ever falls even slightly behind (GIL
+        # contention, a slow tick, system load), several consecutive
+        # set_origin calls fire back-to-back with ZERO real gap between
+        # them, each just queuing another callAfter -- so several
+        # intended-to-be-smooth intermediate positions land on the main
+        # thread in one burst and get applied almost simultaneously
+        # instead of one-per-frame. That reads as exactly "losing
+        # frames"/choppy motion, and explains why raising the STEP COUNT
+        # alone (2 earlier attempts, NUDGE_MIN_DURATION_SEC 0.25->0.35->
+        # 0.45) had no effect: more steps queued into the same bursty
+        # delivery just means more items competing to burst, not smoother
+        # motion. A plain fixed `time.sleep(tick_interval)` after every
+        # tick can never go negative or skip -- guarantees real wall-
+        # clock space between every queued move so the main thread's
+        # callAfter queue has a chance to actually drain one at a time.
+        # Total animation time can run slightly over `duration` if a
+        # tick's own work is slow, which is an acceptable tradeoff (a
+        # hop finishing 10-20ms later is imperceptible; visibly bursty
+        # motion is not).
+        tick_interval = 1.0 / WANDER_TICK_HZ
+        # Claim the "a hop is animating" flag for the whole loop (see its
+        # declaration in __init__) so a concurrently-running wander walk
+        # notices and yields instead of racing this loop's origin writes.
+        # try/finally covers every exit path, including the early
+        # `return` below.
+        self._hop_active = True
+        try:
+            for i in range(steps + 1):
+                if self._stop.is_set() or self._is_drag_active():
+                    break
+                if self._nudge_generation != my_gen:
+                    return  # superseded by a newer nudge/flee -- don't clear its sub_state either
+                t = i / steps
+                e = _ease_in_out(t)
+                cx = ox + (tx - ox) * e
+                cy = oy + (ty - oy) * e
+                self._set_origin(cx, cy)
+                time.sleep(tick_interval)
+        finally:
+            self._hop_active = False
         if self._nudge_generation == my_gen:
             self._set_sub_state("")
+            # See _settle_edge_at_rest's docstring (Pink-2026-08-30
+            # follow-up report) -- a hop/flee that ends AT a corner (the
+            # common case for a corner-flee specifically) needs the same
+            # settle-into-top/bottom treatment _walk_to already gets,
+            # or she keeps showing whichever wall she was hugging while
+            # fleeing instead of the decorated corner pose. Skipped when
+            # superseded (my_gen mismatch) for the same reason
+            # _set_sub_state("") is skipped above: a newer hop/flee is
+            # already in flight and will settle for itself when IT ends.
+            self._settle_edge_at_rest()
 
     # ── edge picking (used for band="edge") ────────────────────────────
     def _pick_edge_destination(self, ox, oy, min_x, max_x, min_y, max_y):
@@ -825,6 +1038,34 @@ class WanderController:
         Strategy:
           1) If not near any edge, head straight to the nearest one.
           2) Otherwise walk along the current edge to a corner.
+
+        Returns (tx, ty, edge) -- `edge` is the wall this specific walk
+        slides along, decided HERE from the same branch that picked
+        (tx, ty), and handed to _rotate_first_preamble as an authoritative
+        hint instead of being re-derived later.
+
+        Pink-2026-08-29 (recurring report, "walking up the left/right
+        edge still shows feet-up"): every corner is a geometric tie
+        between two edges (e.g. top-left ties left(0) and top(0)), so
+        re-deriving the edge from (tx, ty) alone after the fact -- as the
+        old code did via _compute_edge_at_preferring in
+        _rotate_first_preamble -- can only resolve that tie by guessing
+        (fixed bottom>top>left>right priority, or "prefer whatever edge
+        she happened to be tracked as before this walk"). Both guesses
+        fail whenever she arrives at a corner via one wall (e.g. tracked
+        edge = "bottom") and then picks a walk that slides along a
+        DIFFERENT wall to the opposite end of THAT wall (e.g. up the left
+        edge to the top-left corner): the destination ties left/top, her
+        incoming tracked edge is "bottom" (matches neither side of the
+        tie), so the priority fallback picks "top" (feet-up) for the
+        entire vertical traverse instead of "left" (feet hugging the
+        wall) -- exactly the reported symptom, and not the same case the
+        2026-08-27i same-edge-tie fix covered (that fix only helps when
+        the tracked edge already equals one side of the tie).
+        There is no ambiguity to resolve at the source: this function
+        already knows definitively which wall (tx, ty) slides along --
+        it just picked it. Passing that through removes the guess
+        entirely instead of refining it further.
         """
         d_left = max(0, ox - min_x)
         d_right = max(0, max_x - ox)
@@ -839,12 +1080,12 @@ class WanderController:
         # Off-edge -> walk straight to nearest edge.
         if nearest_dist > EDGE_BAND_PX:
             if nearest_edge == "left":
-                return min_x, oy
+                return min_x, oy, "left"
             if nearest_edge == "right":
-                return max_x, oy
+                return max_x, oy, "right"
             if nearest_edge == "bottom":
-                return ox, min_y
-            return ox, max_y  # top
+                return ox, min_y, "bottom"
+            return ox, max_y, "top"
 
         # On an edge -- if within EDGE_BAND_PX of TWO edges (at a corner),
         # randomly pick which adjacent edge to walk along next. This breaks
@@ -859,41 +1100,121 @@ class WanderController:
         # Walk toward one of the two corners of the chosen edge.
         direction_to_corner = random.choice([-1, 1])
         if chosen_edge == "left":
-            return min_x, (min_y if direction_to_corner < 0 else max_y)
+            return min_x, (min_y if direction_to_corner < 0 else max_y), "left"
         if chosen_edge == "right":
-            return max_x, (min_y if direction_to_corner < 0 else max_y)
+            return max_x, (min_y if direction_to_corner < 0 else max_y), "right"
         if chosen_edge == "bottom":
-            return (min_x if direction_to_corner < 0 else max_x), min_y
-        return (min_x if direction_to_corner < 0 else max_x), max_y  # top
+            return (min_x if direction_to_corner < 0 else max_x), min_y, "bottom"
+        return (min_x if direction_to_corner < 0 else max_x), max_y, "top"
 
     # ── edge tracking (for frontend sprite rotation) ───────────────────
-    def _compute_edge_at(self, x: float, y: float) -> str:
-        """Edge that (x,y) sits on with bottom>top>left>right priority."""
+    # Priority: bottom(0) > top(1) > left(2) > right(3), used as a tiebreak
+    # when two edges are equidistant. Top must beat left/right so she
+    # flips upside-down at top corners (otherwise left/right always win
+    # the tiebreak and she never rotates 180deg).
+    _EDGE_PRIORITY = {"bottom": 0, "top": 1, "left": 2, "right": 3}
+
+    def _edge_distances(self, x: float, y: float) -> dict[str, float] | None:
+        """Raw distance from (x,y) to each of the 4 wander-range edges,
+        or None if the visible frame isn't available yet. Shared by
+        _compute_edge_at and its sticky variant below."""
         frame = self._get_frame()
         if frame is None:
-            return ""
+            return None
         vx, vy, vw, vh = frame
-        min_x = vx + EDGE_MARGIN_PX
-        max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+        min_x, max_x = self._x_bounds(vx, vw)
         min_y = vy + BOTTOM_MARGIN_PX
         max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
-        d_left = max(0, x - min_x)
-        d_right = max(0, max_x - x)
-        d_bottom = max(0, y - min_y)
-        d_top = max(0, max_y - y)
-        # Priority: bottom(0) > top(1) > left(2) > right(3).
-        # Top must beat left/right so she flips upside-down at top corners
-        # (otherwise left/right always win the tiebreak and she never rotates 180deg).
-        edges = [("bottom", d_bottom, 0), ("top", d_top, 1),
-                 ("left", d_left, 2),     ("right", d_right, 3)]
-        edges.sort(key=lambda e: (e[1], e[2]))
-        nearest, nearest_d, _ = edges[0]
-        return nearest if nearest_d <= EDGE_BAND_PX else ""
+        return {
+            "left": max(0, x - min_x),
+            "right": max(0, max_x - x),
+            "bottom": max(0, y - min_y),
+            "top": max(0, max_y - y),
+        }
+
+    def _nearest_edge(self, distances: dict[str, float]) -> str:
+        name = min(distances, key=lambda n: (distances[n], self._EDGE_PRIORITY[n]))
+        return name if distances[name] <= EDGE_BAND_PX else ""
+
+    def _compute_edge_at(self, x: float, y: float) -> str:
+        """Edge that (x,y) sits on with bottom>top>left>right priority."""
+        d = self._edge_distances(x, y)
+        return "" if d is None else self._nearest_edge(d)
+
+    def _compute_edge_at_sticky(self, x: float, y: float, prev_edge: str) -> str:
+        """Same classification as _compute_edge_at, but sticky: stays on
+        prev_edge as long as (x,y) is still within EDGE_BAND_PX of it,
+        even if a different edge is now nominally nearer.
+
+        Without this, a walk or hop/flee passing near a corner -- where
+        two edges' bands legitimately overlap -- flips the classification
+        (and the sprite's rotation) back and forth multiple times as the
+        raw nearest-edge comparison see-saws between two close distances
+        on every ~33ms motion tick. Confirmed live (user report,
+        2026-08-27): "flips and turns multiple times... not able to
+        determine which direction it should be going". Only switches
+        once she's genuinely LEFT the previous edge's band -- a one-shot,
+        monotonic handoff instead of a per-tick nearest-wins comparison.
+        """
+        d = self._edge_distances(x, y)
+        if d is None:
+            return ""
+        if prev_edge and d.get(prev_edge, float("inf")) <= EDGE_BAND_PX:
+            return prev_edge
+        return self._nearest_edge(d)
+
+    def _compute_edge_at_preferring(self, x: float, y: float, prefer_edge: str) -> str:
+        """Same classification as _compute_edge_at, but when (x,y) is a
+        genuine TIE between two edges (a corner), prefers `prefer_edge`
+        over the fixed bottom>top>left>right priority.
+
+        _pick_edge_destination's "walk along the current edge to ITS OWN
+        corner" targets the corner point exactly -- e.g. walking down the
+        left edge targets (min_x, min_y), where left's distance (0) ties
+        exactly with bottom's (0). _compute_edge_at's fixed priority then
+        picks "bottom" (deg=0, feet down) or, for the top-left corner,
+        "top" (deg=180, feet up) instead of "left" (deg=90, feet hugging
+        the wall) -- and because _rotate_first_preamble locks that
+        decision for the whole walk, the entire vertical traverse plays
+        with the wrong rotation: feet-down walking down, feet-up walking
+        up, instead of staying rotated into the wall the whole way
+        (Pink report, 2026-08-27). Preferring the edge she's already on
+        resolves the tie correctly for a same-edge corner walk, while a
+        genuine edge-to-edge transition (destination clearly nearer a
+        different edge, not tied) is untouched -- prefer_edge only wins
+        when it's within a hair of the true minimum distance."""
+        d = self._edge_distances(x, y)
+        if d is None:
+            return ""
+        if prefer_edge and d.get(prefer_edge, float("inf")) <= EDGE_BAND_PX:
+            if d[prefer_edge] <= min(d.values()) + 0.5:
+                return prefer_edge
+        return self._nearest_edge(d)
 
     def _update_edge(self, ox: float, oy: float) -> None:
-        """Edge tracker — notify frontend on transitions."""
+        """Edge tracker — notify frontend on transitions.
+
+        Pink-2026-08-27j: "flipping when she starts the idle walk". Root
+        cause: _rotate_first_preamble decides the edge for an upcoming
+        walk and pre-rotates to it BEFORE she's actually moved -- but
+        _walk_to's very first step still lands essentially at the OLD
+        position (t≈0), and even the STICKY position-based check above
+        can legitimately fail there (the old position isn't necessarily
+        within EDGE_BAND_PX of the NEW target edge, e.g. walking to a
+        distant, previously off-edge destination). That reclassified her
+        straight back to the old edge one tick after the preamble just
+        rotated her to the new one -- then forward again once she
+        actually got close enough -- a visible flip right at the start
+        of the walk. While _edge_locked_for_walk is set (during an
+        in-flight walk that just pre-rotated), trust that decision
+        instead of re-deriving from raw position tick by tick; normal
+        position-based tracking resumes once the walk ends (drag, hop,
+        flee, and refresh_edge/force_edge are untouched -- none of them
+        set this lock)."""
+        if self._edge_locked_for_walk:
+            return
         try:
-            edge = self._compute_edge_at(ox, oy)
+            edge = self._compute_edge_at_sticky(ox, oy, self._last_edge)
             if edge != self._last_edge:
                 self._last_edge = edge
                 self._set_edge(edge)
@@ -903,9 +1224,17 @@ class WanderController:
 
     def refresh_edge(self) -> str:
         """Public: re-compute current edge from live window origin and notify
-        frontend. Used after drag-end / corner-snap / any external move that
-        bypasses the wrapped origin setter (e.g. NSWindow.setFrameOrigin_).
-        Returns the computed edge string."""
+        frontend. Used after drag-end -- an arbitrary landing position, so it
+        genuinely needs the distance-based classifier (_compute_edge_at).
+
+        Pink-2026-08-27d: do NOT use this for corner-snap paths (menu
+        snap, next_corner, startup) -- window.move_to_corner's own
+        margin was never coordinated with this classifier's tighter
+        margins, so a corner-snapped window reliably lands just outside
+        EDGE_BAND_PX and comes back "" (no edge), leaving the sprite
+        un-rotated. Corner-snap callers already know their edge
+        authoritatively (see window._edge_for_corner) and should call
+        force_edge() instead."""
         try:
             origin = self._get_origin()
             if origin is None:
@@ -917,17 +1246,67 @@ class WanderController:
             print(f"[squid-pet] refresh_edge error: {e}", flush=True)
             return self._last_edge
 
-    def _rotate_first_preamble(self, tx: float, ty: float) -> None:
+    def force_edge(self, edge: str) -> str:
+        """Public: set the edge classification directly from a caller-
+        supplied, authoritative value (e.g. window._edge_for_corner(name))
+        instead of inferring it from live window-origin distance. See
+        refresh_edge()'s docstring for why corner-snap callers need this
+        rather than the distance-based path. Mirrors _update_edge's
+        change-detection (only notifies frontend + logs on an actual
+        transition) so it composes safely with organic wander ticks that
+        may run before or after it. Returns the edge now in effect."""
+        edge = edge or ""
+        try:
+            if edge != self._last_edge:
+                self._last_edge = edge
+                self._set_edge(edge)
+                print(f"[squid-pet] edge -> {edge or '(none)'} (forced)", flush=True)
+        except Exception as e:
+            print(f"[squid-pet] force_edge error: {e}", flush=True)
+        return self._last_edge
+
+    def _rotate_first_preamble(self, tx: float, ty: float, edge_hint: str | None = None) -> None:
         """Pre-rotate wrapper if destination is on a different edge, then sleep
-        for the rotation transition. Prevents the 'rotating mid-walk' look."""
+        for the rotation transition. Prevents the 'rotating mid-walk' look.
+
+        edge_hint: when the caller already knows, with certainty, which
+        wall (tx, ty) sits on -- _pick_edge_destination always does, since
+        it picked (tx, ty) FOR that wall -- use it directly instead of
+        re-deriving the edge from (tx, ty) alone. See
+        _pick_edge_destination's docstring (Pink-2026-08-29) for why the
+        re-derivation is fundamentally a guess at any corner (a genuine
+        tie between two edges) while the hint is not."""
         try:
             origin = self._get_origin()
             if origin is None:
                 return
-            target_edge = self._compute_edge_at(tx, ty)
-            current_edge = self._compute_edge_at(origin[0], origin[1])
+            # Pink-2026-08-27h: was self._compute_edge_at(origin) -- a
+            # fresh, non-sticky recompute that could disagree with the
+            # tracked self._last_edge (e.g. near a corner, where the raw
+            # nearest-edge comparison can differ from what she's actually
+            # been classified as). Using the tracked value keeps this
+            # decision consistent with what _update_edge will do during
+            # the walk itself, instead of two independent classifiers
+            # potentially fighting over "what edge is she on right now".
+            current_edge = self._last_edge
+            if edge_hint:
+                target_edge = edge_hint
+            else:
+                # No authoritative hint (polar/off-edge-band walk that
+                # happens to land near a wall) -- fall back to the
+                # distance-based guess. Pink-2026-08-27i: _compute_edge_at
+                # (tx, ty) alone breaks corner ties with the fixed
+                # bottom>top>left>right priority, which mis-picks
+                # "bottom"/"top" over "left"/"right" when the destination
+                # IS that edge's own corner (see
+                # _compute_edge_at_preferring's docstring). Preferring the
+                # edge she's currently on resolves same-edge corner walks
+                # correctly without affecting genuine edge-to-edge
+                # transitions.
+                target_edge = self._compute_edge_at_preferring(tx, ty, current_edge)
             if target_edge and target_edge != current_edge:
                 self._last_edge = target_edge
+                self._edge_locked_for_walk = True
                 self._set_edge(target_edge)
                 print(f"[squid-pet]   rotate-first: "
                       f"{current_edge or '(none)'} -> {target_edge}",
@@ -1004,8 +1383,7 @@ class WanderController:
             if origin is None or frame is None:
                 return
             vx, vy, vw, vh = frame
-            min_x = vx + EDGE_MARGIN_PX
-            max_x = vx + vw - WIN_W - EDGE_MARGIN_PX
+            min_x, max_x = self._x_bounds(vx, vw)
             min_y = vy + EDGE_MARGIN_PX
             max_y = vy + vh - CHAR_TOP_IN_WIN - TOP_MARGIN_PX
             corners = [
@@ -1051,6 +1429,17 @@ class WanderController:
             self._set_sub_state("")
             self._clear_wrapper_deg()
             self._set_sprint_fast_transition(False)
+            # Sprint drives rotation directly via wrapper_deg the whole
+            # time and never touches _last_edge/_wander_edge. Normal
+            # completion always lands back on the start corner (4 legs
+            # of 90deg = 360deg), so the stale edge happens to still be
+            # correct -- but an early stop (self._stop.is_set() break)
+            # leaves her at an intermediate corner with a now-wrong
+            # edge, and clear_wrapper_deg() makes the frontend fall
+            # back to that stale value immediately. Same class of bug
+            # as the missing startup refresh -- always resync from the
+            # real, live window position instead of trusting old state.
+            self.refresh_edge()
             print("[squid-pet] SPRINT complete", flush=True)
         except Exception as e:
             print(f"[squid-pet] sprint error: {e}", flush=True)
@@ -1058,6 +1447,8 @@ class WanderController:
             try: self._clear_wrapper_deg()
             except Exception: pass
             try: self._set_sprint_fast_transition(False)
+            except Exception: pass
+            try: self.refresh_edge()
             except Exception: pass
         finally:
             self._sprint_mode = False

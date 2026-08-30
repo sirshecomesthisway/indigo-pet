@@ -375,7 +375,8 @@
     // Tunable constants. Bump these to taste; spec captures defaults.
     const HEART_COUNT = 1;
     const HEART_X_JITTER_PX = 0;
-    const HEART_Y_OFFSET_PX = 8;   // heart center just below sprite top; bottom edge hugs head crown
+    const HEART_Y_OFFSET_PX = 4;   // heart center just below sprite top; bottom edge hugs head crown
+                                   // (Pink-2026-08-27l: halved from 8 -- tighter head-to-heart margin)
     const HEART_STAGGER_MS = 0;
     const HEART_MAX_LIVE = 12;
     function spawnHearts(centerX, centerY) {
@@ -535,14 +536,35 @@
     // Backend's wanderer emits "edge" = "" | "bottom" | "left" | "right" | "top".
     // Rotate the sprite so feet point toward that edge (gecko-on-wall effect).
     let _currentEdge = "";
+    // Top edge: shift sprite UP 80px to create room below the rotated
+    // face for hearts + bubble. The 80px of headroom (y=0-120) absorbs
+    // the shift; after rotation the face moves from y≈250 to y≈170,
+    // freeing y≈205-300 for decorations.
+    const TOP_EDGE_Y_SHIFT_PX = 80;
+
+    // Build the pet-wrapper's CSS transform for a given rotation angle,
+    // applying the top-pose headroom shift whenever deg normalizes to
+    // 180 (the "top edge" pose -- upside down, head pointing toward
+    // screen center). Shared by applyEdge (edge-based, discrete
+    // 0/90/-90/180) and applyWrapperDeg (sprint's raw cumulative
+    // degrees) so the two rotation paths can't silently diverge on when
+    // the shift applies -- they already had once (Pink-2026-08-27e:
+    // applyWrapperDeg was missing it entirely, so the sprint leg walking
+    // the top edge didn't hug it the way normal edge-wandering did).
+    function _wrapperTransformForDeg(deg) {
+      const norm = ((deg % 360) + 360) % 360;
+      const yShift = (norm === 180) ? `translateY(-${TOP_EDGE_Y_SHIFT_PX}px) ` : "";
+      return `${yShift}rotate(${deg}deg)`;
+    }
+
     function applyWrapperDeg(deg) {
       // Direct rotation override for sprint (cumulative degrees so CSS
       // always rotates CW, no shortest-path detours).
       const wrapperEl = document.getElementById("pet-wrapper");
-      if (wrapperEl) wrapperEl.style.transform = `rotate(${deg}deg)`;
+      if (wrapperEl) wrapperEl.style.transform = _wrapperTransformForDeg(deg);
     }
 
-        function applyEdge(edge) {
+    function applyEdge(edge) {
       edge = edge || "";
       if (edge === _currentEdge) return;
       _currentEdge = edge;
@@ -558,14 +580,7 @@
       // transform and its CSS keyframe animations (breathe/walk-bob/etc.)
       // play freely INSIDE the rotated wrapper frame. No more fighting.
       const wrapperEl = document.getElementById("pet-wrapper");
-      if (wrapperEl) {
-        // Top edge: shift sprite UP 80px to create room below the rotated
-        // face for hearts + bubble. The 80px of headroom (y=0-120) absorbs
-        // the shift; after rotation the face moves from y≈250 to y≈170,
-        // freeing y≈205-300 for decorations.
-        const yShift = (edge === "top") ? "translateY(-80px) " : "";
-        wrapperEl.style.transform = `${yShift}rotate(${deg}deg)`;
-      }
+      if (wrapperEl) wrapperEl.style.transform = _wrapperTransformForDeg(deg);
       pet.dataset.edge = edge;
       document.body.dataset.edge = edge;
       console.log(`[squid] edge -> ${edge || "(none)"} rotate ${deg}deg (wrapper)`);
@@ -825,14 +840,64 @@
       }, 410);  // matches CSS bubble-fade-out duration (400ms) + 10ms slack
     }
 
+    // Pink-2026-08-27: at the top edge, #bubble's CSS position was a
+    // STATIC `bottom: 0` (flush with the literal window bottom) --
+    // unlike spawnHearts(), which reads the sprite's real, live
+    // getBoundingClientRect() (post rotate+translateY) to find her
+    // actual face position. That static anchor doesn't track her real
+    // rendered position (which also shifts with per-state animation
+    // offsets, e.g. celebrating's jump), so the bubble could end up far
+    // below the heart/face instead of just under it. Fix: mirror
+    // spawnHearts' approach -- compute her live face Y and anchor the
+    // bubble relative to THAT, only for the top edge (the default/other
+    // edges' static CSS already tracks correctly and isn't touched).
+    function _positionBubbleForEdge(el) {
+      if (_currentEdge !== "top") {
+        el.style.top = "";
+        el.style.bottom = "";  // restore default CSS (bottom: 62%)
+        return;
+      }
+      try {
+        const sprite = document.getElementById('pet');
+        if (!sprite) return;
+        const r = sprite.getBoundingClientRect();
+        // Same reference point spawnHearts uses for edge "top": the
+        // bottom of the sprite's live bounding box IS her face after
+        // the wrapper's rotate(180deg) + translateY(-80px). Stack
+        // BELOW the heart zone (heart top = r.bottom + HEART_Y_OFFSET_PX,
+        // heart is ~35px tall) with a small gap, matching the intended
+        // face -> heart -> bubble order.
+        const desiredTop = r.bottom + HEART_Y_OFFSET_PX + 35 + 6;
+        // Pink-2026-08-27b: "text bubble could not show the fully
+        // content when message is long". Root cause: the window is
+        // only 300px tall and the sprite already sits flush with its
+        // literal bottom edge (body has overflow:hidden -- no slack
+        // past y=300). desiredTop leaves only ~80px below it, which
+        // fits a single line but a 2nd wrapped line pushed the box
+        // past y=300 and got clipped. Fix: measure the bubble's ACTUAL
+        // rendered height (caller must set the text first) and pull
+        // the anchor up so the whole box, wrapped or not, stays inside
+        // the window instead of assuming single-line height.
+        const margin = 4;
+        const maxTop = window.innerHeight - el.offsetHeight - margin;
+        el.style.bottom = "auto";
+        el.style.top = Math.min(desiredTop, Math.max(maxTop, 0)) + "px";
+      } catch (e) { /* leave whatever CSS/inline state is already set */ }
+    }
+
     function _showBubble(el, text) {
       // Cancel any pending hide/fade
       if (_bubbleHoldT) { clearTimeout(_bubbleHoldT); _bubbleHoldT = null; }
       if (_bubbleFadeT) { clearTimeout(_bubbleFadeT); _bubbleFadeT = null; }
       _bubbleClearing = false;
 
+      // Text must be set BEFORE positioning: _positionBubbleForEdge
+      // (top edge) reads el.offsetHeight to clamp for wrapped multi-
+      // line content, which only reflects reality once the span holds
+      // the real text at the real max-width.
       const span = el.querySelector("span");
       if (span) span.textContent = text;
+      _positionBubbleForEdge(el);
       el.style.opacity = "";  // let animation control it
       el.classList.remove("show-out");
       el.classList.remove("show-in");

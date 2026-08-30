@@ -46,8 +46,10 @@ MOOD_POLL_INTERVAL_SEC = 1.0     # how often we re-check the gate while paused
 # beats (Pink 2026-08-18: the old rest-only/30%-per-beat version averaged
 # ~1 blurb per ~91s cycle and was easy to miss, especially since it never
 # fired during the routine walk at all).
-CHATTER_MIN_INTERVAL_SEC = 40.0
-CHATTER_MAX_INTERVAL_SEC = 50.0
+# Pink-2026-08-27k: was 40-50s (avg 45s), still felt "too quiet" -- tightened
+# to a ~30s average, same proportional jitter width as before.
+CHATTER_MIN_INTERVAL_SEC = 26.0
+CHATTER_MAX_INTERVAL_SEC = 34.0
 
 
 # ── The heartbeat ───────────────────────────────────────────────────────

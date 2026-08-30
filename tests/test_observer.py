@@ -190,6 +190,65 @@ def test_concern_reason_empty_returns_none():
 
 
 # ----------------------------------------------------------------------
+# Celebrating-state enrichment with state_reason (Pink-2026-08-27:
+# "squid is celebrating but i don't know why" -- celebrating used to
+# ALWAYS show a generic exclamation with zero explanation of what
+# actually happened.)
+# ----------------------------------------------------------------------
+
+def test_celebrating_no_longer_names_claude(obs):
+    """Pink-2026-08-30: "claude celebrating" can no longer actually be
+    produced by the real cascade -- Claude Code's Stop hook moved from
+    CELEBRATING to GROOVING entirely (a per-turn beat, not a milestone;
+    see watcher.py's cascade comments). _CELEBRATE_REASON_BUBBLES no
+    longer has an entry for it, so this must fall through to the generic
+    mood-pick line rather than crash or invent stale text."""
+    result = obs.on_state_change(
+        "working", "celebrating", state_reason="claude celebrating",
+    )
+    assert result in BUBBLE_LINES["celebrating"]
+
+
+def test_celebrating_names_codex_deterministically(obs):
+    result = obs.on_state_change(
+        "working", "celebrating", state_reason="codex celebrating",
+    )
+    assert result == "ooh, codex!"
+
+
+def test_celebrating_names_git_deterministically(obs):
+    result = obs.on_state_change(
+        "idle", "celebrating", state_reason="git celebrating",
+    )
+    assert result == "nice, fresh commit!"
+
+
+def test_celebrating_falls_back_to_generic_mood_pick_when_unspecific(obs):
+    """A generic/unspecific reason (e.g. the force_state debug override)
+    must not crash or invent a false explanation -- fall back to the
+    existing mood-only line."""
+    result = obs.on_state_change("idle", "celebrating", state_reason="celebrating")
+    assert result in BUBBLE_LINES["celebrating"]
+
+
+def test_celebrating_with_no_reason_falls_back_to_generic():
+    from squid_pet.observer import _format_celebrate_reason
+    assert _format_celebrate_reason("") is None
+    assert _format_celebrate_reason("celebrating") is None
+
+
+def test_celebrating_reason_is_deterministic_not_probabilistic(obs):
+    """Unlike the concerned-reason path, this must NOT be a coin flip --
+    calling repeatedly with the same reason always returns the same
+    explanation."""
+    results = {
+        obs.on_state_change("working", "celebrating", state_reason="git celebrating")
+        for _ in range(20)
+    }
+    assert results == {"nice, fresh commit!"}
+
+
+# ----------------------------------------------------------------------
 # Working-state enrichment with shell cmdline
 # ----------------------------------------------------------------------
 
@@ -348,11 +407,17 @@ def test_still_working_with_shell_cmd_returns_shell_bubble(obs):
     assert result == "running pytest"
 
 
-def test_still_working_with_no_shell_cmd_returns_none(obs):
-    """Deliberately does NOT fall back to a generic 'tap tap' emote --
-    repeating a canned mood line on a timer would read as a glitch."""
-    assert obs.on_still_working(None) is None
-    assert obs.on_still_working([]) is None
+def test_still_working_with_no_shell_cmd_falls_back_to_generic_pool(obs):
+    """Pink-2026-08-27k: used to return None here (repeating a canned
+    mood line on a timer "would read as a glitch, not aliveness") -- but
+    the caller (_maybe_reannounce_working) already throttles + dedupes
+    against the last shown text, so a varied generic/wrap-up pool reads
+    as ambient presence instead, per a "too quiet" report. Falls back for
+    both a falsy shell_cmdline (empty list) and None."""
+    from squid_pet.observer import BUBBLE_LINES as _BL
+    pool = set(_BL["working_generic"]) | set(_BL["working_wrapup"])
+    assert obs.on_still_working(None) in pool
+    assert obs.on_still_working([]) in pool
 
 
 def test_still_working_muted_returns_none(muted_obs):
