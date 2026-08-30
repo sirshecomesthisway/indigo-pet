@@ -153,7 +153,17 @@ class RoutineController:
         return self._get_mood() in self.MOODS_THAT_PAUSE
 
     def _should_pause(self) -> bool:
-        """Aggregate gate. True = skip dispatch, just poll."""
+        """Hard-pause gate: blocks the action routine AND idle chatter.
+
+        Deliberately does NOT include the state=="idle" check -- that only
+        gates the action routine now (see _tick). Pink-2026-08-30: chatter
+        used to share this gate, so during an active Claude Code session
+        (state pinned near-continuously to "working" via working_hold_sec)
+        the 26-34s chatter timer got wiped every tick and effectively never
+        fired -- "not feeling her speak every 30s". Chatter should keep
+        piping up even while she's busy/TPA-working, same philosophy as
+        is_busy already being disabled for the walk/rest routine.
+        """
         if not self._enabled:
             return True
         if self._is_pinned():
@@ -163,8 +173,6 @@ class RoutineController:
         if self._is_busy():
             return True
         if self._is_mood_active():
-            return True
-        if self._get_state() != "idle":
             return True
         if self._is_drag_active():
             return True
@@ -190,22 +198,23 @@ class RoutineController:
                   "will reset on wake", flush=True)
         self._prev_mood = mood
 
-        # Gate check: if anything says "pause", do nothing this tick.
-        # CRITICAL: do NOT reset _action_done_at -- if we're mid-action
-        # window, a brief pause (state=thinking on hover) must not wipe
-        # progress, or _idx never advances past 0. Only reset _idle_since
-        # so the 6s breath plays again when state returns to idle.
+        # Gate check: if anything says "hard pause" (disabled/pinned/user-
+        # paused/busy/mood-active/dragging), do nothing at all this tick --
+        # not even chatter.
         if self._should_pause():
             self._idle_since = None
             # Restart the chatter countdown from scratch next time she's
-            # genuinely idle, rather than firing on a stale timer the
-            # instant she returns (or having it silently accumulate
-            # across a long busy stretch).
+            # unblocked, rather than firing on a stale timer the instant
+            # she returns (or having it silently accumulate across a long
+            # paused stretch).
             self._next_chatter_at = None
             return
 
-        # Idle chatter: a separate timer from the action-window logic
-        # below, so it can land mid-walk or mid-rest alike.
+        # Idle chatter: independent of the state=="idle" check below -- she
+        # should keep piping up on her ~30s timer even while state is
+        # "working"/"thinking" (Claude Code actively active), not just
+        # during genuine idle. Also independent of the action-window logic,
+        # so it can land mid-walk or mid-rest alike.
         now = time.time()
         if self._next_chatter_at is None:
             self._next_chatter_at = now + random.uniform(
@@ -214,6 +223,16 @@ class RoutineController:
             self._chatter_cb()
             self._next_chatter_at = now + random.uniform(
                 CHATTER_MIN_INTERVAL_SEC, CHATTER_MAX_INTERVAL_SEC)
+
+        # The action routine (walk/rest/look) still requires genuine idle
+        # state -- CRITICAL: do NOT reset _action_done_at here -- if we're
+        # mid-action window, a brief pause (state=thinking on hover) must
+        # not wipe progress, or _idx never advances past 0. Only reset
+        # _idle_since so the 6s breath plays again when state returns to
+        # idle.
+        if self._get_state() != "idle":
+            self._idle_since = None
+            return
 
         # If we're inside an action's duration window, just wait.
         if self._action_done_at is not None and now < self._action_done_at:
