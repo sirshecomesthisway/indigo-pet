@@ -6,11 +6,6 @@ terminal, your IDE.
 
 Named **Squid** (chosen by Pink Tan, June 2026) because she looks like one.
 
-> Squid originally watched **TPA**, a internal CLI coding
-> agent; that support was fully removed 2026-08-27 since it was never
-> actually installed/run in this environment and never fired anything in
-> practice. See `CHANGELOG.md` for that and other history.
-
 ## Contents
 
 - [Features](#features)
@@ -430,10 +425,9 @@ Rewritten atomically every second. Schema:
 }
 ```
 
-(`agent_idle_seconds` keeps its historical name for schema stability, but is
-generic — seconds since the state machine last left an "active" state,
-not TPA-specific. `tpa_running`/`cpu_percent` were removed
-2026-08-27 along with the rest of TPADetector.)
+(`agent_idle_seconds` keeps its historical name for schema stability — it's
+generic, tracking seconds since the state machine last left an "active"
+state.)
 
 </details>
 
