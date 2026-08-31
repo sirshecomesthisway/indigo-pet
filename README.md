@@ -1,10 +1,48 @@
-# Squid Pet — "Squid"
+# Squid
 
-A tiny floating desktop companion, pinned to a corner of your screen,
-that reacts to your AI coding agent — Claude Code, Codex, git, your
-terminal, your IDE.
+The living interface for your AI coding agents.
 
-Named **Squid** (chosen by Pink Tan, June 2026) because she looks like one.
+Squid is a tiny desktop companion that gives you a sneak-peak to what your AI coding agents are doing — thinking, working, finishing, or waiting for you.
+
+Today she watches Claude Code and Codex. Over time, we want Squid to become a more natural way to see, understand, and interact with the agents working for you.
+
+> Your agents are becoming more autonomous. Squid gives them a presence.
+
+
+
+## Why Squid?
+
+AI coding agents can now work for minutes — or much longer — without you watching the terminal.
+
+That creates a simple problem:
+
+What are your agents doing right now?
+
+Squid gives that activity a persistent presence on your desktop.
+
+You can glance over and know:
+
+- 🧠 Thinking — the agent is reasoning
+- 🔨 Working — files/tools are actively changing
+- 🎉 Done — the task finished
+- 👋 Needs you — the agent is waiting for input or approval
+- 😴 Away — you've stepped away
+
+Squid is deliberately small, ambient, and opinionated. She stays out of the way until you need her.
+
+
+## Quick start
+```bash
+git clone https://github.com/sirshecomesthisway/squid-pet.git
+cd squid-pet
+./install.sh
+```
+
+The installer sets up the Python environment, installs dependencies, configures the macOS LaunchAgent, and starts Squid.
+
+A cold install typically takes about 3 minutes; subsequent updates are around 30 seconds.
+
+
 
 ## Contents
 
@@ -19,6 +57,7 @@ Named **Squid** (chosen by Pink Tan, June 2026) because she looks like one.
 - [Requirements](#requirements)
 
 ---
+
 
 ## Features
 
@@ -484,3 +523,13 @@ Current canonical specs:
 macOS 12+, Homebrew. `uv` is auto-installed if missing.
 Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
 Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
+
+
+
+---
+
+Squid is small on purpose.
+
+She is not another dashboard.
+
+She is the little presence that tells you what your agents are doing.
