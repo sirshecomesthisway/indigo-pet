@@ -18,9 +18,11 @@ State model:
   (~/.tpa/awaiting_input/<pid> + a CPU-idle fallback) -- Code
   Puppy was never actually installed/run on this machine, and the
   Claude-Code-native replacement (an official Notification hook) has
-  been live and tested since 2026-08-26. "grooving" and "concerned" had
-  no Claude Code/Codex equivalent to begin with and remain unreachable
-  via natural detection (still settable via the
+  been live and tested since 2026-08-26. "grooving" now has a real
+  Claude Code path (Stop hook, no resumed work yet -- see
+  claude_grooving_now below) and other-detector paths (e.g. IDE).
+  "concerned" still has no Claude Code/Codex equivalent and remains
+  unreachable via natural detection (still settable via the
   ~/.squid-pet/force_state debug override for testing/demos).
 
 State is written to ~/.squid-pet/state.json every 1s, frontend polls it.

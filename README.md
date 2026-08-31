@@ -20,17 +20,53 @@ Squid gives that activity a persistent presence on your desktop.
 
 You can glance over and know:
 
-- 🧠 Thinking — the agent is reasoning
-- 🔨 Working — files/tools are actively changing
-- 🎉 Done — the task finished
-- 👋 Needs you — the agent is waiting for input or approval
-- 😴 Away — you've stepped away
+| Thinking | Working | Done | Needs you | Away |
+|---|---|---|---|---|
+| <img src="src/squid_pet/frontend/sprites/thinking.png" width="56" alt="thinking"> | <img src="src/squid_pet/frontend/sprites/working.png" width="56" alt="working"> | <img src="src/squid_pet/frontend/sprites/celebrating.png" width="56" alt="done"> | <img src="src/squid_pet/frontend/sprites/attention_needed.png" width="56" alt="needs you"> | <img src="src/squid_pet/frontend/sprites/sleeping.png" width="56" alt="away"> |
+| the agent is reasoning | files/tools are actively changing | the task finished | the agent is waiting for input or approval | you've stepped away |
 
 Squid is deliberately small, ambient, and opinionated. She stays out of the way until you need her.
 
 ## See her in action
 
 🎥 *Demo video in production — check back soon.*
+
+## State
+
+| State | Preview | Trigger | Example |
+|---|---|---|---|
+| `idle` | <img src="src/squid_pet/frontend/sprites/idle.png" width="56" alt="idle"> | Default — nothing else fires | You haven't touched anything in a while |
+| `thinking` | <img src="src/squid_pet/frontend/sprites/thinking.png" width="56" alt="thinking"> | Claude Code/Codex wrote a session transcript in the last 20s with no shell/file evidence | Claude Code is drafting a reply but hasn't written to a file yet |
+| `working` | <img src="src/squid_pet/frontend/sprites/working.png" width="56" alt="working"> | Active shell child, OR a project file was just written (Claude Code or Codex) | You ask Claude Code to edit a file and it's actively writing |
+| `grooving` | <img src="src/squid_pet/frontend/sprites/grooving.png" width="56" alt="grooving"> | Claude Code's Stop hook fired and no new work has resumed yet (a lighter, per-turn beat), or another detector's own grooving signal (e.g. IDE: 5+ project files touched in 30s) | Claude Code just wrapped a reply and hasn't started the next turn yet |
+| `celebrating` | <img src="src/squid_pet/frontend/sprites/celebrating.png" width="56" alt="celebrating"> | Claude Code wrote an explicit task-complete marker (`scripts/squid_task_complete.py`), Codex's busy signal dropped to idle, or another detector's celebrate signal (e.g. Git saw a fresh commit) | Claude Code judges the whole task (not just this turn) done, Codex finishes a run, or you ran `git commit` |
+| `sleeping` | <img src="src/squid_pet/frontend/sprites/sleeping.png" width="56" alt="sleeping"> | macOS HID idle > 5 min | You've stepped away from your Mac for 5+ minutes |
+| `drowsy` | <img src="src/squid_pet/frontend/sprites/drowsy.png" width="56" alt="drowsy"> | State-machine idle 300–359 s (frontend-driven) | Nothing's happened in 5+ minutes, she's about to doze off |
+| `stretch` | <img src="src/squid_pet/frontend/sprites/stretch.png" width="56" alt="stretch"> | Wake transition (~1.6 s, frontend-driven) | You just came back and woke her up |
+| `attention_needed` | <img src="src/squid_pet/frontend/sprites/attention_needed.png" width="56" alt="attention needed"> | Claude Code session waiting on you — see [Approval-needed flag wave](#approval-needed-flag-wave) | Claude Code hit a permission prompt and is waiting on your reply |
+
+A few more sprites in `frontend/sprites/` (`blink`, `heart`, `look-left`/`look-right`, the `*_menubar` variants) are animation frames or interaction reactions rather than separate states — see [Project layout](#project-layout).
+
+<details>
+<summary>Priority order, and forcing a state for testing/demos</summary>
+
+Priority order is fixed (`watcher.py:StateMachine.compute`): sleeping >
+celebrating-held > grooving > working > thinking > non-agent-detector busy >
+idle. `approval_needed` (the flag-wave — see below) can override any of the
+above. `concerned` has no detector implementation yet (a documented
+non-goal), but is still settable via a debug override:
+
+```bash
+echo "celebrating" > ~/.squid-pet/force_state   # forces any state, skips natural triggers
+echo "" > ~/.squid-pet/force_state              # clears the override, resumes normal computation
+```
+
+See `tests/test_state_machine.py`, `tests/test_watcher_claude_code_cascade.py`,
+and `tests/test_watcher_codex_cascade.py` for the contract.
+
+</details>
+
+---
 
 ## Quick start
 
@@ -51,7 +87,6 @@ A cold install typically takes about 3 minutes; subsequent updates are around 30
 - [Features](#features)
 - [Install](#install)
 - [Usage](#usage)
-- [Sprites](#sprites)
 - [Approval-needed flag wave](#approval-needed-flag-wave)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -134,44 +169,6 @@ squid logs -f        # tail stdout+stderr live
 squid uninstall              # keeps your settings + source
 squid uninstall --yes --all  # nukes everything, no prompts
 ```
-
----
-
-## Sprites
-
-| State | Preview | Trigger | Example |
-|---|---|---|---|
-| `idle` | <img src="src/squid_pet/frontend/sprites/idle.png" width="56" alt="idle"> | Default — nothing else fires | You haven't touched anything in a while |
-| `thinking` | <img src="src/squid_pet/frontend/sprites/thinking.png" width="56" alt="thinking"> | Claude Code/Codex wrote a session transcript in the last 20s with no shell/file evidence | Claude Code is drafting a reply but hasn't written to a file yet |
-| `working` | <img src="src/squid_pet/frontend/sprites/working.png" width="56" alt="working"> | Active shell child, OR a project file was just written (Claude Code or Codex) | You ask Claude Code to edit a file and it's actively writing |
-| `grooving` | <img src="src/squid_pet/frontend/sprites/grooving.png" width="56" alt="grooving"> | Extensibility hook — no detector currently implements this | Not wired to a real trigger yet |
-| `celebrating` | <img src="src/squid_pet/frontend/sprites/celebrating.png" width="56" alt="celebrating"> | Claude Code's/Codex's busy signal dropped to idle (task likely complete), or Git saw a fresh commit | Claude Code just finished a task, or you ran `git commit` |
-| `sleeping` | <img src="src/squid_pet/frontend/sprites/sleeping.png" width="56" alt="sleeping"> | macOS HID idle > 5 min | You've stepped away from your Mac for 5+ minutes |
-| `drowsy` | <img src="src/squid_pet/frontend/sprites/drowsy.png" width="56" alt="drowsy"> | State-machine idle 300–359 s (frontend-driven) | Nothing's happened in 5+ minutes, she's about to doze off |
-| `stretch` | <img src="src/squid_pet/frontend/sprites/stretch.png" width="56" alt="stretch"> | Wake transition (~1.6 s, frontend-driven) | You just came back and woke her up |
-| `attention_needed` | <img src="src/squid_pet/frontend/sprites/attention_needed.png" width="56" alt="attention needed"> | Claude Code session waiting on you — see [Approval-needed flag wave](#approval-needed-flag-wave) | Claude Code hit a permission prompt and is waiting on your reply |
-
-A few more sprites in `frontend/sprites/` (`blink`, `heart`, `look-left`/`look-right`, the `*_menubar` variants) are animation frames or interaction reactions rather than separate states — see [Project layout](#project-layout).
-
-<details>
-<summary>Priority order, and forcing a state for testing/demos</summary>
-
-Priority order is fixed (`watcher.py:StateMachine.compute`): sleeping >
-celebrating-held > grooving > working > thinking > non-agent-detector busy >
-idle. `approval_needed` (the flag-wave — see below) can override any of the
-above. `concerned` and `grooving`'s Claude-Code/Codex paths have no
-detector implementation yet (documented non-goals), but both are still
-settable via a debug override:
-
-```bash
-echo "celebrating" > ~/.squid-pet/force_state   # forces any state, skips natural triggers
-echo "" > ~/.squid-pet/force_state              # clears the override, resumes normal computation
-```
-
-See `tests/test_state_machine.py`, `tests/test_watcher_claude_code_cascade.py`,
-and `tests/test_watcher_codex_cascade.py` for the contract.
-
-</details>
 
 ---
 
