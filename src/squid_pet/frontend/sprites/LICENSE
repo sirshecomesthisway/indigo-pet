@@ -1,0 +1,24 @@
+All Rights Reserved
+
+Copyright (c) 2026 Pink Tan
+
+The artwork in this directory -- the Squid character sprites, animation
+frames, and any derivative artwork -- is NOT covered by this repository's
+MIT license (see the LICENSE file at the repository root). It is
+proprietary and part of the Squid brand/IP.
+
+These files are included in this repository solely so that the Squid Pet
+application can run as intended when built from source. Running the
+application locally with this artwork, as distributed, is permitted.
+
+Without prior written permission from the copyright holder, you may NOT:
+
+  - redistribute, republish, rehost, or repackage these image files, in
+    original or modified form, separately from running this application
+  - use this artwork, or derivatives of it, in another product, project,
+    or brand
+  - use the "Squid" name or character likeness as your own product or
+    brand name
+
+To request permission for any of the above, open an issue on this
+repository or contact the copyright holder directly.
