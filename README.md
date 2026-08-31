@@ -8,8 +8,6 @@ Today she watches Claude Code and Codex. Over time, we want Squid to become a mo
 
 > Your agents are becoming more autonomous. Squid gives them a presence.
 
-
-
 ## Why Squid?
 
 AI coding agents can now work for minutes — or much longer — without you watching the terminal.
@@ -30,8 +28,12 @@ You can glance over and know:
 
 Squid is deliberately small, ambient, and opinionated. She stays out of the way until you need her.
 
+## See her in action
+
+🎥 *Demo video in production — check back soon.*
 
 ## Quick start
+
 ```bash
 git clone https://github.com/sirshecomesthisway/squid-pet.git
 cd squid-pet
@@ -42,7 +44,7 @@ The installer sets up the Python environment, installs dependencies, configures 
 
 A cold install typically takes about 3 minutes; subsequent updates are around 30 seconds.
 
-
+---
 
 ## Contents
 
@@ -61,20 +63,16 @@ A cold install typically takes about 3 minutes; subsequent updates are around 30
 
 ## Features
 
-- **Reacts live** to Claude Code and Codex — distinguishes "thinking"
-  from "working" from "done", via live tool-subprocess detection, recent
-  project-file writes (catches in-process edits that never spawn a
-  subprocess), and transcript-write recency
-- **Waves and pings you** the instant a Claude Code session needs your
-  input, even a hook away from your desk — see
+- **Reacts live** to Claude Code and Codex — thinking vs. working vs. done,
+  via tool-subprocess detection, recent file writes, and transcript recency
+- **Waves and pings you** the instant a session needs your input — see
   [Approval-needed flag wave](#approval-needed-flag-wave)
 - **Cross-tool**: also picks up git commits, terminal activity, and IDE
   (VS Code/Cursor/JetBrains) activity
-- **Lightweight and private**: pure CSS animations, the Python side only
-  drives state + window position; every detector reads metadata only —
-  never file contents, never network ([privacy disclosure](docs/PRIVACY.md))
-- **Fully configurable**: toggle any detector, corner, or behavior live
-  via `~/.squid-pet/settings.json` — no restart needed
+- **Private by design**: every detector reads metadata only — never file
+  contents, never network ([disclosure](docs/PRIVACY.md))
+- **Fully configurable**: toggle any detector or behavior live via
+  `~/.squid-pet/settings.json` — no restart needed
 - Drag her around, right-click for a corner/pause/sprint menu,
   double-click to cycle state
 
@@ -82,19 +80,13 @@ A cold install typically takes about 3 minutes; subsequent updates are around 30
 
 ## Install
 
-```bash
-# Clone + install:
-mkdir -p ~/Projects && cd ~/Projects
-git clone https://github.com/sirshecomesthisway/squid-pet.git
-cd squid-pet && ./install.sh
-```
-
 > **Where Squid lives:** her source is in `~/Projects/squid-pet/`, runtime state in `~/.squid-pet/`, launcher at `~/.local/bin/squid`, LaunchAgent plist at `~/Library/LaunchAgents/com.pink.squid-pet.plist`. The installer is idempotent — re-running it from `~/Projects/squid-pet/` is the supported update path (or `squid update`). If you cloned somewhere else, the installer detects that and relocates the repo to the canonical location for you (post-e2e-polish 2026-06-27 Fix 5).
 
-That sets up `uv venv`, installs the package from the committed `uv.lock`
-against public PyPI (no dependency resolution — fast), renders the
-LaunchAgent plist, drops `~/.local/bin/squid` on your PATH, writes
-sensible default settings, and boots Squid.
+`./install.sh` sets up `uv venv`, installs the package from the committed
+`uv.lock` against public PyPI (no dependency resolution — fast), renders the
+LaunchAgent plist, drops `~/.local/bin/squid` on your PATH, writes sensible
+default settings, and boots Squid. See [Quick start](#quick-start) above to
+get running.
 
 > **Want the corner/stroll prompts back?** Run `./install.sh --wizard`.
 > Otherwise you get sensible defaults (bottom-right corner, edges stroll,
@@ -413,7 +405,7 @@ openspec/                    # OpenSpec specs + changes (see "Specs" below)
 .venv/bin/pytest
 ```
 
-362 tests, ~30 s. Covers every state-machine branch + cross-tick memory
+648 tests, ~1m45s. Covers every state-machine branch + cross-tick memory
 (burst-suppression busy_streak, `agent_idle_seconds` tracking, celebration
 transition window) plus each detector in isolation. I/O is monkey-patched
 or dependency-injected so the suite never touches psutil / filesystem /
@@ -523,8 +515,6 @@ Current canonical specs:
 macOS 12+, Homebrew. `uv` is auto-installed if missing.
 Full manual install steps + troubleshooting: [`docs/INSTALL.md`](docs/INSTALL.md).
 Privacy disclosure: [`docs/PRIVACY.md`](docs/PRIVACY.md).
-
-
 
 ---
 
