@@ -43,6 +43,18 @@ WINDOW_HEIGHT = 300  # was 220; bumped to give hearts headroom above sprite
 # similarly present).
 WORKING_REANNOUNCE_SEC = 30.0
 
+# Pink-2026-08-30: once mood settles into drowsy/sleeping, nothing used to
+# wake her again short of real CC/codex activity (agent_idle_seconds reset) or
+# a user poke/sprint -- if you stepped away, she was "asleep forever". Every
+# PERIODIC_WAKE_CADENCE_SEC while drowsy/sleeping, get_state() force-wakes
+# her (same wake_trigger_seq + user_wake_until plumbing poke() uses) and
+# holds the awake override for PERIODIC_WAKE_AWAKE_SEC -- long enough for
+# RoutineController (unpaused once mood clears) to run a real stretch/idle/
+# walk lap (IDLE_ROUTINE averages ~91s/cycle) before she's allowed to drift
+# back to sleep under the normal agent_idle-based logic.
+PERIODIC_WAKE_CADENCE_SEC = 900.0   # 15 min
+PERIODIC_WAKE_AWAKE_SEC = 180.0     # 3 min stay-awake window
+
 POSITION_FILE = Path.home() / ".squid-pet" / "position.json"
 SETTINGS_FILE = Path.home() / ".squid-pet" / "settings.json"
 # Presence == intentionally hidden via the menu bar toggle. Written by
@@ -575,6 +587,7 @@ class PetApi:
         self._wrapper_deg_override = None  # Optional[float]: bypass edge->deg mapping when set
         self._wake_trigger_seq: int = 0    # increments on wake-fire; frontend tracks last seen
         self._user_wake_until: float = 0.0  # epoch sec; user-interaction wake override (poke, sprint)
+        self._last_wake_at: float = _time.time()  # epoch sec; drives PERIODIC_WAKE_CADENCE_SEC
         self._sprint_fast_transition: bool = False  # frontend uses 0.2s CSS transition when True
         # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
         # Removed by unify-idle-rhythm 2026-06-13 (regression), restored
@@ -761,7 +774,28 @@ class PetApi:
         with self._lock:
             self._pending_bubble = bubble
 
+    def _wake(self, duration_sec: float) -> None:
+        """Force a wake-from-drowsy/sleeping stretch transition (frontend
+        watches wake_trigger_seq) and hold her awake-faced for duration_sec
+        via the user_wake_until override -- without it, checkDrowsyState()
+        in index.html re-enters drowsy/sleeping the instant agent_idle_seconds
+        is re-checked, since nothing reset that counter. Also resets the
+        periodic auto-wake clock so this wake (real or periodic) pushes the
+        next periodic wake out by a full PERIODIC_WAKE_CADENCE_SEC."""
+        now = _time.time()
+        self._wake_trigger_seq += 1
+        self._user_wake_until = now + duration_sec
+        self._last_wake_at = now
+
     def get_state(self) -> dict:
+        # Periodic auto-wake: while genuinely drowsy/sleeping (not just
+        # mid-stretch), force a wake cycle every PERIODIC_WAKE_CADENCE_SEC
+        # so she doesn't stay asleep forever absent real CC/codex activity.
+        if (self._frontend_mood in ("drowsy", "sleeping")
+                and _time.time() - self._last_wake_at >= PERIODIC_WAKE_CADENCE_SEC):
+            self._wake(PERIODIC_WAKE_AWAKE_SEC)
+            print("[squid-pet] periodic auto-wake: 15min asleep -> "
+                  "stretch + ~3min awake window", flush=True)
         with self._lock:
             d = asdict(self._latest)
             if self._forced_state:
@@ -907,8 +941,7 @@ class PetApi:
         # 60s user_wake override as poke. Pink can either single-click OR
         # shake her up-down to wake her up.
         def _on_swing():
-            self._user_wake_until = _time.time() + 60.0
-            self._wake_trigger_seq += 1
+            self._wake(60.0)
             # Observer bubble (was: "wheee!" hint pill; deduped 2026-06-13)
             bubble = self._observer.on_interaction("shake")
             if bubble is not None:
@@ -994,8 +1027,7 @@ class PetApi:
         - Clears any forced state (poke = "go back to normal")
         - Fires observer bubble (was: dual "boop!" hint pill + bubble,
           deduped 2026-06-13 per Pink's screenshot showing both stacked)"""
-        self._wake_trigger_seq += 1
-        self._user_wake_until = _time.time() + 60.0
+        self._wake(60.0)
         cleared = self._forced_state is not None
         self._forced_state = None
         # Observer bubble owns the poke reaction now (no more "boop!" hint pill)
@@ -1203,8 +1235,7 @@ class PetApi:
         # User-interaction wake override: keeps her awake-faced (idle.png)
         # during the entire sprint + buffer afterward. Without this, mood
         # layer re-enters drowsy mid-sprint if agent_idle is high.
-        self._user_wake_until = _time.time() + 60.0
-        self._wake_trigger_seq += 1       # wake-from-drowsy stretch transition
+        self._wake(60.0)                  # wake-from-drowsy stretch transition
         try:
             # Observer bubble: sprint start
             bubble = self._observer.on_interaction("sprint")

@@ -46,11 +46,6 @@ STATE_FILE = STATE_DIR / "state.json"
 
 POLL_INTERVAL_SEC = 1.0
 IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
-# Auto-wake: after this long in sleeping, force one wake cycle even if
-# macOS is still idle. Gives Squid a pet-like rest/wake rhythm instead of
-# being a static sticker on the screen all afternoon.
-AUTO_WAKE_AFTER_SLEEPING_SEC = 600   # 10 min asleep → wake for one rhythm cycle
-AUTO_WAKE_DURATION_SEC = 180         # 3 min awake window (roughly one full IDLE_ROUTINE pass)
 # Names of transient CLI tools that indicate ACTIVE tool use. Shared by
 # has_active_shell_children() for Claude Code / Codex's shell_active signal.
 # Excludes shells (bash/sh/zsh) because shells are always the wrapper —
@@ -704,9 +699,6 @@ class StateMachine:
         # generic, not TPA-specific -- see PetState.agent_idle_seconds.)
         self._agent_idle_since: float = 0.0
         self._last_state: str = ""
-        # Auto-wake bookkeeping
-        self._sleeping_since: float = 0.0
-        self._force_awake_until: float = 0.0
         # v0.2.1 -- "your turn" alert latch. Fires once per approval_needed
         # episode (see the approval-needed block in compute()).
         self._approval_alert_fired: bool = False
@@ -1018,23 +1010,10 @@ class StateMachine:
         # rest of the cascade would call "busy".
         agent_actively_busy = working_evidence_merged or streaming_merged
         if idle >= IDLE_THRESHOLD_SEC and not agent_actively_busy:
-            if self._sleeping_since == 0.0:
-                self._sleeping_since = now
-            sleeping_for = now - self._sleeping_since
-            if sleeping_for >= AUTO_WAKE_AFTER_SLEEPING_SEC and now >= self._force_awake_until:
-                self._force_awake_until = now + AUTO_WAKE_DURATION_SEC
-                self._sleeping_since = 0.0
-                print("[squid-pet] auto-wake: opening 3-min wake window after 10 min asleep",
-                      flush=True)
-            if now >= self._force_awake_until:
-                st.state = "sleeping"
-                st.state_reason = f"idle {int(idle // 60)}m"
-                st.message = f"💤 idle {int(idle // 60)}m"
-                return st
-            # else: inside wake window -- fall through to evaluate other states
-        else:
-            self._sleeping_since = 0.0
-            self._force_awake_until = 0.0
+            st.state = "sleeping"
+            st.state_reason = f"idle {int(idle // 60)}m"
+            st.message = f"💤 idle {int(idle // 60)}m"
+            return st
 
         # claude_finished_age (set above) can't by itself tell "finished
         # this turn, more coming" from "finished the whole task" -- Stop

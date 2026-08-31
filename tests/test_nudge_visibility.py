@@ -38,6 +38,8 @@ def _make_api(state: str) -> PetApi:
     api._user_wake_until = 0.0
     api._sprint_fast_transition = False
     api._pending_bubble = None
+    api._frontend_mood = ""
+    api._last_wake_at = 0.0
     return api
 
 
