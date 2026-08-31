@@ -14,7 +14,7 @@ AI coding agents can now work for minutes — or much longer — without you wat
 
 That creates a simple problem:
 
-What are your agents doing right now?
+> *What are your agents doing right now?*
 
 Squid gives that activity a persistent presence on your desktop.
 
