@@ -42,6 +42,10 @@ def _finished_path(home: Path, session_id: str) -> Path:
     return home / "claude_finished" / session_id
 
 
+def _turn_active_path(home: Path, session_id: str) -> Path:
+    return home / "claude_turn_active" / session_id
+
+
 def _recap_path(home: Path, session_id: str) -> Path:
     return home / "claude_recapping" / session_id
 
@@ -372,3 +376,53 @@ def test_defaults_to_real_home_when_env_unset(tmp_path, monkeypatch):
     )
     assert r.returncode == 0, r.stderr
     assert (tmp_path / ".squid-pet" / "claude_awaiting_input" / "sess-9").exists()
+
+
+# ── Turn-in-flight signal (Pink-2026-09-01) ────────────────────────────
+# ClaudeCodeDetector infers "thinking" from transcript mtime
+# (STREAMING_STALE_SEC), but Claude Code only writes a transcript entry
+# when a block COMPLETES. An extended thinking stretch writes nothing, so
+# past the staleness window Squid decided nobody was home and showed idle
+# while the UI said "thinking some more" -- measured at up to 29s of
+# wrongly-idle in a single stretch. UserPromptSubmit/Stop bracket a turn
+# exactly, with no inference and no transcript content read.
+def test_user_prompt_submit_marks_the_turn_active(home):
+    r = _run({"session_id": "sess-t1", "hook_event_name": "UserPromptSubmit"}, home)
+    assert r.returncode == 0, r.stderr
+    assert _turn_active_path(home, "sess-t1").exists()
+
+
+def test_stop_ends_the_active_turn(home):
+    _run({"session_id": "sess-t2", "hook_event_name": "UserPromptSubmit"}, home)
+    assert _turn_active_path(home, "sess-t2").exists()
+
+    r = _run({"session_id": "sess-t2", "hook_event_name": "Stop"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _turn_active_path(home, "sess-t2").exists()
+
+
+def test_session_end_ends_the_active_turn(home):
+    """Crash safety: a session killed mid-turn must not leave Squid
+    thinking forever."""
+    _run({"session_id": "sess-t3", "hook_event_name": "UserPromptSubmit"}, home)
+    r = _run({"session_id": "sess-t3", "hook_event_name": "SessionEnd"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _turn_active_path(home, "sess-t3").exists()
+
+
+def test_turn_active_sessions_are_independent(home):
+    _run({"session_id": "sess-t4", "hook_event_name": "UserPromptSubmit"}, home)
+    _run({"session_id": "sess-t5", "hook_event_name": "UserPromptSubmit"}, home)
+    _run({"session_id": "sess-t4", "hook_event_name": "Stop"}, home)
+
+    assert not _turn_active_path(home, "sess-t4").exists()
+    assert _turn_active_path(home, "sess-t5").exists(), (
+        "one session finishing must not end another's turn")
+
+
+def test_turn_active_flag_holds_no_prompt_content(home):
+    """Same content-blind contract as every other flag here: session_id and
+    mtime only, never what the user actually typed."""
+    _run({"session_id": "sess-t6", "hook_event_name": "UserPromptSubmit",
+          "prompt": "something private the user typed"}, home)
+    assert "private" not in _turn_active_path(home, "sess-t6").read_text()

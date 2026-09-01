@@ -481,6 +481,43 @@ CLAUDE_TASK_COMPLETE_STALE_SEC = 7200.0  # 2h -- crash-safety disk cleanup only
 CLAUDE_TASK_COMPLETE_FRESH_SEC_DEFAULT = 20.0  # shared default with celebrate_hold_sec config
 
 
+# ── TURN IN FLIGHT ──────────────────────────────────────────────────────
+# Pink-2026-09-01: ClaudeCodeDetector infers "thinking" from transcript
+# mtime (STREAMING_STALE_SEC), but Claude Code writes a transcript entry
+# only when a block COMPLETES. An extended thinking stretch writes
+# nothing, so past the staleness window Squid showed IDLE while the UI
+# said "thinking some more" -- measured on this machine at up to 29s of
+# wrongly-idle inside a single stretch, 54s across one session.
+#
+# UserPromptSubmit opens this flag and Stop closes it (claude_pet_hook.py),
+# so it brackets a turn exactly, with nothing inferred and no transcript
+# content read. It is a BACKSTOP, not a promotion: real working evidence
+# still outranks it (branch 4a), and it only decides the case that used to
+# fall all the way through to idle.
+#
+# It also supplies the turn boundary that branches 2 and 3 need to stop
+# celebrating ahead of the answer and grooving after the celebration.
+CLAUDE_TURN_ACTIVE_DIR = os.path.join(
+    os.path.expanduser("~"), ".squid-pet", "claude_turn_active"
+)
+# Generous: a long agentic turn can legitimately run for many minutes, and
+# the cost of over-holding is she stays "thinking" a while after a crash,
+# not a wrong state during normal use. SessionEnd clears it on a clean
+# exit; this is only for a kill -9.
+CLAUDE_TURN_ACTIVE_STALE_SEC = 3600.0
+
+
+def claude_turn_in_flight(now: float | None = None) -> bool:
+    """True iff any Claude Code session is between UserPromptSubmit and
+    Stop -- i.e. actively working on a turn, whether or not it has written
+    anything to disk yet."""
+    return bool(_scan_session_flag_dir(
+        CLAUDE_TURN_ACTIVE_DIR,
+        CLAUDE_TURN_ACTIVE_STALE_SEC,
+        CLAUDE_TURN_ACTIVE_STALE_SEC,
+    ))
+
+
 def claude_task_marked_complete_recently(now: float | None = None) -> bool:
     """True iff any session has a fresh explicit task-complete marker
     (see the module comment above). Freshness window matches
@@ -742,6 +779,15 @@ class StateMachine:
         )
         # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
+        # Pink-2026-09-01, per-turn latches. See claude_turn_in_flight().
+        # _turn_was_active gives the rising/falling edges of a turn;
+        # _celebrated_this_turn stops branch 3 demoting a celebration to
+        # grooving on the same turn's Stop; _pending_celebrate_name holds a
+        # mid-turn git celebrate until the turn actually ends.
+        self._turn_was_active: bool = False
+        self._celebrated_this_turn: bool = False
+        self._pending_celebrate_name: str | None = None
+        self._celebrate_reason: str | None = None
         # post-e2e-polish 2026-06-27 Fix 7: sticky working window.
         # Hold "working" for working_hold_sec between tool calls
         # so Squid does not flicker to "thinking" in LLM-gen gaps.
@@ -1110,27 +1156,72 @@ class StateMachine:
         claude_grooving_now = claude_just_stopped
         claude_task_complete = claude_task_marked_complete_recently(now)
 
+        # ── TURN EDGES (Pink-2026-09-01) ─────────────────────────────
+        # A turn opening clears the per-turn latches; a turn closing is
+        # when anything held for the boundary is released. Doing this here,
+        # before any branch runs, means every branch below sees a
+        # consistent view of "which turn are we in".
+        turn_in_flight = claude_turn_in_flight(now)
+        try:
+            from . import config as _cfg2
+            _celebrate_hold = float(_cfg2.get(
+                "celebrate_hold_sec", CLAUDE_FINISHED_FRESH_SEC_DEFAULT))
+        except Exception:
+            _celebrate_hold = CLAUDE_FINISHED_FRESH_SEC_DEFAULT
+        if turn_in_flight and not self._turn_was_active:
+            self._celebrated_this_turn = False
+            self._pending_celebrate_name = None
+            self._celebrate_reason = None
+        elif self._turn_was_active and not turn_in_flight:
+            # Turn just ended -- release a celebrate that was held back so
+            # it lands WITH the final message instead of 20s ahead of it.
+            if self._pending_celebrate_name is not None:
+                self.celebrate_until = now + _celebrate_hold
+                self._celebrate_reason = (
+                    f"{self._pending_celebrate_name} celebrating "
+                    f"(held for turn end)"
+                )
+                self._pending_celebrate_name = None
+        self._turn_was_active = turn_in_flight
+
         # ── 2. CELEBRATING ── real milestones: claude_task_complete (an
         # explicit "whole task done" marker Claude wrote -- see above),
         # codex's own busy->idle edge, any other detector's (e.g. Git's
         # fresh-commit) celebrate signal, or a manually-armed
         # self.celebrate_until (force_state / test hook).
+        # GitDetector celebrates on a .git/refs mtime change -- the instant
+        # a commit lands, which during an agent turn is well before the
+        # turn ends. Pink observed her celebrating a commit 20s before the
+        # reply appeared, then grooving the moment the answer arrived.
+        # Hold it; the turn-edge handler above releases it at Stop.
+        # claude_task_complete and codex's own edge are NOT deferred --
+        # those already mean "the work is done", not "a file changed".
+        _other_celebrates = other_celebrating()
+        if (_other_celebrates and turn_in_flight
+                and not claude_task_complete and not codex_celebrating):
+            self._pending_celebrate_name = other_celebrating_name()
+            _other_celebrates = False
+
         if (
             now < self.celebrate_until
             or claude_task_complete
             or codex_celebrating
-            or other_celebrating()
+            or _other_celebrates
         ):
             st.state = "celebrating"
             if claude_task_complete:
                 st.state_reason = "claude celebrating"
             elif codex_celebrating:
                 st.state_reason = "codex celebrating"
-            elif other_celebrating_name():
+            elif _other_celebrates and other_celebrating_name():
                 st.state_reason = f"{other_celebrating_name()} celebrating"
+            elif self._celebrate_reason:
+                st.state_reason = self._celebrate_reason
             else:
                 st.state_reason = "celebrating"
             st.message = "🎉 nice!"
+            # Latch so this turn's Stop cannot demote her to grooving.
+            self._celebrated_this_turn = True
             return st
 
         # ── 3. GROOVING ── a lighter, per-turn "still making progress"
@@ -1139,7 +1230,12 @@ class StateMachine:
         # long it's been -- promotion to celebrating requires the
         # separate explicit signal, never elapsed time. Any other
         # detector's is_grooving() also lands here.
-        if claude_grooving_now or other_grooving():
+        # Not after she already celebrated this turn: grooving is the
+        # LIGHTER beat, so firing it on the same turn's Stop is a demotion
+        # at the exact moment the work finished -- observed live as
+        # CELEBRATING 16:00:25-16:00:45 (the commit) followed immediately
+        # by GROOVING at 16:00:45 (the Stop), for one single response.
+        if (claude_grooving_now or other_grooving()) and not self._celebrated_this_turn:
             st.state = "grooving"
             st.state_reason = "claude grooving" if claude_grooving_now else "creative burst"
             st.message = "🤸 creative burst"
@@ -1191,6 +1287,17 @@ class StateMachine:
             if streaming_merged:
                 st.state = "thinking"
                 st.state_reason = _streaming_reason()
+                st.message = "🤔 thinking"
+                return st
+            # 4c. THINKING (turn in flight) -- the hook bracket says Claude
+            # is mid-turn even though nothing has been written recently.
+            # This is the "thinking some more" case: a long reasoning
+            # stretch produces no transcript write at all, so 4b above goes
+            # stale and she used to fall through to idle. Ranked last so it
+            # only ever decides what would otherwise be idle.
+            if turn_in_flight:
+                st.state = "thinking"
+                st.state_reason = "claude turn in flight"
                 st.message = "🤔 thinking"
                 return st
 

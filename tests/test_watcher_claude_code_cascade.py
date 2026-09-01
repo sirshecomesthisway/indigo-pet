@@ -15,7 +15,7 @@ from squid_pet.detectors import ClaudeCodeDetector
 
 
 def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent", recap_dir="/nonexistent",
-                   task_complete_dir="/nonexistent"):
+                   task_complete_dir="/nonexistent", turn_active_dir="/nonexistent"):
     """Stub the non-detector-owned signals StateMachine still reads
     directly: idle time, the Claude Code awaiting-input directory, the
     Claude Code just-finished directory, the Claude Code recapping
@@ -30,11 +30,12 @@ def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent", recap_dir=
     monkeypatch.setattr(watcher, "CLAUDE_FINISHED_DIR", finished_dir)
     monkeypatch.setattr(watcher, "CLAUDE_RECAPPING_DIR", recap_dir)
     monkeypatch.setattr(watcher, "CLAUDE_TASK_COMPLETE_DIR", task_complete_dir)
+    monkeypatch.setattr(watcher, "CLAUDE_TURN_ACTIVE_DIR", turn_active_dir)
 
 
 def _claude_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),
-                     file_ages=None, idle=0.0):
-    install_world(monkeypatch, idle=idle)
+                     file_ages=None, idle=0.0, turn_active_dir="/nonexistent"):
+    install_world(monkeypatch, idle=idle, turn_active_dir=turn_active_dir)
     now_ref = {"v": 1_000_000.0}
 
     def _stat(p):
@@ -474,3 +475,176 @@ def test_sleeping_still_wins_when_agent_genuinely_idle(monkeypatch):
     )
     st = sm.compute()
     assert st.state == "sleeping"
+
+
+# ── Turn-in-flight -> thinking (Pink-2026-09-01) ───────────────────────
+def _write_flag(dir_path: Path, session_id: str, mtime: float) -> None:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    path = dir_path / session_id
+    path.write_text("x")
+    os.utime(path, (mtime, mtime))
+
+
+def test_turn_in_flight_shows_thinking_when_the_transcript_has_gone_stale(
+        monkeypatch, tmp_path):
+    """The "thinking some more" bug. Claude Code writes a transcript entry
+    only when a block COMPLETES, so a long thinking stretch writes nothing
+    and ClaudeCodeDetector's mtime-based streaming signal goes stale --
+    Squid showed idle while the UI plainly said it was thinking. The
+    UserPromptSubmit/Stop bracket says a turn is in flight regardless of
+    whether anything has been written to disk yet."""
+    turn_dir = tmp_path / "claude_turn_active"
+    sm = _claude_machine(monkeypatch, transcript_age_sec=90.0,
+                         turn_active_dir=str(turn_dir))
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 30.0)
+
+    st = sm.compute()
+    assert st.state == "thinking", (
+        "a turn in flight must never read as idle, however long the "
+        "model thinks without writing anything")
+
+
+def test_stale_transcript_with_no_turn_in_flight_still_reads_idle(
+        monkeypatch, tmp_path):
+    """The other half: the turn signal must not simply pin her awake. With
+    no turn open, a stale transcript is genuine idle."""
+    turn_dir = tmp_path / "claude_turn_active"
+    turn_dir.mkdir(parents=True, exist_ok=True)
+    sm = _claude_machine(monkeypatch, transcript_age_sec=90.0,
+                         turn_active_dir=str(turn_dir))
+
+    st = sm.compute()
+    assert st.state == "idle"
+
+
+def test_working_evidence_still_outranks_a_turn_in_flight(monkeypatch, tmp_path):
+    """Turn-in-flight is a backstop for the silent case only -- it must not
+    demote real working evidence to thinking."""
+    turn_dir = tmp_path / "claude_turn_active"
+    sm = _claude_machine(monkeypatch, shell_active=True, transcript_age_sec=90.0,
+                         turn_active_dir=str(turn_dir))
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 5.0)
+
+    st = sm.compute()
+    assert st.state == "working"
+
+
+# ── Celebrate/groove ordering (Pink-2026-09-01) ────────────────────────
+class _FakeGitDetector:
+    """Stands in for GitDetector, whose celebrate fires on a .git/refs
+    mtime change -- i.e. the moment a commit lands, which during an agent
+    turn is well before the turn actually ends."""
+    name = "git"
+    enabled = True
+
+    def __init__(self):
+        self.celebrating = False
+
+    def is_busy(self, now=None): return False
+    def is_celebrating(self, now=None): return self.celebrating
+    def is_grooving(self, now=None): return False
+
+
+def _machine_with_git(monkeypatch, tmp_path, git, **dirs):
+    install_world(monkeypatch, **dirs)
+    monkeypatch.setattr(
+        "squid_pet.config.get",
+        lambda k, default=None: 20 if k == "celebrate_hold_sec" else default,
+    )
+    claude = ClaudeCodeDetector(
+        find_processes_fn=lambda: ["fake-claude-proc"],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: False,
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    sm = StateMachine(detectors=[claude, git])
+    monkeypatch.setattr(watcher.time, "time", lambda: 1_000_000.0)
+    return sm
+
+
+def test_git_celebrate_is_deferred_while_a_turn_is_in_flight(monkeypatch, tmp_path):
+    """She was celebrating the commit, not the answer -- 20s before the
+    reply even landed. While a turn is open the celebrate is held."""
+    turn_dir = tmp_path / "claude_turn_active"
+    git = _FakeGitDetector()
+    git.celebrating = True
+    sm = _machine_with_git(monkeypatch, tmp_path, git,
+                           turn_active_dir=str(turn_dir))
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 10.0)
+
+    st = sm.compute()
+    assert st.state != "celebrating", "commit mid-turn must not celebrate yet"
+
+
+def test_deferred_git_celebrate_fires_once_the_turn_ends(monkeypatch, tmp_path):
+    """Held, not dropped: it lands with the final message instead of ahead
+    of it."""
+    turn_dir = tmp_path / "claude_turn_active"
+    git = _FakeGitDetector()
+    git.celebrating = True
+    sm = _machine_with_git(monkeypatch, tmp_path, git,
+                           turn_active_dir=str(turn_dir))
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 10.0)
+    sm.compute()                      # mid-turn: deferred
+
+    (turn_dir / "sess-1").unlink()    # Stop fires, turn closes
+    git.celebrating = False           # git's own 20s window has moved on
+    st = sm.compute()
+    assert st.state == "celebrating"
+
+
+def test_grooving_is_suppressed_after_celebrating_in_the_same_turn(
+        monkeypatch, tmp_path):
+    """Observed live: CELEBRATING 16:00:25-16:00:45 (the commit), then
+    GROOVING at 16:00:45 (the Stop) -- back to back for one response, and
+    a demotion at the exact moment the work finished."""
+    turn_dir = tmp_path / "claude_turn_active"
+    finished_dir = tmp_path / "claude_finished"
+    git = _FakeGitDetector()
+    git.celebrating = True
+    sm = _machine_with_git(monkeypatch, tmp_path, git,
+                           turn_active_dir=str(turn_dir),
+                           finished_dir=str(finished_dir))
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 10.0)
+    sm.compute()
+
+    (turn_dir / "sess-1").unlink()
+    st = sm.compute()
+    assert st.state == "celebrating"
+
+    # Stop lands; without suppression the fresh finished flag grooves the
+    # moment the celebrate window closes.
+    git.celebrating = False
+    _write_flag(finished_dir, "sess-1", 1_000_000.0 - 1.0)
+    sm.celebrate_until = 0.0          # celebrate window expires
+    st = sm.compute()
+    assert st.state != "grooving", (
+        "she already celebrated this turn; grooving after it is a demotion")
+
+
+def test_grooving_returns_on_the_next_turn(monkeypatch, tmp_path):
+    """Suppression is per-turn, not permanent."""
+    turn_dir = tmp_path / "claude_turn_active"
+    finished_dir = tmp_path / "claude_finished"
+    git = _FakeGitDetector()
+    git.celebrating = True
+    sm = _machine_with_git(monkeypatch, tmp_path, git,
+                           turn_active_dir=str(turn_dir),
+                           finished_dir=str(finished_dir))
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 10.0)
+    sm.compute()
+    (turn_dir / "sess-1").unlink()
+    sm.compute()
+    git.celebrating = False
+    sm.celebrate_until = 0.0
+
+    # A brand new turn opens and ends with a plain Stop, no commit.
+    _write_flag(turn_dir, "sess-1", 1_000_000.0 - 5.0)
+    sm.compute()
+    (turn_dir / "sess-1").unlink()
+    _write_flag(finished_dir, "sess-1", 1_000_000.0 - 1.0)
+    st = sm.compute()
+    assert st.state == "grooving"

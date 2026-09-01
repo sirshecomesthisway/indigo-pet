@@ -86,6 +86,15 @@ _SQUID_PET_HOME = os.environ.get(
 FLAG_DIR = os.path.join(_SQUID_PET_HOME, "claude_awaiting_input")
 FINISHED_DIR = os.path.join(_SQUID_PET_HOME, "claude_finished")
 RECAP_DIR = os.path.join(_SQUID_PET_HOME, "claude_recapping")
+# Pink-2026-09-01: "a turn is in flight". UserPromptSubmit opens it, Stop
+# closes it. Exists because ClaudeCodeDetector infers thinking from
+# transcript mtime, and Claude Code only writes a transcript entry when a
+# block COMPLETES -- an extended thinking stretch writes nothing, so past
+# STREAMING_STALE_SEC Squid showed idle while the UI said "thinking some
+# more" (measured: 29s wrongly-idle in one stretch). These two hooks
+# bracket a turn exactly, with no inference. Content-blind like every
+# other flag here: session_id and mtime only, never the prompt text.
+TURN_ACTIVE_DIR = os.path.join(_SQUID_PET_HOME, "claude_turn_active")
 LOG_PATH = os.path.join(_SQUID_PET_HOME, "claude_hook.log")
 _LOG_MAX_BYTES = 200_000
 _LOG_KEEP_LINES = 1000
@@ -120,6 +129,12 @@ _HANDLED_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
 _REMOVE_ON_EVENTS = frozenset({
     "UserPromptSubmit", "SessionEnd", "PostToolUse", "Stop",
 })
+
+# Turn bracket: which events open a turn, and which close it.
+_TURN_OPEN_EVENTS = frozenset({"UserPromptSubmit"})
+# SessionEnd is crash safety -- a session killed mid-turn must not leave
+# Squid thinking forever.
+_TURN_CLOSE_EVENTS = frozenset({"Stop", "SessionEnd"})
 
 
 def _truncate_log_if_large() -> None:
@@ -239,7 +254,22 @@ def main() -> int:
             _log(f"PostCompact {session_id} NOOP (no flag)")
         except Exception as e:
             _log(f"PostCompact {session_id} REMOVE_FAILED {e!r}")
-    elif event not in _REMOVE_ON_EVENTS and event != "Notification":
+    if event in _TURN_OPEN_EVENTS:
+        if _ensure_dir(TURN_ACTIVE_DIR, event):
+            try:
+                with open(os.path.join(TURN_ACTIVE_DIR, session_id), "w") as f:
+                    f.write("turn")
+                _log(f"{event} {session_id} TURN_OPEN")
+            except Exception as e:
+                _log(f"{event} {session_id} TURN_OPEN_FAILED {e!r}")
+    elif event in _TURN_CLOSE_EVENTS:
+        try:
+            os.unlink(os.path.join(TURN_ACTIVE_DIR, session_id))
+            _log(f"{event} {session_id} TURN_CLOSE")
+        except (FileNotFoundError, OSError):
+            pass
+
+    if event not in _REMOVE_ON_EVENTS and event != "Notification":
         # Guarded against the first dispatch chain above: an event handled
         # there (PostToolUse, UserPromptSubmit, ...) reaches here too, and
         # without this check it would be logged as UNKNOWN alongside its own
