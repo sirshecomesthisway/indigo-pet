@@ -30,3 +30,6 @@ state.json
 .idea/
 
 # OpenSpec lockfile (per repo convention)
+
+# Demo/recording tooling -- local only, never committed
+scripts/demo_*.py
