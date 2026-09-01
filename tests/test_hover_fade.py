@@ -15,6 +15,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from squid_pet.passthrough import (
+    HOVER_STILLNESS_TOLERANCE_PX,
     CornerFleeApproachTracker,
     HoverDwellTracker,
     PassthroughController,
@@ -230,3 +231,23 @@ def test_shift_is_the_escape_hatch():
     assert shift_held(NSEventModifierFlagShift | (1 << 20)) is True   # +cmd
     assert shift_held(0) is False
     assert shift_held(1 << 19) is False                                # option
+
+
+def test_a_resting_hand_still_dwells_at_the_default_tolerance():
+    """Pink: 4px meant "a tremor cancels it". The tolerance is a drift
+    budget from where the dwell began, so ordinary hand noise has to fit
+    inside it comfortably or the feature never fires."""
+    t = HoverDwellTracker(dwell_sec=1.0)
+    t.update(True, now=0.0, cx=100.0, cy=100.0)
+    assert t.update(True, now=1.0, cx=110.0, cy=107.0)[0] is True, (
+        "10px of tremor must not cancel a deliberate dwell")
+
+
+def test_an_aiming_sweep_still_restarts_at_the_default_tolerance():
+    """The other side of the widening: it must still tell "parked on her"
+    from "moving across her toward a grab"."""
+    t = HoverDwellTracker(dwell_sec=1.0)
+    t.update(True, now=0.0, cx=100.0, cy=100.0)
+    assert t.update(True, now=1.0, cx=160.0, cy=100.0)[0] is False
+    assert HOVER_STILLNESS_TOLERANCE_PX < 60.0, (
+        "tolerance must stay well under a character-width sweep")

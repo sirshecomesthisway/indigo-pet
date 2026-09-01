@@ -80,8 +80,16 @@ HOVER_DWELL_SEC = 1.0                # fade only -- still clickable here
 HOVER_PASSTHROUGH_DWELL_SEC = 2.5    # ...and only now does she click through
 # Presence is not intent: sweeping the cursor across her while aiming used
 # to accumulate dwell exactly like parking on her did. Movement beyond this
-# restarts the timer. Loose enough to absorb a resting hand's jitter.
-HOVER_STILLNESS_TOLERANCE_PX = 4.0
+# restarts the timer.
+#
+# Pink-2026-09-01: 4.0 was too aggressive -- an ordinary hand tremor while
+# resting on her cancelled the dwell, so the fade-through feature barely
+# fired at all. 16px is a total drift budget measured from where the dwell
+# started (the anchor only moves when the budget is blown), so it absorbs
+# tremor and small settling without ever approaching "anywhere inside the
+# bbox" -- her visible character is ~107px wide, and a real aiming sweep
+# across her covers several times this.
+HOVER_STILLNESS_TOLERANCE_PX = 16.0
 HOVER_FADE_ALPHA = 0.5
 
 
