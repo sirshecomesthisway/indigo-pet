@@ -91,7 +91,35 @@ _LOG_MAX_BYTES = 200_000
 _LOG_KEEP_LINES = 1000
 
 _HANDLED_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
-_REMOVE_ON_EVENTS = frozenset({"UserPromptSubmit", "SessionEnd"})
+
+# Pink-2026-08-31: PostToolUse and Stop added after a confirmed stuck-wave
+# bug. ANSWERING a permission prompt -- yes OR no -- fires no hook of any
+# kind. Only UserPromptSubmit (you typed a new message) and SessionEnd (the
+# session exited) were clearing the flag, so approving a prompt and letting
+# Claude carry on left the flag set indefinitely: Squid waved for nine
+# minutes at a session that was happily working, and because approval_needed
+# takes PRIME over the whole cascade, every subsequent working/thinking state
+# was masked behind it. Confirmed live in claude_hook.log, session 8ced357d:
+# Notification WRITE permission_prompt -> Stop (so tools ran, i.e. it was
+# approved) -> ... -> SessionEnd REMOVED, nine minutes later.
+#
+# The watcher has a self-heal for exactly this, but it is gated on
+# len(find_claude_code_processes()) <= 1 (deliberately -- see its comment on
+# the multi-session false-clear bug), and anyone running two sessions never
+# gets it. These two events give a per-session signal that needs no such gate:
+#
+#   PostToolUse -- a tool actually executed. Proof the permission question
+#                  was resolved and the session is no longer blocked on you.
+#   Stop        -- the turn ended and control came back. Whatever it was
+#                  waiting for, it is not waiting now. This is what covers
+#                  DENIAL, where no tool ever runs and PostToolUse never
+#                  fires.
+#
+# Neither can suppress a genuine "you stepped away" wave: idle_prompt fires
+# 60s AFTER Stop, re-arming the flag on its own clock.
+_REMOVE_ON_EVENTS = frozenset({
+    "UserPromptSubmit", "SessionEnd", "PostToolUse", "Stop",
+})
 
 
 def _truncate_log_if_large() -> None:
@@ -179,7 +207,7 @@ def main() -> int:
                 _log(f"{event} {session_id} RECAP_REMOVED")
             except (FileNotFoundError, OSError):
                 pass
-    elif event == "Stop":
+    if event == "Stop":
         if not _ensure_dir(FINISHED_DIR, event):
             return 0
         finished_path = os.path.join(FINISHED_DIR, session_id)
@@ -211,7 +239,12 @@ def main() -> int:
             _log(f"PostCompact {session_id} NOOP (no flag)")
         except Exception as e:
             _log(f"PostCompact {session_id} REMOVE_FAILED {e!r}")
-    else:
+    elif event not in _REMOVE_ON_EVENTS and event != "Notification":
+        # Guarded against the first dispatch chain above: an event handled
+        # there (PostToolUse, UserPromptSubmit, ...) reaches here too, and
+        # without this check it would be logged as UNKNOWN alongside its own
+        # successful handling -- misleading in exactly the log you reach for
+        # when a flag looks stuck.
         _log(f"UNKNOWN_EVENT {event!r} {session_id}")
 
     return 0

@@ -125,13 +125,92 @@ def test_stop_does_not_read_last_assistant_message_into_the_flag(home):
     assert "sensitive" not in fp.read_text()
 
 
-def test_stop_does_not_touch_awaiting_input_flag(home):
-    """Stop and Notification/UserPromptSubmit/SessionEnd are independent
-    signals in separate directories -- a Stop event for a session must
-    not create or remove anything in claude_awaiting_input/."""
+def test_stop_does_not_create_an_awaiting_input_flag(home):
+    """Stop must never CREATE an awaiting-input flag -- "the turn ended" is
+    not "the session is waiting on you"; only a Notification says that.
+
+    Pink-2026-08-31: this used to assert Stop never removed one either, but
+    that invariant was wrong and caused a real stuck-wave bug -- see
+    test_stop_clears_a_stuck_awaiting_input_flag below for why Stop now
+    clears. The no-create half is unchanged and still load-bearing.
+    """
     r = _run({"session_id": "sess-8", "hook_event_name": "Stop"}, home)
     assert r.returncode == 0, r.stderr
     assert not _flag_path(home, "sess-8").exists()
+
+
+# ── Answering a permission prompt (Pink-2026-08-31) ────────────────────
+# Answering a permission prompt -- yes OR no -- fires no hook of its own.
+# With only UserPromptSubmit/SessionEnd clearing the flag, approving a
+# prompt and letting Claude carry on left it set indefinitely: confirmed
+# live in claude_hook.log (session 8ced357d) as a nine-minute wave at a
+# session that was happily working, with approval_needed's PRIME priority
+# masking every working/thinking state behind it the whole time.
+def test_post_tool_use_clears_the_awaiting_input_flag(home):
+    """The APPROVAL path: a tool actually executed, so whatever permission
+    question was pending has been answered and the session is no longer
+    blocked on the user."""
+    _run({"session_id": "sess-p1", "hook_event_name": "Notification",
+          "notification_type": "permission_prompt"}, home)
+    assert _flag_path(home, "sess-p1").exists()
+
+    r = _run({"session_id": "sess-p1", "hook_event_name": "PostToolUse",
+              "tool_name": "Bash"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _flag_path(home, "sess-p1").exists()
+
+
+def test_stop_clears_a_stuck_awaiting_input_flag(home):
+    """The DENIAL path: denying runs no tool, so PostToolUse never fires.
+    Stop is what covers it -- control came back, so nothing is blocked on a
+    dialog any more."""
+    _run({"session_id": "sess-p2", "hook_event_name": "Notification",
+          "notification_type": "permission_prompt"}, home)
+    assert _flag_path(home, "sess-p2").exists()
+
+    r = _run({"session_id": "sess-p2", "hook_event_name": "Stop"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _flag_path(home, "sess-p2").exists()
+    # Stop's own signal must still land -- clearing is additive, not a swap.
+    assert _finished_path(home, "sess-p2").exists()
+
+
+def test_idle_prompt_rearms_after_stop_cleared_the_flag(home):
+    """Clearing on Stop must not suppress a genuine "you stepped away" wave.
+    idle_prompt fires ~60s AFTER Stop on its own clock, and has to be able to
+    re-arm the flag Stop just cleared."""
+    _run({"session_id": "sess-p3", "hook_event_name": "Stop"}, home)
+    assert not _flag_path(home, "sess-p3").exists()
+
+    _run({"session_id": "sess-p3", "hook_event_name": "Notification",
+          "notification_type": "idle_prompt"}, home)
+    assert _flag_path(home, "sess-p3").exists()
+
+
+def test_post_tool_use_on_nonexistent_flag_is_a_noop(home):
+    """PostToolUse fires on EVERY tool call, so the overwhelmingly common
+    case is no flag to clear. It must be silent and cheap, never an error."""
+    r = _run({"session_id": "sess-p4", "hook_event_name": "PostToolUse",
+              "tool_name": "Read"}, home)
+    assert r.returncode == 0, r.stderr
+    assert not _flag_path(home, "sess-p4").exists()
+
+
+def test_post_tool_use_only_clears_its_own_session(home):
+    """The reason this beats watcher.py's self-heal, which is gated on
+    len(find_claude_code_processes()) <= 1 precisely because it cannot tell
+    whose activity resolved whose wait: the hook payload carries the
+    session_id, so a busy session can never cancel another one's wave."""
+    for sid in ("sess-p5", "sess-p6"):
+        _run({"session_id": sid, "hook_event_name": "Notification",
+              "notification_type": "permission_prompt"}, home)
+
+    _run({"session_id": "sess-p5", "hook_event_name": "PostToolUse",
+          "tool_name": "Bash"}, home)
+
+    assert not _flag_path(home, "sess-p5").exists()
+    assert _flag_path(home, "sess-p6").exists(), (
+        "another session's genuinely-pending wave must survive")
 
 
 def test_multiple_stop_sessions_are_independent(home):
