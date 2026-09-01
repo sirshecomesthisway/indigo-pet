@@ -139,8 +139,11 @@ BUBBLE_LINES: dict[str, LineSpec] = {
     "sprint_end":   ["*pant pant*", "phew", "x_x"],
     "drowsy":       ["*yawn*", "sleepy...", "mmh"],
 
-    # registered but unwired in v1
-    "like":         ["~"],
+    # Pink-2026-08-31: "like" is now wired -- fired by
+    # PetApi.acknowledge_approval() when a dblclick/heart lands while
+    # she's waving the approval_needed flag ("I saw you, calming
+    # down"). "sleeping" stays registered but unwired in v1.
+    "like":         ["~", "gotcha!", "okay okay!", "noted~", "seen ya"],
     "sleeping":     ["zzz...", "*snore*"],
 
     # Idle chatter (2026-08-18) -- fired occasionally by RoutineController
@@ -158,7 +161,15 @@ BUBBLE_LINES: dict[str, LineSpec] = {
                      "send help. or snacks", "procrastinating hard",
                      "*polishes suckers*", "*this is fine*",
                      "not stuck. resting", "*naps standing up*",
-                     "could use a snack"],
+                     "could use a snack",
+                     # Pink-2026-08-31: more of the same idle/bored voice.
+                     "*idly floats*", "eight arms, zero plans",
+                     "just vibing here", "is this a screensaver?",
+                     "*yawns, mostly*", "watching the cursor blink",
+                     "*pretends to work*", "so... anything?",
+                     "ink levels: fine", "*floats sideways*",
+                     "clock is not moving", "*stares at nothing*",
+                     "still floating", "low tide today"],
 
     # "Still working" reannounce fallback (2026-08-27k) -- fired by
     # _maybe_reannounce_working when there's no concrete shell command to
@@ -180,6 +191,26 @@ BUBBLE_LINES: dict[str, LineSpec] = {
                        "writing the summary", "almost there",
                        "polishing it", "final touches",
                        "closing things out", "buttoning up"],
+
+    # Pink-2026-08-31: octopus-personality flavor for the same
+    # working_generic/working_wrapup fallback pool (see on_still_working)
+    # -- added after a report that the "working" reannounce beat could
+    # get stepped on by idle_chatter's "8 arms, 0 tasks" and friends,
+    # which read as bored/idle while she's actually mid-task. These are
+    # deliberately the busy inverse of that idle voice (same dry/fond
+    # octopus-desk-pet humor, but leaning into "swamped", not "bored").
+    "working_squid": ["*eight arms, one task*", "*all arms busy*",
+                      "ink's flowing", "no arms free rn",
+                      "*tentacle traffic jam*", "grinding away",
+                      "*ink-stained already*", "hands full. all 8",
+                      "*deep in the ink*", "arms full, no complaints",
+                      # Pink-2026-08-31: more of the same busy voice.
+                      "*all suckers on deck*", "eight arms, zero rest",
+                      "*ink flying*", "*multi-arm multitask*",
+                      "swamped (happily)", "*typing with six arms*",
+                      "arms everywhere, useful", "*full tentacle sprint*",
+                      "busy is an understatement", "*ink trail behind me*",
+                      "no time to float", "*eight-armed efficiency*"],
 }
 
 # ----------------------------------------------------------------------
@@ -279,10 +310,13 @@ def _format_concern_reason(reason: str) -> Optional[str]:
 # Pink-2026-08-30: "claude celebrating" briefly removed from this table
 # (Stop fires every turn, not just "the task is done", so it was moved
 # entirely to GROOVING -- Pink report: celebrating mid-task on routine
-# turns). Re-added the same day once watcher.py grew a real way to tell
-# them apart: claude_settled_celebrating only fires once claude_groove_
-# settle_sec has passed since Stop with no shell/file evidence of
-# renewed work -- see StateMachine._compute_inner branches 2/3.
+# turns). A same-day settle-window promotion attempt (GROOVING ->
+# CELEBRATING after N seconds of silence) turned out to have the same
+# bug just delayed -- ordinary reply latency outlasts any reasonable
+# window. Re-added for good once watcher.py grew a real way to tell them
+# apart: claude_task_complete, an explicit marker Claude itself writes
+# (scripts/squid_task_complete.py) only when the whole task is done, no
+# timer involved -- see StateMachine._compute_inner branches 2/3.
 #
 # codex's celebrate signal is UNCHANGED (CodexDetector.is_celebrating()
 # is still a hardcoded False, "no reliable signal yet" -- Codex has no
@@ -293,8 +327,9 @@ def _format_concern_reason(reason: str) -> Optional[str]:
 # safe to state as fact.
 _CELEBRATE_REASON_BUBBLES = {
     # Pink-2026-08-30: re-added -- claude celebrating is real again now
-    # that watcher.py distinguishes it from routine turn completion (see
-    # claude_settled_celebrating in StateMachine._compute_inner).
+    # that watcher.py distinguishes it from routine turn completion via
+    # an explicit marker (see claude_task_complete in
+    # StateMachine._compute_inner), not a timer.
     "claude celebrating": "finished with claude!",
     "codex celebrating": "ooh, codex!",
     "git celebrating": "nice, fresh commit!",
@@ -659,7 +694,8 @@ class Observer:
             specific = _shell_cmd_bubble(shell_cmdline)
             if specific is not None:
                 return specific
-        pool = BUBBLE_LINES["working_generic"] + BUBBLE_LINES["working_wrapup"]
+        pool = (BUBBLE_LINES["working_generic"] + BUBBLE_LINES["working_wrapup"]
+                + BUBBLE_LINES["working_squid"])
         return random.choice(pool)
 
     # ------------------------------------------------------------------

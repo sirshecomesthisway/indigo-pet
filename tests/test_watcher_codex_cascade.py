@@ -13,16 +13,21 @@ from squid_pet.detectors import CodexDetector
 
 
 def install_world(monkeypatch, idle=0.0):
-    """Isolate BOTH Claude Code signal dirs from the real ~/.squid-pet/
+    """Isolate every Claude Code signal dir from the real ~/.squid-pet/
     claude_*/ -- without this, a real live flag on the developer's own
     machine (from this very session's own Notification/Stop hook
     activity) overrides every test here via approval_needed/celebrating.
     Confirmed live: this file was missing the claude_finished isolation
     that test_watcher_claude_code_cascade.py already had, and a real
-    Stop-hook flag from this session leaked in and flipped a test."""
+    Stop-hook flag from this session leaked in and flipped a test.
+    Pink-2026-08-30: same leak via CLAUDE_TASK_COMPLETE_DIR -- worse here,
+    since these tests also fake time.time() to a small fixed epoch, so a
+    real on-disk marker's real 2026 mtime produced a NEGATIVE age that
+    trivially passed any freshness check, always reading as fresh."""
     monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
     monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
     monkeypatch.setattr(watcher, "CLAUDE_FINISHED_DIR", "/nonexistent")
+    monkeypatch.setattr(watcher, "CLAUDE_TASK_COMPLETE_DIR", "/nonexistent")
 
 
 def _codex_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),

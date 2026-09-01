@@ -14,17 +14,22 @@ from squid_pet.watcher import StateMachine
 from squid_pet.detectors import ClaudeCodeDetector
 
 
-def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent", recap_dir="/nonexistent"):
+def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent", recap_dir="/nonexistent",
+                   task_complete_dir="/nonexistent"):
     """Stub the non-detector-owned signals StateMachine still reads
     directly: idle time, the Claude Code awaiting-input directory, the
-    Claude Code just-finished directory, and the Claude Code recapping
-    directory (each must be isolated from the real ~/.squid-pet/claude_*/,
-    or a live flag on the developer's own machine overrides every test
-    here via approval_needed/celebrating/thinking)."""
+    Claude Code just-finished directory, the Claude Code recapping
+    directory, and the Claude Code explicit-task-complete directory (each
+    must be isolated from the real ~/.squid-pet/claude_*/, or a live flag
+    on the developer's own machine overrides every test here via
+    approval_needed/celebrating/thinking -- task_complete_dir especially,
+    since scripts/squid_task_complete.py is meant to be invoked for real
+    on this very machine)."""
     monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
     monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
     monkeypatch.setattr(watcher, "CLAUDE_FINISHED_DIR", finished_dir)
     monkeypatch.setattr(watcher, "CLAUDE_RECAPPING_DIR", recap_dir)
+    monkeypatch.setattr(watcher, "CLAUDE_TASK_COMPLETE_DIR", task_complete_dir)
 
 
 def _claude_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),
@@ -154,15 +159,22 @@ def test_claude_detector_absent_falls_to_idle(monkeypatch):
 #
 # Pink-2026-08-30: Stop hook fires on EVERY turn completion, not "the
 # whole task is done" -- confirmed live as celebrating firing mid-task on
-# routine turns. First moved entirely off CELEBRATING onto GROOVING, but
-# that lost real completions too (Pink: "grooving 是任務中途有進展，
-# celebrating 是這個任務結束了"). Settled on a two-phase read of the same
-# Stop flag instead: GROOVING immediately, promoted to CELEBRATING once
-# claude_groove_settle_sec passes with no shell/file evidence Claude
-# resumed -- see claude_settled_celebrating in watcher.py's cascade.
-# These tests updated accordingly; the reachability regression they
-# originally guarded against (the branch being silently dead) is the same
-# concern either way.
+# routine turns. First moved entirely off CELEBRATING onto GROOVING, then
+# tried a settle-window promotion (GROOVING -> CELEBRATING after N
+# seconds with nothing resumed) -- but ordinary reply latency (reading,
+# thinking, typing) is itself almost always longer than any reasonable
+# settle window, so that promoted nearly every turn to celebrating too,
+# just delayed -- confirmed live ("I saw squid just groove then
+# celebrated. this duplicated"). Elapsed silence can't distinguish
+# "mid-task pause" from "actually done"; they look identical from
+# outside. Settled on: Stop ALWAYS means grooving, full stop -- no
+# auto-promotion. Celebrating now requires an explicit signal Claude
+# itself writes (scripts/squid_task_complete.py, keyed by
+# CLAUDE_TASK_COMPLETE_DIR) only when it judges the whole task done, same
+# tier as Git's fresh-commit signal or Codex's own celebrate edge. These
+# tests updated accordingly; the reachability regression they originally
+# guarded against (the branch being silently dead) is the same concern
+# either way.
 def _write_finished_flag(finished_dir: Path, session_id: str, mtime: float) -> None:
     finished_dir.mkdir(parents=True, exist_ok=True)
     path = finished_dir / session_id
@@ -220,22 +232,17 @@ def test_claude_stop_hook_flag_fires_grooving(monkeypatch, tmp_path):
     assert st2.state_reason == "claude grooving"
 
 
-def test_claude_grooving_settles_into_celebrating_then_expires(monkeypatch, tmp_path):
-    """Pink-2026-08-30: grooving and celebrating are no longer mutually
-    exclusive outcomes of the same Stop flag -- they're two phases of it.
-    A Stop with nothing resumed since starts as GROOVING (still might be
-    mid-task), and once claude_groove_settle_sec passes with still no
-    resumed work, promotes to CELEBRATING (the turn that ended really
-    was the last one) for the remainder of celebrate_hold_sec."""
+def test_claude_stop_flag_never_auto_promotes_to_celebrating(monkeypatch, tmp_path):
+    """Pink-2026-08-30: elapsed silence since a Stop can never distinguish
+    "mid-task pause" from "actually done" (ordinary reply latency covers
+    both). Grooving must stay grooving no matter how long it's been --
+    only the flag's own freshness expiry (celebrate_hold_sec) ends it,
+    never a promotion to celebrating."""
     finished_dir = tmp_path / "claude_finished"
     install_world(monkeypatch, finished_dir=str(finished_dir))
     monkeypatch.setattr(
         "squid_pet.config.get",
-        lambda k, default=None: (
-            20 if k == "celebrate_hold_sec"
-            else 8 if k == "claude_groove_settle_sec"
-            else default
-        ),
+        lambda k, default=None: 20 if k == "celebrate_hold_sec" else default,
     )
     now_ref = {"v": 1_000_000.0}
 
@@ -255,19 +262,51 @@ def test_claude_grooving_settles_into_celebrating_then_expires(monkeypatch, tmp_
     st = sm.compute()
     assert st.state == "grooving" and st.state_reason == "claude grooving"
 
-    now_ref["v"] += 5  # still within the 8s settle window
+    now_ref["v"] += 19  # 19s since Stop, still within the 20s celebrate_hold_sec
     st = sm.compute()
-    assert st.state == "grooving", "must not promote before claude_groove_settle_sec elapses"
-
-    now_ref["v"] += 5  # 10s since Stop: past settle (8s), still within hold (20s)
-    st = sm.compute()
-    assert st.state == "celebrating" and st.state_reason == "claude celebrating", (
-        f"nothing resumed for >claude_groove_settle_sec -- the turn that "
-        f"ended must now read as genuinely finished, not still grooving; "
-        f"got {st.state!r} (reason={st.state_reason!r})"
+    assert st.state == "grooving", (
+        f"a Stop flag must never auto-promote to celebrating no matter "
+        f"how much silence follows -- got {st.state!r}"
     )
 
-    now_ref["v"] += 11  # 21s since Stop: past the 20s celebrate_hold_sec
+    now_ref["v"] += 2  # 21s since Stop: past celebrate_hold_sec, flag goes stale
+    assert sm.compute().state == "idle"
+
+
+def test_explicit_task_complete_marker_fires_celebrating(monkeypatch, tmp_path):
+    """The only thing that should promote to celebrating: an explicit
+    marker Claude itself writes (scripts/squid_task_complete.py) when it
+    judges the whole task -- not just this turn -- done. No Stop flag
+    needed at all for this to fire."""
+    task_complete_dir = tmp_path / "claude_task_complete"
+    install_world(monkeypatch, task_complete_dir=str(task_complete_dir))
+    monkeypatch.setattr(
+        "squid_pet.config.get",
+        lambda k, default=None: 20 if k == "celebrate_hold_sec" else default,
+    )
+    now_ref = {"v": 1_000_000.0}
+
+    claude = ClaudeCodeDetector(
+        find_processes_fn=lambda: ["fake-claude-proc"],
+        aggregate_cpu_fn=lambda p: 0.0,
+        has_active_shell_children_fn=lambda p: False,
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+    sm = StateMachine(detectors=[claude])
+    monkeypatch.setattr(watcher.time, "time", lambda: now_ref["v"])
+
+    task_complete_dir.mkdir(parents=True, exist_ok=True)
+    marker = task_complete_dir / "sess-1"
+    marker.write_text("done")
+    os.utime(marker, (now_ref["v"], now_ref["v"]))
+
+    st = sm.compute()
+    assert st.state == "celebrating" and st.state_reason == "claude celebrating"
+
+    now_ref["v"] += 21  # past celebrate_hold_sec
     assert sm.compute().state == "idle"
 
 
@@ -280,11 +319,7 @@ def test_claude_resumed_work_suppresses_groove_and_celebrate(monkeypatch, tmp_pa
     install_world(monkeypatch, finished_dir=str(finished_dir))
     monkeypatch.setattr(
         "squid_pet.config.get",
-        lambda k, default=None: (
-            20 if k == "celebrate_hold_sec"
-            else 8 if k == "claude_groove_settle_sec"
-            else default
-        ),
+        lambda k, default=None: 20 if k == "celebrate_hold_sec" else default,
     )
     now_ref = {"v": 1_000_000.0}
     state = {"shell_active": False}

@@ -224,13 +224,24 @@ def test_compute_does_not_fire_when_no_claude_or_tpa_flag(tmp_claude_dir):
 # "your turn" and re-firing the OS notification while Claude was visibly,
 # actively working. Fix: our own real activity signal (working/thinking)
 # self-heals the stale flag.
+def _backdate(path, seconds):
+    """Set a flag file's mtime `seconds` into the past, past self-heal's
+    minimum-age grace window, so it reads as genuinely stale rather than
+    just-written."""
+    import os
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
 def test_stale_flag_self_heals_when_genuinely_working(tmp_claude_dir):
     flag = tmp_claude_dir / "sess-stale"
     flag.write_text("permission_prompt")
+    _backdate(flag, watcher.SELF_HEAL_MIN_FLAG_AGE_SEC + 1)
 
     sm = watcher.StateMachine()
     sm._compute_inner = lambda: watcher.PetState(state="working", message="x")
     with patch.object(watcher, "_fire_approval_notification") as mock_notify, \
+         patch.object(watcher, "find_claude_code_processes", return_value=["proc1"]), \
          _patched_config():
         st = sm.compute()
 
@@ -246,15 +257,84 @@ def test_stale_flag_self_heals_when_thinking(tmp_claude_dir):
     not just 'working' (shell/file evidence)."""
     flag = tmp_claude_dir / "sess-stale-2"
     flag.write_text("idle_prompt")
+    _backdate(flag, watcher.SELF_HEAL_MIN_FLAG_AGE_SEC + 1)
 
     sm = watcher.StateMachine()
     sm._compute_inner = lambda: watcher.PetState(state="thinking", message="x")
     with patch.object(watcher, "_fire_approval_notification"), \
+         patch.object(watcher, "find_claude_code_processes", return_value=["proc1"]), \
          _patched_config():
         st = sm.compute()
 
     assert st.state == "thinking"
     assert not flag.exists()
+
+
+# ── Regression: 2026-08-31 -- self-heal ate a flag on the SAME tick it
+# was written -- caught live during a demo: Squid never showed
+# approval_needed at all (not even for one tick) for a genuinely-pending
+# AskUserQuestion prompt, because Claude Code was still visibly
+# streaming/active the instant the flag appeared, so self-heal reaped it
+# before the approval-needed block ever got to see it. Self-heal exists
+# to clear a flag stuck behind ongoing work Pink is actively watching --
+# not to reap something raised a moment ago -- so a fresh flag must
+# survive at least SELF_HEAL_MIN_FLAG_AGE_SEC before self-heal may act.
+def test_fresh_flag_survives_self_heal_and_fires_approval_needed(tmp_claude_dir):
+    flag = tmp_claude_dir / "sess-brand-new"
+    flag.write_text("permission_prompt")  # mtime == now, well under the grace window
+
+    sm = watcher.StateMachine()
+    sm._compute_inner = lambda: watcher.PetState(state="thinking", message="x")
+    with patch.object(watcher, "_fire_approval_notification") as mock_notify, \
+         patch.object(watcher, "find_claude_code_processes", return_value=["proc1"]), \
+         _patched_config():
+        st = sm.compute()
+
+    assert flag.exists(), (
+        "a flag written this tick must not be self-healed away before "
+        "it's ever had a chance to be seen"
+    )
+    assert st.state == "approval_needed", (
+        f"a freshly-raised prompt must fire approval_needed on its first "
+        f"tick, even if Claude Code still reads as working/thinking; "
+        f"got {st.state!r}"
+    )
+    mock_notify.assert_called_once()
+
+
+# ── Regression: 2026-08-30 -- self-heal ate a DIFFERENT session's
+# genuinely-pending approval -- Pink caught live: session A asked for a
+# decision and was waiting, but session B (this very conversation) was
+# actively working, so self-heal's aggregate "any Claude Code activity
+# means every pending wait is resolved" cleared session A's flag before
+# approval_needed ever got a chance to fire. Self-heal's whole premise
+# ("you're actively watching it work") only holds for a single active
+# session -- with 2+ Claude Code processes alive there's no way to tell
+# whose activity is whose (no PID in the hook payload), so it must not
+# fire at all in that case; let the real removal paths (UserPromptSubmit,
+# SessionEnd, stale-timeout, manual "calm Squid") handle it instead.
+def test_stale_flag_does_not_self_heal_with_multiple_sessions_active(tmp_claude_dir):
+    flag = tmp_claude_dir / "sess-other-session-waiting"
+    flag.write_text("permission_prompt")
+
+    sm = watcher.StateMachine()
+    sm._compute_inner = lambda: watcher.PetState(state="working", message="x")
+    with patch.object(watcher, "_fire_approval_notification") as mock_notify, \
+         patch.object(watcher, "find_claude_code_processes",
+                       return_value=["proc-a", "proc-b"]), \
+         _patched_config():
+        st = sm.compute()
+
+    assert flag.exists(), (
+        "with 2+ Claude Code processes alive, self-heal can't tell whose "
+        "activity resolved whose wait -- must not clear another "
+        "session's flag"
+    )
+    assert st.state == "approval_needed", (
+        f"the genuinely-pending session must still get its attention "
+        f"alert; got {st.state!r}"
+    )
+    mock_notify.assert_called_once()
 
 
 def test_flag_written_after_going_idle_still_fires_normally(tmp_claude_dir):

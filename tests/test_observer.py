@@ -218,11 +218,12 @@ def test_recapping_bubble_does_not_repeat_while_still_recapping(obs):
 
 
 def test_celebrating_names_claude_deterministically(obs):
-    """Pink-2026-08-30: "claude celebrating" is real again -- watcher.py
-    now only sets it once claude_groove_settle_sec has passed since the
-    Stop hook fired with no shell/file evidence of renewed work (see
-    claude_settled_celebrating in StateMachine._compute_inner), so it no
-    longer means "just any turn ended" the way the raw Stop flag did."""
+    """Pink-2026-08-30: "claude celebrating" now only fires off an
+    explicit marker Claude itself writes (scripts/squid_task_complete.py)
+    when it judges the whole task done -- see claude_task_complete in
+    StateMachine._compute_inner -- so it no longer means "just any turn
+    ended" the way the raw Stop flag did, and never fires off elapsed
+    silence alone."""
     result = obs.on_state_change(
         "working", "celebrating", state_reason="claude celebrating",
     )
@@ -435,7 +436,8 @@ def test_still_working_with_no_shell_cmd_falls_back_to_generic_pool(obs):
     as ambient presence instead, per a "too quiet" report. Falls back for
     both a falsy shell_cmdline (empty list) and None."""
     from squid_pet.observer import BUBBLE_LINES as _BL
-    pool = set(_BL["working_generic"]) | set(_BL["working_wrapup"])
+    pool = (set(_BL["working_generic"]) | set(_BL["working_wrapup"])
+            | set(_BL["working_squid"]))
     assert obs.on_still_working(None) in pool
     assert obs.on_still_working([]) in pool
 

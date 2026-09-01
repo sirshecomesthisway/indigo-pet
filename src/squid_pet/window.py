@@ -43,6 +43,15 @@ WINDOW_HEIGHT = 300  # was 220; bumped to give hearts headroom above sprite
 # similarly present).
 WORKING_REANNOUNCE_SEC = 30.0
 
+# Pink-2026-08-31: dblclick-while-waving acknowledge (see
+# acknowledge_approval) shows the "gotcha!" bubble immediately but holds
+# off actually calming the wave for this long, so she visibly keeps
+# waving WHILE the bubble is up instead of the wave stopping and the
+# bubble appearing in the same instant -- one thing changing on screen
+# at a time reads as a clear "she saw the ack" beat rather than a
+# blink-and-you-miss-it flash.
+ACKNOWLEDGE_DISMISS_DELAY_SEC = 1.0
+
 # Pink-2026-08-30: once mood settles into drowsy/sleeping, nothing used to
 # wake her again short of real CC/codex activity (agent_idle_seconds reset) or
 # a user poke/sprint -- if you stepped away, she was "asleep forever". Every
@@ -850,10 +859,24 @@ class PetApi:
             self._pending_bubble = text
 
     def _fire_idle_chatter(self) -> None:
-        """RoutineController's chatter_cb -- called (at CHATTER_PROBABILITY
-        odds) during idle 'rest' beats. Not a state transition, so this
-        bypasses on_state_change entirely and goes straight through the
-        same generic random-line picker poke/shake/sprint use."""
+        """RoutineController's chatter_cb -- fires on a ~26-34s timer
+        regardless of state (see routine.py's _should_pause), not just
+        during genuine idle. Not a state transition, so this bypasses
+        on_state_change entirely and goes straight through the same
+        generic random-line picker poke/shake/sprint use.
+
+        Pink-2026-08-31: skip while state=="working" -- that beat is
+        already owned by _maybe_reannounce_working on the same ~30s
+        cadence (WORKING_REANNOUNCE_SEC), which picks working-flavored
+        lines (working_generic/working_wrapup) or a concrete shell
+        command. Without this guard the two timers race and idle_chatter
+        sometimes wins, popping an idle-flavored line ("8 arms, 0
+        tasks") while she's actually mid-task -- confusing since it
+        reads as "nothing to do" during a real working stretch."""
+        with self._lock:
+            current_state = self._latest.state
+        if current_state == "working":
+            return
         bubble = self._observer.on_interaction("idle_chatter")
         if bubble is not None:
             with self._lock:
@@ -1200,21 +1223,26 @@ class PetApi:
         except Exception:
             return False
 
-    def _menu_calm_squid(self) -> None:
-        """Menu action: manually snooze all in-flight awaiting_input
-        waves. Reuses the direct-signal snooze mechanic -- backdates
-        flag first-seen times past the snooze window so the eligibility
-        filter drops them on the next tick. Auto re-arm still works:
-        waves come back for genuinely new work (flag disappears when
-        you reply, reappears when the session hits its next wait with a
-        fresh birth-time clock)."""
+    def _calm_squid(self) -> int:
+        """Shared "calm Squid" mechanic: snoozes all in-flight
+        awaiting_input waves. Reuses the direct-signal snooze mechanic --
+        backdates flag first-seen times past the snooze window so the
+        eligibility filter drops them on the next tick. Auto re-arm
+        still works: waves come back for genuinely new work (flag
+        disappears when you reply, reappears when the session hits its
+        next wait with a fresh birth-time clock).
+
+        Shared between the right-click menu action (_menu_calm_squid)
+        and the dblclick-while-waving acknowledge gesture
+        (acknowledge_approval) -- both are "I saw it, quiet down" with
+        the same underlying effect, just a different trigger."""
         from . import watcher as _w
         try:
             n = _w.snooze_all_awaiting_now()
         except Exception as e:
             print(f"[squid-pet] calm squid failed: {e}", flush=True)
             self._emit_hint("calm failed")
-            return
+            return 0
         if n == 0:
             self._emit_hint("nothing to calm")
         else:
@@ -1225,6 +1253,61 @@ class PetApi:
             f"[squid-pet] manual de-escalate: snoozed {n} awaiting session(s)",
             flush=True,
         )
+        return n
+
+    def _menu_calm_squid(self) -> None:
+        """Menu action: manually snooze all in-flight awaiting_input waves."""
+        self._calm_squid()
+
+    def acknowledge_approval(self) -> dict:
+        """JS-exposed: dblclick while state=="approval_needed" is an
+        unambiguous "I saw you, I'm on it" gesture (paired with the
+        heart/like animation in index.html) -- calm the wave instead of
+        leaving it to nag for up to the full snooze window. No-ops
+        (status="not-waving") for a dblclick at any other time, so the
+        plain poke+heart behavior there is unaffected.
+
+        Reuses the same snooze mechanic as the right-click 'Calm Squid'
+        menu action (see _calm_squid) rather than deleting the
+        awaiting-input flag file outright -- deleting would erase the
+        ground-truth signal 'squid why' and the menu's own waving-count
+        rely on to tell "seen and deferred" apart from "nothing
+        pending" (see watcher.snooze_all_awaiting_now's docstring).
+
+        Fires the dormant "like" bubble line on top of the usual hint
+        pill, since this path is specifically the dblclick/heart
+        gesture, not the menu. The bubble text is returned directly
+        (not just stashed in self._pending_bubble for the next poll)
+        because the watcher thread ticks independently every
+        POLL_INTERVAL_SEC (~1s) -- if her natural next state (often
+        "working", since that's frequently WHY you just acknowledged
+        her) computes before the frontend's next ~800ms poll observes
+        this bubble, that tick's own on_state_change bubble silently
+        overwrites it and the ack is never seen. Returning it lets the
+        caller show it immediately off the RPC response instead of
+        racing the poll loop -- see the dblclick handler in
+        index.html.
+
+        Pink-2026-08-31: the actual calm (_calm_squid, which is what
+        makes the wave stop) is deliberately deferred by
+        ACKNOWLEDGE_DISMISS_DELAY_SEC via a background timer -- the
+        bubble still appears instantly, but she keeps visibly waving
+        for that beat first. Firing both in the same instant made the
+        wave-stop and the bubble compete for attention at once; this
+        way only the bubble is new at t=0, and the wave settling a
+        second later reads as her having noticed, not as a hard cut."""
+        with self._lock:
+            current_state = self._latest.state
+        if current_state != "approval_needed":
+            return {"status": "not-waving", "bubble": None}
+        bubble = self._observer.on_interaction("like")
+        if bubble is not None:
+            with self._lock:
+                self._pending_bubble = bubble
+        timer = threading.Timer(ACKNOWLEDGE_DISMISS_DELAY_SEC, self._calm_squid)
+        timer.daemon = True
+        timer.start()
+        return {"status": "calmed", "bubble": bubble}
 
     def _menu_sprint_perimeter(self) -> None:
         """Funny: sprint through all 4 corners CW. Background thread."""

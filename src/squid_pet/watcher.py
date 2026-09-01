@@ -299,6 +299,19 @@ CLAUDE_AWAITING_INPUT_DIR = os.path.join(
 )
 CLAUDE_AWAITING_INPUT_STALE_SEC = 7200.0  # 2h -- crashed-session disk cleanup only
 _CLAUDE_SESSION_SNOOZE_SEC = 120.0  # once seen & deferred this long, quiet down until it re-arms
+# Pink-2026-08-31: minimum flag age before self-heal (below) may reap it.
+# Real bug caught live during a demo: a flag written THIS tick (e.g. from
+# a permission_prompt Notification) could be self-healed away on the SAME
+# tick if the underlying cascade state already read working/thinking --
+# e.g. Claude Code still visibly streaming/active right as the prompt is
+# raised. Result: approval_needed never fired even once, not even for a
+# single tick -- the "your turn" wave and OS notification silently never
+# happened for a genuinely-pending, freshly-raised prompt. Self-heal's
+# actual job is clearing a flag that's been stuck while Pink is ACTIVELY
+# WATCHING ongoing work resume -- not reaping something raised a moment
+# ago -- so it must not act until a flag has survived a few real poll
+# ticks (POLL_INTERVAL_SEC == 1.0) untouched.
+SELF_HEAL_MIN_FLAG_AGE_SEC = 3.0
 _CLAUDE_SESSION_FLAG_FIRST_SEEN: dict[str, float] = {}
 
 
@@ -446,6 +459,45 @@ def claude_sessions_recapping() -> list[str]:
     return _scan_session_flag_dir(
         CLAUDE_RECAPPING_DIR, CLAUDE_RECAPPING_STALE_SEC, CLAUDE_RECAPPING_FRESH_SEC
     )
+
+
+# ── "task complete" flag (Pink-2026-08-30) ──────────────────────────────
+# Unlike every other flag above (all driven by claude_pet_hook.py off a
+# real Claude Code hook event), this one is written by scripts/
+# squid_task_complete.py -- invoked DELIBERATELY by Claude itself via a
+# shell command when it judges the whole task (not just the turn that
+# just ended) genuinely done. Root cause this replaces: the Stop hook
+# fires identically on every turn, mid-task or final, so no amount of
+# elapsed-silence heuristics on it can tell the two apart (ordinary reply
+# latency -- reading, thinking, typing -- covers both). Only Claude
+# itself actually knows which one just happened; this is that explicit
+# signal, same tier as Git's fresh-commit celebrate or Codex's own edge.
+# No message/transcript content involved, consistent with this project's
+# privacy stance.
+CLAUDE_TASK_COMPLETE_DIR = os.path.join(
+    os.path.expanduser("~"), ".squid-pet", "claude_task_complete"
+)
+CLAUDE_TASK_COMPLETE_STALE_SEC = 7200.0  # 2h -- crash-safety disk cleanup only
+CLAUDE_TASK_COMPLETE_FRESH_SEC_DEFAULT = 20.0  # shared default with celebrate_hold_sec config
+
+
+def claude_task_marked_complete_recently(now: float | None = None) -> bool:
+    """True iff any session has a fresh explicit task-complete marker
+    (see the module comment above). Freshness window matches
+    celebrate_hold_sec (hot-reloadable), same knob that controls how
+    long the celebrating sprite-state holds visually.
+    """
+    if now is None:
+        now = time.time()
+    try:
+        from . import config as _cfg
+        fresh_sec = float(_cfg.get("celebrate_hold_sec", CLAUDE_TASK_COMPLETE_FRESH_SEC_DEFAULT))
+    except Exception:
+        fresh_sec = CLAUDE_TASK_COMPLETE_FRESH_SEC_DEFAULT
+    session_ids = _scan_session_flag_dir(
+        CLAUDE_TASK_COMPLETE_DIR, CLAUDE_TASK_COMPLETE_STALE_SEC, fresh_sec
+    )
+    return bool(session_ids)
 
 
 def filter_eligible_claude_sessions(session_ids: list[str]) -> list[str]:
@@ -758,6 +810,18 @@ class StateMachine:
         # disambiguate which session is the one now active -- but far
         # better than trusting a hook event that may simply never fire.
         #
+        # Pink-2026-08-30: that coarseness has a real failure mode with
+        # multiple concurrent Claude Code sessions -- caught live: session
+        # A asked for a decision and was genuinely waiting, but session B
+        # (a different window, actively being used) was "working", so
+        # self-heal cleared session A's flag before approval_needed ever
+        # got a chance to fire (attention_needed should take PRIME, not
+        # get silently eaten). With 2+ processes alive there's no way to
+        # tell whose activity resolved whose wait, so self-heal now only
+        # runs when at most one Claude Code process is alive -- the exact
+        # single-session case ("you're actively watching it work",
+        # singular) it was designed for.
+        #
         # awaiting_sessions_raw is only re-scanned from disk (a second
         # syscall) when self-heal actually had something to clean up --
         # the common case (nothing awaiting, or not working/thinking)
@@ -767,11 +831,18 @@ class StateMachine:
         # disk -- rather than assuming the whole loop succeeded and
         # setting the list to [] -- is what keeps the APPROVAL-NEEDED
         # block below correct if some entries didn't actually clear.
-        if st.state in ("working", "thinking") and awaiting_sessions_raw:
+        if (st.state in ("working", "thinking") and awaiting_sessions_raw
+                and len(find_claude_code_processes()) <= 1):
             try:
                 for sid in awaiting_sessions_raw:
+                    path = os.path.join(CLAUDE_AWAITING_INPUT_DIR, sid)
                     try:
-                        os.unlink(os.path.join(CLAUDE_AWAITING_INPUT_DIR, sid))
+                        if now - os.stat(path).st_mtime < SELF_HEAL_MIN_FLAG_AGE_SEC:
+                            continue  # too fresh -- let it be seen at least once
+                    except OSError:
+                        continue
+                    try:
+                        os.unlink(path)
                     except OSError:
                         pass
                     _CLAUDE_SESSION_FLAG_FIRST_SEEN.pop(sid, None)
@@ -883,10 +954,12 @@ class StateMachine:
             # task or truly final (confirmed live via claude_hook.log --
             # this very session's Stop flag rewrote a dozen+ times across
             # one long conversation), so raw freshness alone can't tell
-            # "made progress" from "actually done". claude_finished_age
-            # is that Stop flag's age; below it feeds a settle window
-            # (claude_groove_settle_sec) that decides GROOVING vs
-            # CELEBRATING -- see branches 2/3.
+            # "made progress" from "actually done" -- and neither can a
+            # settle-window timer on it (ordinary reply latency covers
+            # both cases identically; confirmed live as a second false
+            # positive). claude_finished_age just drives GROOVING now;
+            # CELEBRATING requires the separate explicit
+            # claude_task_complete signal -- see branches 2/3.
             claude_finished_age = claude_finished_freshest_age(now)
         else:
             claude_running = False
@@ -1020,41 +1093,36 @@ class StateMachine:
         # claude_finished_age (set above) can't by itself tell "finished
         # this turn, more coming" from "finished the whole task" -- Stop
         # fires identically either way (confirmed live via
-        # claude_hook.log). Two more signals turn it into a decision:
-        #
-        #   - claude_resumed_work: shell/file evidence that Claude has
-        #     already started doing something new since that Stop. If
-        #     so, the turn that just ended was clearly mid-task -- don't
-        #     show either beat, let branch 4 report WORKING/THINKING.
-        #   - claude_groove_settle_sec (config, default 8s): how long a
-        #     Stop gets the benefit of the doubt as GROOVING before, with
-        #     still no resumed work, it's treated as the last turn and
-        #     promoted to CELEBRATING. Must stay under celebrate_hold_sec
-        #     (the outer bound after which the Stop flag stops counting
-        #     as fresh at all, checked inside claude_finished_age).
-        try:
-            from . import config as _cfg
-            _groove_settle_sec = float(_cfg.get('claude_groove_settle_sec', 8))
-        except Exception:
-            _groove_settle_sec = 8.0
+        # claude_hook.log), and no elapsed-silence heuristic on it can
+        # either: ordinary reply latency (reading, thinking, typing) is
+        # itself almost always longer than any reasonable settle window,
+        # so a timer-based promotion just delays the same false-positive
+        # rather than fixing it (confirmed live -- "groove then celebrate,
+        # duplicated" on nearly every turn). claude_resumed_work (shell/
+        # file evidence Claude already started something new since that
+        # Stop) still suppresses both beats -- that part was never wrong.
+        # Promotion to CELEBRATING now requires claude_task_complete: an
+        # explicit marker Claude itself writes (scripts/
+        # squid_task_complete.py) only when it judges the whole task, not
+        # just this turn, done -- see claude_task_marked_complete_recently.
         claude_resumed_work = claude_shell_active or claude_file_active
         claude_just_stopped = claude_finished_age is not None and not claude_resumed_work
-        claude_settled_celebrating = claude_just_stopped and claude_finished_age >= _groove_settle_sec
-        claude_grooving_now = claude_just_stopped and claude_finished_age < _groove_settle_sec
+        claude_grooving_now = claude_just_stopped
+        claude_task_complete = claude_task_marked_complete_recently(now)
 
-        # ── 2. CELEBRATING ── real milestones: claude_settled_celebrating
-        # (Stop fired and nothing resumed for claude_groove_settle_sec --
-        # see above), codex's own busy->idle edge, any other detector's
-        # (e.g. Git's fresh-commit) celebrate signal, or a manually-armed
+        # ── 2. CELEBRATING ── real milestones: claude_task_complete (an
+        # explicit "whole task done" marker Claude wrote -- see above),
+        # codex's own busy->idle edge, any other detector's (e.g. Git's
+        # fresh-commit) celebrate signal, or a manually-armed
         # self.celebrate_until (force_state / test hook).
         if (
             now < self.celebrate_until
-            or claude_settled_celebrating
+            or claude_task_complete
             or codex_celebrating
             or other_celebrating()
         ):
             st.state = "celebrating"
-            if claude_settled_celebrating:
+            if claude_task_complete:
                 st.state_reason = "claude celebrating"
             elif codex_celebrating:
                 st.state_reason = "codex celebrating"
@@ -1066,9 +1134,11 @@ class StateMachine:
             return st
 
         # ── 3. GROOVING ── a lighter, per-turn "still making progress"
-        # beat. claude_grooving_now (Stop just fired, within
-        # claude_groove_settle_sec, nothing resumed yet -- see above)
-        # fires this; any other detector's is_grooving() also lands here.
+        # beat. claude_grooving_now (Stop just fired, nothing resumed
+        # since -- see above) fires this and ONLY this, no matter how
+        # long it's been -- promotion to celebrating requires the
+        # separate explicit signal, never elapsed time. Any other
+        # detector's is_grooving() also lands here.
         if claude_grooving_now or other_grooving():
             st.state = "grooving"
             st.state_reason = "claude grooving" if claude_grooving_now else "creative burst"

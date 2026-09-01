@@ -49,16 +49,6 @@ DEFAULTS: dict[str, Any] = {
     # entirely (functionally equivalent to llm_bubbles=False but lets
     # you flip the menu toggle without re-enabling network calls).
     "llm_bubbles_daily_cap": 500,
-    # Pink-2026-08-30: how long a Claude Code Stop hook fire shows as the
-    # lighter GROOVING beat before -- provided no shell/file evidence of
-    # renewed work has appeared since -- it's promoted to the full
-    # CELEBRATING beat. See StateMachine._compute_inner branches 2/3: the
-    # Stop hook can't itself distinguish "finished this turn, more to
-    # come" from "finished the whole task", so this settle window is the
-    # proxy -- if nothing resumes within it, the turn that just ended is
-    # treated as the last one. Must stay well under celebrate_hold_sec
-    # (the outer bound on how long the Stop flag counts as fresh at all).
-    "claude_groove_settle_sec": 8,
 }
 
 

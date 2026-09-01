@@ -1116,6 +1116,22 @@ document.addEventListener("dblclick", async (e) => {
         if (window.pywebview?.api?.poke) {
           await window.pywebview.api.poke();
         }
+        // Pink-2026-08-31: dblclick while she's waving the approval_needed
+        // flag is an unambiguous "I saw you" -- calm the wave instead of
+        // leaving it nagging. No-ops (backend checks state) at any other
+        // time, so this doesn't change the plain poke+heart case below.
+        // Bubble text comes back directly on the RPC response and is shown
+        // right here, rather than left for the next ~800ms poll to pick up
+        // from pending_bubble -- the watcher thread ticks independently
+        // every ~1s and her natural next state (often "working") can
+        // overwrite pending_bubble with its own bubble first, silently
+        // swallowing this one.
+        if (currentState === "approval_needed"
+            && window.pywebview?.api?.acknowledge_approval) {
+          const ack = await window.pywebview.api.acknowledge_approval();
+          if (ack?.bubble) maybeShowBubble(ack.bubble);
+          console.log("[squid] dblclick ACK (calmed approval wave)");
+        }
         const sprite = document.getElementById('pet');
         if (sprite) {
           const r = sprite.getBoundingClientRect();
