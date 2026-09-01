@@ -60,7 +60,9 @@ NUDGE_COOLDOWN_SEC = 1.5
 # smaller hop above). "In a row" is bounded purely by a lull -- if she
 # goes CORNER_FLEE_RESET_SEC without a fresh entry, the streak resets.
 CORNER_FLEE_THRESHOLD = 3
-CORNER_FLEE_RESET_SEC = 6.0
+CORNER_FLEE_RESET_SEC = 2.5   # Pink-2026-09-01: was 6.0 -- three
+                              # deliberate grab retries land well
+                              # inside 6s and read as shooing her
 
 # Hover-fade-through (2026-08-27n): hold the cursor over her for
 # HOVER_DWELL_SEC continuously and she fades to HOVER_FADE_ALPHA and
@@ -69,8 +71,25 @@ CORNER_FLEE_RESET_SEC = 6.0
 # triggers above (repeated re-entries), this is a SUSTAINED presence
 # check -- resets the instant the cursor leaves her bbox, not just after
 # a lull.
-HOVER_DWELL_SEC = 1.0
+# Pink-2026-09-01: fade and click-through used to arrive together at
+# HOVER_DWELL_SEC, so any grab slower than one second silently went to the
+# app underneath -- she looked translucent and simply could not be picked
+# up. Splitting them keeps the feature but makes the fade a WARNING that
+# she is about to step aside, with the window still grabbable.
+HOVER_DWELL_SEC = 1.0                # fade only -- still clickable here
+HOVER_PASSTHROUGH_DWELL_SEC = 2.5    # ...and only now does she click through
+# Presence is not intent: sweeping the cursor across her while aiming used
+# to accumulate dwell exactly like parking on her did. Movement beyond this
+# restarts the timer. Loose enough to absorb a resting hand's jitter.
+HOVER_STILLNESS_TOLERANCE_PX = 4.0
 HOVER_FADE_ALPHA = 0.5
+
+
+def shift_held(modifier_flags: int) -> bool:
+    """True iff Shift is down. The deliberate escape hatch: hold Shift and
+    she is grabbable no matter what state she is in -- no dwell, no fade,
+    no fleeing. Pure bit test so it is testable without AppKit."""
+    return bool(modifier_flags & (1 << 17))   # NSEventModifierFlagShift
 
 
 class HoverDwellTracker:
@@ -79,29 +98,84 @@ class HoverDwellTracker:
     threading -- same rationale as the other trackers in this module.
     """
 
-    def __init__(self, dwell_sec: float = HOVER_DWELL_SEC):
+    def __init__(
+        self,
+        dwell_sec: float = HOVER_DWELL_SEC,
+        passthrough_dwell_sec: float = HOVER_PASSTHROUGH_DWELL_SEC,
+        move_tolerance_px: float = HOVER_STILLNESS_TOLERANCE_PX,
+    ):
         self._dwell_sec = dwell_sec
+        self._passthrough_dwell_sec = passthrough_dwell_sec
+        self._move_tolerance_px = move_tolerance_px
         self._entered_at: float | None = None
+        self._anchor: tuple[float, float] | None = None
+        self._await_exit: bool = False
+
+    def update(
+        self,
+        now_interactive: bool,
+        now: float,
+        cx: float | None = None,
+        cy: float | None = None,
+    ) -> tuple[bool, bool]:
+        """Call once per poll tick. Returns (faded, click_through).
+
+        Two stages rather than one: the fade is a visible warning that she
+        is about to step aside, and she stays grabbable throughout it.
+        Only the later threshold makes her click-through.
+
+        cx/cy are optional -- passing them enables the stillness gate, so
+        a cursor moving across her (aiming at her) restarts the timer
+        instead of accumulating toward a fade. Omitting them keeps the
+        older presence-only behaviour.
+        """
+        if not now_interactive:
+            # Leaving is the one thing that clears an await_exit hold.
+            self._entered_at = None
+            self._anchor = None
+            self._await_exit = False
+            return (False, False)
+        if self._await_exit:
+            return (False, False)
+
+        restarted = False
+        if cx is not None and cy is not None:
+            if self._anchor is None:
+                self._anchor = (cx, cy)
+            else:
+                ax, ay = self._anchor
+                if (abs(cx - ax) > self._move_tolerance_px
+                        or abs(cy - ay) > self._move_tolerance_px):
+                    restarted = True
+                    self._anchor = (cx, cy)
+
+        if self._entered_at is None or restarted:
+            self._entered_at = now
+            return (False, False)
+
+        held = now - self._entered_at
+        return (held >= self._dwell_sec, held >= self._passthrough_dwell_sec)
 
     def is_dwelling(self, now_interactive: bool, now: float) -> bool:
-        """Call once per poll tick with the freshly-computed interactive
-        state. Returns True on every tick from the moment continuous
-        presence crosses dwell_sec until the cursor leaves the bbox --
-        a sustained state, not a one-shot edge trigger like the nudge/
-        corner-flee trackers."""
-        if not now_interactive:
-            self._entered_at = None
-            return False
-        if self._entered_at is None:
-            self._entered_at = now
-            return False
-        return (now - self._entered_at) >= self._dwell_sec
+        """Back-compat shim: the fade stage only."""
+        return self.update(now_interactive, now)[0]
+
+    def require_exit(self) -> None:
+        """Suppress dwell until the cursor actually leaves her bbox.
+
+        Used after a drag: your hand is still resting on her when you let
+        go, and without this she turns translucent a second after you
+        place her -- which reads as the drop itself having gone wrong."""
+        self._entered_at = None
+        self._anchor = None
+        self._await_exit = True
 
     def reset(self) -> None:
         """Force out of a dwelling/entering state -- used when some
         other event (drag start, hide) needs the fade cleared instead
         of waiting for the cursor to naturally leave the bbox."""
         self._entered_at = None
+        self._anchor = None
 
 
 class CornerFleeApproachTracker:
@@ -325,6 +399,11 @@ class PassthroughController:
     def resume(self) -> None:
         with self._lock:
             self._paused = False
+        # Your hand is still on her the instant you let go of a drag.
+        # Without this the dwell timer restarts immediately and she turns
+        # translucent about a second after you place her, which reads as
+        # the drop having gone wrong. Require a genuine exit first.
+        self._hover_tracker.require_exit()
 
     def set_hidden(self, hidden: bool) -> None:
         """Hide Squid: force full click-through while invisible.
@@ -351,7 +430,8 @@ class PassthroughController:
         self._stop.set()
 
     # ── Internals ──
-    def _track_nudge(self, now_interactive: bool, cx: float, cy: float) -> None:
+    def _track_nudge(self, now_interactive: bool, cx: float, cy: float,
+                     suppress: bool = False) -> None:
         """Feed the current interactive (opaque-hit) state to both the
         hop tracker and the corner-flee tracker, firing whichever
         callback(s) cross threshold on this tick. Only called from the
@@ -361,6 +441,10 @@ class PassthroughController:
         fire_hop = self._nudge_tracker.on_tick(now_interactive, was, now)
         fire_corner = self._corner_flee_tracker.on_tick(now_interactive, was, now)
         self._was_interactive = now_interactive
+        if suppress:
+            # State still advances (so the streak trackers stay coherent
+            # across the suppressed window) but nothing fires.
+            return
         if fire_hop and self._nudge_callback is not None:
             try:
                 self._nudge_callback(cx, cy)
@@ -614,12 +698,30 @@ class PassthroughController:
                 # (cursor moves off her, still inside the window) falls
                 # straight back to the normal hysteresis result with no
                 # extra bookkeeping.
-                dwelling = self._hover_tracker.is_dwelling(opaque, time.time())
-                if dwelling:
+                # Shift is the deliberate escape hatch: "I want YOU, not
+                # what's behind you." Overrides every inference below --
+                # no dwell, no fade, no fleeing -- because holding a
+                # modifier is an explicit statement of intent, which is
+                # exactly what cursor position alone can never be.
+                try:
+                    shift = shift_held(NSEvent.modifierFlags())
+                except Exception:
+                    shift = False
+
+                faded, click_through = self._hover_tracker.update(
+                    opaque, time.time(), cx, cy
+                )
+                if click_through:
                     want_ignore = True
-                self._apply_fade(dwelling)
+                if shift:
+                    want_ignore = False
+                    faded = False
+                    self._hover_tracker.reset()
+                self._apply_fade(faded)
                 self._apply_ignore(want_ignore)
-                self._track_nudge(opaque, cx, cy)
+                # suppress: while Shift is down the cursor sitting on her
+                # is a grab, never "move, you're in the way".
+                self._track_nudge(opaque, cx, cy, suppress=shift)
 
                 tick += 1
                 if tick % 100 == 0:  # ~3 seconds

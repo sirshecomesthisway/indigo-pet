@@ -23,11 +23,18 @@ def install_world(monkeypatch, idle=0.0):
     Pink-2026-08-30: same leak via CLAUDE_TASK_COMPLETE_DIR -- worse here,
     since these tests also fake time.time() to a small fixed epoch, so a
     real on-disk marker's real 2026 mtime produced a NEGATIVE age that
-    trivially passed any freshness check, always reading as fresh."""
+    trivially passed any freshness check, always reading as fresh.
+
+    Pink-2026-09-01: and once more via CLAUDE_TURN_ACTIVE_DIR. Caught by
+    the suite the moment the turn-in-flight signal went live: a real flag
+    from the developer's own in-flight turn made
+    test_codex_only_stale_transcript_no_shell_falls_to_idle report
+    thinking. Every new session-flag dir has to be added here."""
     monkeypatch.setattr(watcher, "macos_idle_seconds", lambda: idle)
     monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
     monkeypatch.setattr(watcher, "CLAUDE_FINISHED_DIR", "/nonexistent")
     monkeypatch.setattr(watcher, "CLAUDE_TASK_COMPLETE_DIR", "/nonexistent")
+    monkeypatch.setattr(watcher, "CLAUDE_TURN_ACTIVE_DIR", "/nonexistent")
 
 
 def _codex_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),

@@ -159,7 +159,11 @@ def test_corner_flee_fires_again_after_firing():
 def test_corner_flee_default_threshold_is_three():
     t = CornerFleeApproachTracker()
     assert t._threshold == 3
-    assert t._reset_sec == 6.0
+    # Pink-2026-09-01: 6.0 -> 2.5. Three deliberate grab retries land
+    # well inside six seconds, so a user who simply could not pick her up
+    # was read as shooing her away -- see test_hover_fade.py's
+    # test_deliberate_retries_do_not_stack_into_a_flee.
+    assert t._reset_sec == 2.5
 
 
 # ── PassthroughController wiring ────────────────────────────────────────
