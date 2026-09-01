@@ -29,7 +29,9 @@ Squid is deliberately small, ambient, and opinionated. She stays out of the way 
 
 ## See her in action
 
-🎥 *Demo video in production — check back soon.*
+[![Squid reacting to a real Claude Code session](docs/demo.gif)](docs/demo.mp4)
+
+*Squid waving for approval on a real `./deploy.sh --production` prompt, then celebrating when the task lands.* ▶ **[Watch the full demo](docs/demo.mp4)** (64s, with sound)
 
 ## Quick start
 
