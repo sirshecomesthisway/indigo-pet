@@ -430,7 +430,8 @@ _REASON_EXPLAIN_PREFIX = (
 )
 
 
-def _explain_reason(state_reason: str) -> Optional[str]:
+def _explain_reason(state_reason: str,
+                    approval_label: Optional[str] = None) -> Optional[str]:
     """Turn a watcher state_reason into a bubble that says why she moved.
 
     Returns None for anything unmapped, so the caller falls back to a
@@ -440,6 +441,12 @@ def _explain_reason(state_reason: str) -> Optional[str]:
     if not state_reason:
         return None
     r = state_reason.strip()
+    # Pink-2026-09-01: with several sessions waiting, "claude needs you"
+    # does not say WHOSE turn it is. The caller resolves the project names
+    # (watcher.describe_waiting_sessions) and passes the phrase in; a bare
+    # count still beats a uuid.
+    if approval_label and r.lower().startswith("awaiting_input"):
+        return approval_label[:MAX_BUBBLE_CHARS]
     exact = _REASON_EXPLAIN.get(r)
     if exact is not None:
         return exact
@@ -680,6 +687,10 @@ class Observer:
         # AND starts with an interesting prefix, 50% chance Squid uses it
         # verbatim as the bubble (the "mix mood + reason" path Pink chose).
         state_reason: str = "",
+        # Pink-2026-09-01: pre-resolved "who is waiting" phrase; see
+        # _explain_reason. Resolved by the caller because it needs disk and
+        # process lookups, which this module deliberately never does.
+        approval_label: Optional[str] = None,
     ) -> Optional[str]:
         """Called when the StateMachine reports a transition.
 
@@ -747,7 +758,7 @@ class Observer:
         # Returns without _async_enrich for the same reason the concern and
         # celebrate paths do: the LLM would overwrite a true, specific
         # answer with mood-mush.
-        explained = _explain_reason(state_reason)
+        explained = _explain_reason(state_reason, approval_label)
         if explained is not None:
             return explained
 

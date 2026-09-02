@@ -507,6 +507,118 @@ CLAUDE_TURN_ACTIVE_DIR = os.path.join(
 CLAUDE_TURN_ACTIVE_STALE_SEC = 3600.0
 
 
+# ── WHICH session is waving? (Pink-2026-09-01) ─────────────────────────
+# The flag directory says how many sessions are waiting, but its filenames
+# are uuids -- useless to a person, and with two sessions waiting "your
+# turn" does not tell you whose.
+#
+# The project is already derivable from disk. Claude Code writes a
+# session's transcript to ~/.claude/projects/<encoded-cwd>/<id>.jsonl, so
+# the id leads to a directory name, and that name is the cwd with slashes
+# turned into dashes. Nothing new is stored and no transcript is opened --
+# path names only, the same access ClaudeCodeDetector already takes when it
+# globs those files for mtimes.
+#
+# We ENCODE rather than decode: "-Users-p-squid-pet" cannot be decoded back
+# unambiguously (a directory name may contain a dash of its own), but
+# encoding a known cwd the same way and comparing strings is exact. That is
+# also what lets a waiting session be matched to a live process, and so to
+# its tty and its terminal tab -- see focus.py.
+CLAUDE_PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+# Past this many waiting at once, listing names blows past MAX_BUBBLE_CHARS,
+# so the bubble counts instead.
+MAX_LISTED_WAITING = 2
+
+
+def encode_project_dir(cwd: str) -> str:
+    """Encode a cwd the way Claude Code names its projects directory."""
+    return cwd.replace("/", "-")
+
+
+def claude_session_project_dir(session_id: str) -> str | None:
+    """The encoded project-directory name owning this session, or None."""
+    import glob as _glob
+    if not session_id:
+        return None
+    try:
+        hits = _glob.glob(os.path.join(
+            CLAUDE_PROJECTS_DIR, "*", session_id + ".jsonl"))
+    except Exception:
+        return None
+    if not hits:
+        return None
+    return os.path.basename(os.path.dirname(hits[0]))
+
+
+def claude_session_label(session_id: str) -> str | None:
+    """Short human name for a session, e.g. "squid-pet".
+
+    Resolved from the LIVE PROCESS's real cwd wherever possible, because
+    the encoded directory name alone is ambiguous: "-Users-p-Projects-
+    squid-pet" could be .../squid-pet or .../squid/pet, and splitting on
+    dashes would answer "pet". A session that is waiting on you always has
+    a process alive, so this is the normal path, not the lucky one.
+
+    Falls back to the text after the last dash only when no process
+    matches -- approximate by construction, and better than nothing.
+    """
+    enc = claude_session_project_dir(session_id)
+    if not enc:
+        return None
+    for proc in find_claude_code_processes():
+        try:
+            cwd = proc.cwd()
+            if encode_project_dir(cwd) == enc:
+                return os.path.basename(cwd.rstrip("/")) or None
+        except Exception:
+            continue
+    tail = enc.rstrip("-").split("-")[-1]
+    return tail or None
+
+
+def claude_session_tty(session_id: str) -> str | None:
+    """Controlling terminal of the process running this session.
+
+    Matches by comparing each live claude process's encoded cwd against the
+    session's project directory -- which is what makes "take me to it"
+    correct with several sessions running, where the hook payload's missing
+    PID otherwise leaves it guessing.
+    """
+    enc = claude_session_project_dir(session_id)
+    if not enc:
+        return None
+    for proc in find_claude_code_processes():
+        try:
+            if encode_project_dir(proc.cwd()) == enc:
+                return proc.terminal()
+        except Exception:
+            continue
+    return None
+
+
+def describe_waiting_sessions(session_ids: list[str]) -> str | None:
+    """Human phrase naming who is waiting, sized for a bubble.
+
+    One or two: their project names. More: a count, because four names do
+    not fit. Unresolvable ids still contribute to the count -- "someone is
+    waiting" stays true and useful even when we cannot say who.
+    """
+    if not session_ids:
+        return None
+    labels = [lbl for lbl in (claude_session_label(s) for s in session_ids) if lbl]
+    n = len(session_ids)
+    # Whole phrase, not just the names: "3 waiting" + " needs you" reads
+    # wrong, and grammar belongs wherever the count is known.
+    if n > MAX_LISTED_WAITING or not labels:
+        return f"{n} sessions need you"
+    if len(labels) < n:
+        return f"{labels[0]} +{n - len(labels)} need you"
+    if len(labels) == 1:
+        return f"{labels[0]} needs you"
+    return f"{' + '.join(labels)} need you"
+
+
 def claude_turn_in_flight(now: float | None = None) -> bool:
     """True iff any Claude Code session is between UserPromptSubmit and
     Stop -- i.e. actively working on a turn, whether or not it has written

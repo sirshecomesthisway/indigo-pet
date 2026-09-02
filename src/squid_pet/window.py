@@ -534,6 +534,26 @@ def stop_native_drag() -> None:
     _drag_thread = None
 
 
+def _waiting_label(state_reason: str) -> str | None:
+    """Turn the approval state_reason into "who is waiting".
+
+    The reason already carries the session ids that fired -- exactly the
+    ones being waved about -- so parse them from there rather than
+    re-reading the directory and risking a different answer than the tick
+    that produced this state. Best-effort: any failure just means the
+    bubble stays generic.
+    """
+    prefix = "awaiting_input flag from Claude Code session(s) "
+    if not state_reason.startswith(prefix):
+        return None
+    try:
+        from .watcher import describe_waiting_sessions
+        ids = [s for s in state_reason[len(prefix):].split(",") if s.strip()]
+        return describe_waiting_sessions([s.strip() for s in ids])
+    except Exception:
+        return None
+
+
 def is_drag_active() -> bool:
     """True iff a Python drag thread is currently running."""
     return _drag_thread is not None and _drag_thread.is_alive()
@@ -741,6 +761,8 @@ class PetApi:
                 cpu_pct=cpu_pct,
                 tool_age=tool_age,
                 state_reason=getattr(state, "state_reason", "") or "",
+                approval_label=_waiting_label(
+                    getattr(state, "state_reason", "") or ""),
             )
             if bubble is not None:
                 with self._lock:

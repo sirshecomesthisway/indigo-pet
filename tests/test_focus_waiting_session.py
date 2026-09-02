@@ -69,3 +69,26 @@ def test_a_tab_that_does_not_match_reports_app_only(monkeypatch):
     monkeypatch.setattr("squid_pet.watcher.find_terminal_app_bundle_for_claude_code",
                         lambda: focus.TERMINAL_APP_BUNDLE_ID)
     assert focus.focus_waiting_session(run=lambda s: "app-only\n") == "app-only"
+
+
+def test_picks_the_freshest_wave(tmp_path, monkeypatch):
+    """With two waiting, the one that just started waving is the one the
+    user is reacting to."""
+    import os
+    d = tmp_path / "awaiting"; d.mkdir()
+    (d / "older").write_text("permission_prompt")
+    (d / "newer").write_text("permission_prompt")
+    os.utime(d / "older", (1000, 1000))
+    os.utime(d / "newer", (2000, 2000))
+    monkeypatch.setattr("squid_pet.watcher.CLAUDE_AWAITING_INPUT_DIR", str(d))
+
+    assert focus.freshest_waiting_session() == "newer"
+
+
+def test_tty_comes_from_the_waiting_session_not_just_any_process(monkeypatch):
+    """The multi-session fix: resolve through the session that is waving,
+    not whichever claude process is found first."""
+    monkeypatch.setattr(focus, "freshest_waiting_session", lambda: "sess-x")
+    monkeypatch.setattr("squid_pet.watcher.claude_session_tty",
+                        lambda sid: "/dev/ttys007" if sid == "sess-x" else None)
+    assert focus.waiting_session_tty() == "/dev/ttys007"

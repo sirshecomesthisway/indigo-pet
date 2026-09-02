@@ -39,11 +39,57 @@ from typing import Callable, Optional
 TERMINAL_APP_BUNDLE_ID = "com.apple.Terminal"
 
 
-def waiting_session_tty() -> Optional[str]:
-    """Controlling terminal of a running Claude Code process, e.g.
-    "/dev/ttys000". None if there isn't one or it can't be read."""
+def freshest_waiting_session() -> Optional[str]:
+    """Session id of the most recently raised wave.
+
+    Freshest rather than first: with several waiting, the one that just
+    started waving is the one you are reacting to.
+    """
+    import os
+    from .watcher import CLAUDE_AWAITING_INPUT_DIR
     try:
-        from .watcher import find_claude_code_processes
+        names = os.listdir(CLAUDE_AWAITING_INPUT_DIR)
+    except OSError:
+        return None
+    best: tuple[float, str] | None = None
+    for name in names:
+        if name.startswith("."):
+            continue
+        try:
+            mtime = os.stat(os.path.join(CLAUDE_AWAITING_INPUT_DIR, name)).st_mtime
+        except OSError:
+            continue
+        if best is None or mtime > best[0]:
+            best = (mtime, name)
+    return best[1] if best else None
+
+
+def waiting_session_tty() -> Optional[str]:
+    """Controlling terminal of the session that is actually waiting.
+
+    Pink-2026-09-01: resolved through THAT session rather than "whichever
+    claude process turns up first". A session's project directory
+    identifies its process (watcher.claude_session_tty), which is what
+    makes this correct when several sessions are running -- the hook
+    payload's missing PID otherwise leaves it guessing, the same
+    limitation find_terminal_app_bundle_for_claude_code documents.
+
+    Falls back to any live process's tty, which is exactly right in the
+    single-session case and no worse than the old behaviour otherwise.
+    """
+    try:
+        from .watcher import claude_session_tty, find_claude_code_processes
+    except Exception:
+        return None
+    sid = freshest_waiting_session()
+    if sid:
+        try:
+            tty = claude_session_tty(sid)
+            if tty:
+                return tty
+        except Exception:
+            pass
+    try:
         for proc in find_claude_code_processes():
             try:
                 tty = proc.terminal()
