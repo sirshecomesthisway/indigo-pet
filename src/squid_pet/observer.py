@@ -376,6 +376,81 @@ def _format_celebrate_reason(state_reason: str) -> Optional[str]:
 
 
 # ----------------------------------------------------------------------
+# Reason explanations -- "why did she just do that?"
+# ----------------------------------------------------------------------
+# Pink-2026-09-01: "she went from idle to a very brief working state, I
+# guess because I opened /model, but I'm not sure -- better to explain
+# why." The watcher already computes a state_reason for every state (it is
+# what `squid why` prints); it just never reached the bubble in a form
+# anyone would want to read.
+#
+# There WAS a path for this ("Fix C", 2026-06-28): a 50% chance to use
+# state_reason verbatim if it started with one of
+# ("shell ", "subagent", "llm streaming", "error:", "writing", "post-busy").
+# Two things were wrong with it. Those prefixes no longer match what the
+# watcher emits -- "file write detected (claude_code)", "claude streaming"
+# and "claude turn in flight" all miss -- so the path was mostly dead. And
+# where it did hit, it published raw internals: "shell child active
+# (claude_c..." truncated at MAX_BUBBLE_CHARS. A reason is a log line; an
+# explanation is a sentence for the person watching.
+#
+# So: a real map, always applied (no coin flip -- if she moved, you get to
+# know why), phrased in her voice and short enough to survive the cap.
+_REASON_EXPLAIN = {
+    "shell child active (claude_code)": "claude ran a command",
+    "shell child active (codex)":       "codex ran a command",
+    "shell child active":               "something ran a command",
+    "file write detected (claude_code)": "claude edited a file",
+    "file write detected (codex)":       "codex edited a file",
+    "claude streaming":       "claude's thinking",
+    "codex streaming":        "codex's thinking",
+    "claude turn in flight":  "claude's mid-turn",
+    "claude recapping":       "claude's recapping",
+    "claude grooving":        "claude finished a turn",
+    "creative burst":         "something wrapped up",
+    "claude celebrating":     "claude finished the task",
+    "codex celebrating":      "codex finished",
+    "git celebrating":        "fresh commit landed",
+    "no signals":             "nothing running",
+    "non-agent detector busy": "something's busy",
+    # Deliberately NOT mapped: bare "celebrating" (the force_state debug
+    # override's unspecific reason). "something good happened" explains
+    # nothing, and an invented non-explanation is worse than letting her
+    # personality answer -- see
+    # test_celebrating_falls_back_to_generic_mood_pick_when_unspecific,
+    # which caught exactly that when this entry existed.
+}
+
+# Reasons the watcher builds with a variable tail, matched by prefix.
+_REASON_EXPLAIN_PREFIX = (
+    ("working hold",        "still on it"),
+    ("idle ",               "nothing going on"),
+    ("force_state override", "pinned by hand"),
+    ("awaiting_input",      "claude needs you"),
+)
+
+
+def _explain_reason(state_reason: str) -> Optional[str]:
+    """Turn a watcher state_reason into a bubble that says why she moved.
+
+    Returns None for anything unmapped, so the caller falls back to a
+    personality line rather than leaking a new internal string into the
+    UI the day someone adds one.
+    """
+    if not state_reason:
+        return None
+    r = state_reason.strip()
+    exact = _REASON_EXPLAIN.get(r)
+    if exact is not None:
+        return exact
+    low = r.lower()
+    for prefix, text in _REASON_EXPLAIN_PREFIX:
+        if low.startswith(prefix.lower()):
+            return text
+    return None
+
+
+# ----------------------------------------------------------------------
 # Shell-child detection -- "running pytest" / "running git push"
 # ----------------------------------------------------------------------
 # When the watcher reports state="working" because has_active_shell_children
@@ -662,19 +737,20 @@ class Observer:
                 self._async_enrich(trigger_key, context, is_specific=True)
                 return specific
 
-        # Fix C (2026-06-28): "mix mood + reason" path. If state_reason
-        # starts with one of these interesting prefixes, 50% chance
-        # use it AS the bubble. The other 50% falls through to the
-        # rule-based emote pick for personality variety.
-        REASON_PREFIXES = ("shell ", "subagent", "llm streaming",
-                           "error:", "writing", "post-busy")
-        if (state_reason
-                and state_reason.lower().startswith(REASON_PREFIXES)
-                and random.random() < 0.5):
-            rb = state_reason.lower()
-            if len(rb) > MAX_BUBBLE_CHARS:
-                rb = rb[:MAX_BUBBLE_CHARS - 3].rstrip() + "..."
-            return rb
+        # Explain the move (Pink-2026-09-01). Replaces the old 50%
+        # raw-state_reason path -- see _explain_reason for why that one was
+        # both mostly dead and, when alive, published truncated internals.
+        # Not a coin flip: if she changed state, you get to know why. Falls
+        # through to a personality line only when the reason is unmapped,
+        # so a newly-added internal string can never leak into a bubble.
+        #
+        # Returns without _async_enrich for the same reason the concern and
+        # celebrate paths do: the LLM would overwrite a true, specific
+        # answer with mood-mush.
+        explained = _explain_reason(state_reason)
+        if explained is not None:
+            return explained
+
         rule_bubble = self._pick(trigger_key)
         # Background LLM enrich: may overwrite the rule-based line if it
         # arrives in time. Context bundles all the signals we have.

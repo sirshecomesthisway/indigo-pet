@@ -508,3 +508,96 @@ def test_idea_prompts_respect_mute():
 
     o = obs.Observer(get_muted=lambda: True)
     assert o.on_idle_chatter() is None
+
+
+# ── State-change bubbles explain WHY (Pink-2026-09-01) ─────────────────
+# Pink: "she went from idle to a very brief working state, I guess because
+# I opened /model in Claude Code, but I'm not sure. So it's better to
+# explain why." The watcher already computes a state_reason for every
+# state (it is what `squid why` prints) -- it just never reached the
+# bubble in readable form.
+_REAL_WATCHER_REASONS = [
+    "shell child active (claude_code)",
+    "shell child active (codex)",
+    "file write detected (claude_code)",
+    "file write detected (codex)",
+    "claude streaming",
+    "codex streaming",
+    "claude turn in flight",
+    "claude grooving",
+    "creative burst",
+    "no signals",
+    "non-agent detector busy",
+    "working hold (12s left)",
+    "idle 5m",
+    "force_state override (celebrating)",
+    "awaiting_input flag from Claude Code session(s) abc-123",
+]
+
+
+def test_every_real_watcher_reason_has_an_explanation():
+    """Contract: these are the strings watcher.py actually emits. Any
+    reason without an explanation silently falls back to mood-mush, which
+    is exactly the "I can't tell why she did that" problem."""
+    from squid_pet.observer import _explain_reason, MAX_BUBBLE_CHARS
+
+    for reason in _REAL_WATCHER_REASONS:
+        out = _explain_reason(reason)
+        assert out is not None, f"no explanation for watcher reason {reason!r}"
+        assert len(out) <= MAX_BUBBLE_CHARS, f"{out!r} would be dropped by _pick"
+
+
+def test_explanations_never_leak_internal_jargon():
+    """The old path used the raw reason verbatim, so bubbles could read
+    'shell child active (claude_c...'. An explanation is for the user, not
+    the log."""
+    from squid_pet.observer import _explain_reason
+
+    for reason in _REAL_WATCHER_REASONS:
+        out = _explain_reason(reason)
+        for leak in ("(claude_code)", "(codex)", "_", "flag", "detector"):
+            assert leak not in out, f"{out!r} leaks {leak!r}"
+
+
+def test_state_change_explains_instead_of_emoting(monkeypatch):
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: False)
+    line = o.on_state_change("idle", "working",
+                             state_reason="shell child active (claude_code)")
+    assert line == obs._explain_reason("shell child active (claude_code)")
+    assert line not in obs.BUBBLE_LINES.get("working", [])
+
+
+def test_the_brief_working_blip_pink_asked_about_is_explained():
+    """Her actual case: idle -> working for a moment. Whatever caused it,
+    the bubble must name the evidence rather than say 'on it'."""
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: False)
+    line = o.on_state_change("idle", "working",
+                             state_reason="file write detected (claude_code)")
+    assert line is not None
+    assert "file" in line or "wrote" in line or "edited" in line
+
+
+def test_a_concrete_shell_command_still_wins():
+    """'running pytest' is a better explanation than 'claude ran a
+    command' -- specificity beats the generic map."""
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: False)
+    line = o.on_state_change("idle", "working",
+                             shell_cmdline=["pytest", "tests/"],
+                             state_reason="shell child active (claude_code)")
+    assert "pytest" in line
+
+
+def test_unknown_reason_falls_back_to_personality():
+    """An unmapped reason must not leak raw text; she just emotes instead."""
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: False)
+    line = o.on_state_change("idle", "working",
+                             state_reason="some brand new internal reason")
+    assert line is None or "internal reason" not in line
