@@ -1232,6 +1232,20 @@ document.addEventListener("dblclick", async (e) => {
           if (ack?.bubble) maybeShowBubble(ack.bubble);
           console.log("[squid] dblclick ACK (calmed approval wave)");
         }
+        // Pink-2026-09-01: dblclick also takes you to the window behind
+        // whatever she's showing -- working, thinking, waving, celebrating,
+        // grooving. The backend answers "resting" for idle/drowsy/sleeping,
+        // where there is nothing to open, so this is safe to call always
+        // and the gesture stays a plain poke+heart there.
+        try {
+          if (window.pywebview?.api?.take_me_there) {
+            const t = await window.pywebview.api.take_me_there();
+            if (t?.status && t.status !== "resting") {
+              console.log(`[squid] take_me_there(${t.state}) -> ${t.status}`);
+            }
+          }
+        } catch (_) { /* never let this break the like gesture */ }
+
         const sprite = document.getElementById('pet');
         if (sprite) {
           const r = sprite.getBoundingClientRect();

@@ -39,16 +39,41 @@ from typing import Callable, Optional
 TERMINAL_APP_BUNDLE_ID = "com.apple.Terminal"
 
 
-def freshest_waiting_session() -> Optional[str]:
-    """Session id of the most recently raised wave.
+def _signal_dirs() -> dict:
+    """Which flag directory names the session responsible for each state.
 
-    Freshest rather than first: with several waiting, the one that just
-    started waving is the one you are reacting to.
+    Pink-2026-09-01: originally only the wave could take you anywhere.
+    Pink asked for the same on every active sprite -- "except idle/drowsy/
+    sleeping, because they mean she's doing nothing" -- and every active
+    state already has a directory naming who caused it, so the same
+    session -> project -> process -> tty -> tab chain covers them all.
+
+    Resting states are absent by design, not by omission: with nothing
+    running there is no window a double-click could honestly raise, and
+    yanking one to the front would be worse than doing nothing.
+    """
+    from . import watcher as w
+    return {
+        "working":         w.CLAUDE_TURN_ACTIVE_DIR,
+        "thinking":        w.CLAUDE_TURN_ACTIVE_DIR,
+        "approval_needed": w.CLAUDE_AWAITING_INPUT_DIR,
+        "celebrating":     w.CLAUDE_TASK_COMPLETE_DIR,
+        "grooving":        w.CLAUDE_FINISHED_DIR,
+    }
+
+
+STATE_SIGNAL_DIRS = _signal_dirs()
+
+
+def _freshest_in(dir_path: str) -> Optional[str]:
+    """Newest flag filename (a session id) in a signal directory.
+
+    Freshest rather than first: whichever session most recently caused the
+    state is the one you are reacting to.
     """
     import os
-    from .watcher import CLAUDE_AWAITING_INPUT_DIR
     try:
-        names = os.listdir(CLAUDE_AWAITING_INPUT_DIR)
+        names = os.listdir(dir_path)
     except OSError:
         return None
     best: tuple[float, str] | None = None
@@ -56,12 +81,18 @@ def freshest_waiting_session() -> Optional[str]:
         if name.startswith("."):
             continue
         try:
-            mtime = os.stat(os.path.join(CLAUDE_AWAITING_INPUT_DIR, name)).st_mtime
+            mtime = os.stat(os.path.join(dir_path, name)).st_mtime
         except OSError:
             continue
         if best is None or mtime > best[0]:
             best = (mtime, name)
     return best[1] if best else None
+
+
+def freshest_waiting_session() -> Optional[str]:
+    """Session id of the most recently raised wave."""
+    from .watcher import CLAUDE_AWAITING_INPUT_DIR
+    return _freshest_in(CLAUDE_AWAITING_INPUT_DIR)
 
 
 def waiting_session_tty() -> Optional[str]:
@@ -131,6 +162,66 @@ def build_terminal_focus_script(tty: str) -> str:
 def build_app_activate_script(bundle_id: str) -> str:
     """Fallback: raise the hosting app without picking a window."""
     return f'tell application id "{_escape_applescript(bundle_id)}" to activate\n'
+
+
+def focus_for_state(state: str,
+                    run: Optional[Callable[[str], Optional[str]]] = None) -> str:
+    """Bring the window responsible for `state` to the front.
+
+    Returns "matched" (that tab is now front), "app-only" (right app,
+    unknown tab), "none" (no terminal identified) or "resting" (nothing to
+    open -- idle, drowsy, sleeping, or any state we have no signal for).
+    """
+    signal_dir = STATE_SIGNAL_DIRS.get(state)
+    if signal_dir is None:
+        return "resting"
+    sid = _freshest_in(signal_dir)
+    tty = None
+    if sid:
+        try:
+            from .watcher import claude_session_tty
+            tty = claude_session_tty(sid)
+        except Exception:
+            tty = None
+    if tty is None:
+        # The flag may have aged out of its freshness window while the
+        # sprite still shows the state. Raising the right app still beats
+        # doing nothing.
+        tty = _any_claude_tty()
+    return _raise(tty, run)
+
+
+def _any_claude_tty() -> Optional[str]:
+    try:
+        from .watcher import find_claude_code_processes
+        for proc in find_claude_code_processes():
+            try:
+                tty = proc.terminal()
+            except Exception:
+                continue
+            if tty:
+                return tty
+    except Exception:
+        pass
+    return None
+
+
+def _raise(tty: Optional[str],
+           run: Optional[Callable[[str], Optional[str]]] = None) -> str:
+    runner = run if run is not None else _run_osascript
+    try:
+        from .watcher import find_terminal_app_bundle_for_claude_code
+        bundle = find_terminal_app_bundle_for_claude_code()
+    except Exception:
+        bundle = None
+    if bundle == TERMINAL_APP_BUNDLE_ID and tty:
+        out = runner(build_terminal_focus_script(tty))
+        if out is not None:
+            return out.strip() or "app-only"
+    if bundle:
+        runner(build_app_activate_script(bundle))
+        return "app-only"
+    return "none"
 
 
 def focus_waiting_session(run: Optional[Callable[[str], Optional[str]]] = None) -> str:

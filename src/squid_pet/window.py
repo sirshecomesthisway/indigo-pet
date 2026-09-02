@@ -620,7 +620,7 @@ class PetApi:
         # "Take me to the window that's waiting" -- see acknowledge_approval.
         # Bound here (not imported at call time) so tests constructing
         # PetApi via __new__ simply never have it.
-        from .focus import focus_waiting_session as _focus
+        from .focus import focus_for_state as _focus
         self._focus_fn = _focus
         self._sprint_fast_transition: bool = False  # frontend uses 0.2s CSS transition when True
         # Stroll mode: "edges" (hug border) or "anywhere" (free roam).
@@ -1331,34 +1331,48 @@ class PetApi:
         if bubble is not None:
             with self._lock:
                 self._pending_bubble = bubble
-        # Pink-2026-09-01: acknowledging a wave now also TAKES YOU THERE.
-        # Pink asked for this as a separate triple-click, then chose to
-        # fold it into the double-click instead: jumping to the window
-        # already implies "I saw you", so a second gesture that only
-        # acknowledged would be a distinction without a difference -- and
-        # keeping them apart would have cost the existing dblclick a
-        # ~260ms delay while it waited to see if a third click landed.
-        #
-        # Read off self rather than called directly so the tests, which
-        # build PetApi via __new__ and set attributes by hand (see
-        # test_acknowledge_approval.py), never drive a real window.
-        focus_fn = getattr(self, "_focus_fn", None)
-        focus_status = "skipped"
-        if focus_fn is not None:
-            try:
-                focus_status = focus_fn()
-            except Exception as e:
-                # Never let a failed window raise cost you the calm --
-                # acknowledging is the part you actually asked for.
-                print(f"[squid-pet] focus-waiting-session failed: {e}",
-                      flush=True)
-                focus_status = "error"
-            print(f"[squid-pet] ack -> focus: {focus_status}", flush=True)
-
+        # Focusing lives in take_me_there(), which the same dblclick calls
+        # for EVERY active state -- not just this one. Keeping it out of
+        # here leaves acknowledge_approval to do one thing (calm the wave)
+        # and stops a wave being focused twice per gesture.
         timer = threading.Timer(ACKNOWLEDGE_DISMISS_DELAY_SEC, self._calm_squid)
         timer.daemon = True
         timer.start()
-        return {"status": "calmed", "bubble": bubble, "focus": focus_status}
+        return {"status": "calmed", "bubble": bubble}
+
+    def take_me_there(self) -> dict:
+        """JS-exposed: dblclick -> raise the window responsible for whatever
+        she is currently showing.
+
+        Pink-2026-09-01: this started as "take me to the session that's
+        waving" and Pink asked for the same on every active sprite, minus
+        the resting ones -- "idle/drowsy/sleeping ... because they mean
+        she's doing nothing". Each active state has a flag directory naming
+        the session that caused it (see focus.STATE_SIGNAL_DIRS), so one
+        chain covers them all: session -> project dir -> process -> tty ->
+        terminal tab.
+
+        Returns status "resting" for the states with nowhere to go, so a
+        dblclick on a sleeping Squid is still just a poke and a heart.
+
+        The callable is read off self so tests building PetApi via __new__
+        never raise a real window.
+        """
+        with self._lock:
+            state = self._latest.state
+        focus_fn = getattr(self, "_focus_fn", None)
+        if focus_fn is None:
+            return {"status": "skipped", "state": state}
+        try:
+            status = focus_fn(state)
+        except Exception as e:
+            # A failed window raise must never break the gesture; the
+            # poke and heart already happened.
+            print(f"[squid-pet] take_me_there failed: {e}", flush=True)
+            status = "error"
+        if status != "resting":
+            print(f"[squid-pet] take_me_there({state}) -> {status}", flush=True)
+        return {"status": status, "state": state}
 
     def _menu_sprint_perimeter(self) -> None:
         """Funny: sprint through all 4 corners CW. Background thread."""
