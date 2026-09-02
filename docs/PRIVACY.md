@@ -38,7 +38,7 @@ config, outside this repo).
 |-------|----------|
 | `session_id` | names the flag file; the only identifier Claude Code's hook payload provides (no PID) |
 | `hook_event_name` | branches behavior: write on `Notification`, remove on `UserPromptSubmit`/`SessionEnd` |
-| `notification_type` (Notification events only) | only `permission_prompt` and `idle_prompt` create a flag; every other value is ignored |
+| `notification_type` (Notification events only) | only `permission_prompt` creates a flag; every other value, `idle_prompt` included, is ignored |
 
 | Writes | What for |
 |--------|----------|

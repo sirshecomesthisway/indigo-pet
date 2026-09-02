@@ -361,7 +361,7 @@ def claude_sessions_awaiting_input() -> list[str]:
     """Return session_ids of Claude Code sessions currently awaiting input.
 
     scripts/claude_pet_hook.py writes `<dir>/<session_id>` on a
-    Notification event (permission_prompt or idle_prompt) and removes it
+    Notification event (permission_prompt) and removes it
     on UserPromptSubmit/SessionEnd. Entries older than
     CLAUDE_AWAITING_INPUT_STALE_SEC are evicted here as a safety net for a
     session that died without either firing (crash, force-kill).
@@ -838,7 +838,7 @@ class StateMachine:
 
         # ── STALE-FLAG SELF-HEAL ─────────────────────────────────────
         # Pink-2026-08-27, real bug caught via live use: Claude Code's
-        # Notification hook fires permission_prompt/idle_prompt and we
+        # Notification hook fires permission_prompt and we
         # latch a flag file, but if Claude resumes work WITHOUT the user
         # submitting a fresh top-level prompt (approval granted some
         # other way, auto-mode proceeding on its own, a multi-step

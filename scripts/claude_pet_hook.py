@@ -28,8 +28,9 @@ that watcher.py reads:
     is pure summarization -- no tool calls, no file writes).
 
 Protocol:
-  - Notification with notification_type in {permission_prompt, idle_prompt}
-    -> write <awaiting_input_dir>/<session_id>  (Claude is waiting on you)
+  - Notification with notification_type == permission_prompt
+    -> write <awaiting_input_dir>/<session_id>  (Claude is BLOCKED on you)
+    idle_prompt is deliberately ignored -- see _HANDLED_NOTIFICATION_TYPES
   - UserPromptSubmit -> remove <awaiting_input_dir>/<session_id>  (you replied)
   - SessionEnd -> remove <awaiting_input_dir>/<session_id> and
     <recap_dir>/<session_id>  (session is gone)
@@ -99,7 +100,17 @@ LOG_PATH = os.path.join(_SQUID_PET_HOME, "claude_hook.log")
 _LOG_MAX_BYTES = 200_000
 _LOG_KEEP_LINES = 1000
 
-_HANDLED_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
+# Pink-2026-09-01: idle_prompt REMOVED. It fires 60s after Claude hands
+# control back and means only "it is your turn and you are not at the
+# keyboard" -- nothing is blocked, nothing needs a decision. Pink got two
+# banners in one sitting from it and asked for exactly this: "I don't need
+# her to tell me what to do next, only to speak up when she needs me."
+#
+# This does NOT weaken the stepped-away case. A permission_prompt raised
+# while you are away still waves and still fires the banner -- that is the
+# alert worth walking back for. What is gone is the one that fires when
+# nothing is waiting on you at all.
+_HANDLED_NOTIFICATION_TYPES = frozenset({"permission_prompt"})
 
 # Pink-2026-08-31: PostToolUse and Stop added after a confirmed stuck-wave
 # bug. ANSWERING a permission prompt -- yes OR no -- fires no hook of any
@@ -124,8 +135,8 @@ _HANDLED_NOTIFICATION_TYPES = frozenset({"permission_prompt", "idle_prompt"})
 #                  DENIAL, where no tool ever runs and PostToolUse never
 #                  fires.
 #
-# Neither can suppress a genuine "you stepped away" wave: idle_prompt fires
-# 60s AFTER Stop, re-arming the flag on its own clock.
+# Neither can suppress a genuine wave: the next permission_prompt re-arms
+# the flag on its own, whenever the session next actually blocks on you.
 _REMOVE_ON_EVENTS = frozenset({
     "UserPromptSubmit", "SessionEnd", "PostToolUse", "Stop",
 })

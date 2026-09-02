@@ -184,7 +184,7 @@ session is sitting there waiting on you.
 
 **Signal**: `~/.squid-pet/claude_awaiting_input/<session_id>`, written by
 `scripts/claude_pet_hook.py` on a `Notification` event with
-`notification_type` `permission_prompt` or `idle_prompt`, via Claude
+`notification_type` `permission_prompt`, via Claude
 Code's own official hook system (registered in `~/.claude/settings.json`).
 Removed on `UserPromptSubmit` (you replied) or `SessionEnd`.
 

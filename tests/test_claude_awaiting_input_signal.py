@@ -57,18 +57,18 @@ def test_empty_dir_returns_empty(tmp_claude_dir):
 
 
 def test_fresh_flag_is_reported(tmp_claude_dir):
-    (tmp_claude_dir / "sess-abc").write_text("idle_prompt")
+    (tmp_claude_dir / "sess-abc").write_text("permission_prompt")
     assert watcher.claude_sessions_awaiting_input() == ["sess-abc"]
 
 
 def test_multiple_sessions_all_reported_sorted(tmp_claude_dir):
-    (tmp_claude_dir / "sess-b").write_text("idle_prompt")
+    (tmp_claude_dir / "sess-b").write_text("permission_prompt")
     (tmp_claude_dir / "sess-a").write_text("permission_prompt")
     assert watcher.claude_sessions_awaiting_input() == ["sess-a", "sess-b"]
 
 
 def test_dotfiles_are_ignored(tmp_claude_dir):
-    (tmp_claude_dir / "sess-real").write_text("idle_prompt")
+    (tmp_claude_dir / "sess-real").write_text("permission_prompt")
     (tmp_claude_dir / ".DS_Store").write_text("junk")
     assert watcher.claude_sessions_awaiting_input() == ["sess-real"]
 
@@ -79,7 +79,7 @@ def test_stale_flag_is_evicted(tmp_claude_dir, monkeypatch):
     removed from disk and excluded from the result."""
     import os
     f = tmp_claude_dir / "sess-dead"
-    f.write_text("idle_prompt")
+    f.write_text("permission_prompt")
     old = time.time() - watcher.CLAUDE_AWAITING_INPUT_STALE_SEC - 60
     os.utime(f, (old, old))
 
@@ -90,7 +90,7 @@ def test_stale_flag_is_evicted(tmp_claude_dir, monkeypatch):
 def test_fresh_flag_just_under_stale_threshold_survives(tmp_claude_dir):
     import os
     f = tmp_claude_dir / "sess-almost-stale"
-    f.write_text("idle_prompt")
+    f.write_text("permission_prompt")
     fresh = time.time() - (watcher.CLAUDE_AWAITING_INPUT_STALE_SEC - 60)
     os.utime(f, (fresh, fresh))
     assert watcher.claude_sessions_awaiting_input() == ["sess-almost-stale"]
@@ -164,7 +164,7 @@ def _patched_config(**overrides):
 def test_compute_fires_approval_needed_from_claude_session(tmp_claude_dir):
     """Realistic case: Claude has genuinely gone idle (no live shell/file/
     streaming evidence -- exactly what the underlying cascade sees while
-    a permission_prompt/idle_prompt wait is actually in effect) and a
+    a permission_prompt wait is actually in effect) and a
     flag is present -> approval_needed fires."""
     (tmp_claude_dir / "sess-xyz").write_text("permission_prompt")
 
@@ -256,7 +256,7 @@ def test_stale_flag_self_heals_when_thinking(tmp_claude_dir):
     """Same self-heal, but for the 'thinking' (streaming) active state --
     not just 'working' (shell/file evidence)."""
     flag = tmp_claude_dir / "sess-stale-2"
-    flag.write_text("idle_prompt")
+    flag.write_text("permission_prompt")
     _backdate(flag, watcher.SELF_HEAL_MIN_FLAG_AGE_SEC + 1)
 
     sm = watcher.StateMachine()
@@ -351,7 +351,7 @@ def test_flag_written_after_going_idle_still_fires_normally(tmp_claude_dir):
         assert st1.state == "idle"
 
         # Tick 2: a flag now appears (Notification hook fired between ticks).
-        (tmp_claude_dir / "sess-fresh").write_text("idle_prompt")
+        (tmp_claude_dir / "sess-fresh").write_text("permission_prompt")
         st2 = sm.compute()
 
     assert st2.state == "approval_needed"
@@ -371,13 +371,13 @@ def test_approval_alert_disabled_suppresses_claude_signal_too(tmp_claude_dir):
 # ── snooze_all_awaiting_now() / count_currently_waving_sessions() ──────
 
 def test_count_currently_waving_sessions(tmp_claude_dir):
-    (tmp_claude_dir / "sess-1").write_text("idle_prompt")
+    (tmp_claude_dir / "sess-1").write_text("permission_prompt")
     (tmp_claude_dir / "sess-2").write_text("permission_prompt")
     assert watcher.count_currently_waving_sessions() == 2
 
 
 def test_snooze_all_awaiting_now_snoozes_claude_sessions(tmp_claude_dir):
-    (tmp_claude_dir / "sess-1").write_text("idle_prompt")
+    (tmp_claude_dir / "sess-1").write_text("permission_prompt")
     # First establish eligibility (birth time recorded).
     assert watcher.count_currently_waving_sessions() == 1
     n = watcher.snooze_all_awaiting_now()
@@ -448,7 +448,7 @@ def test_notification_refires_after_flag_disappears_and_reappears(tmp_claude_dir
         st2 = sm.compute()
         assert st2.state != "approval_needed"
 
-        flag.write_text("idle_prompt")  # a fresh wait
+        flag.write_text("permission_prompt")  # a fresh wait
         st3 = sm.compute()
         assert st3.state == "approval_needed"
         assert mock_notify.call_count == 2, "must notify again for the new wait"
@@ -458,7 +458,7 @@ def test_state_reverts_once_flag_removed_between_ticks(tmp_claude_dir):
     """Simulates the UserPromptSubmit hook clearing the flag mid-session:
     the very next tick must fall out of approval_needed, no lingering."""
     flag = tmp_claude_dir / "sess-reply"
-    flag.write_text("idle_prompt")
+    flag.write_text("permission_prompt")
 
     sm = watcher.StateMachine()
     sm._compute_inner = lambda: watcher.PetState(state="idle", message="x")

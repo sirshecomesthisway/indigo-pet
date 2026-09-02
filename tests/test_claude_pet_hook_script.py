@@ -67,13 +67,22 @@ def test_notification_permission_prompt_writes_flag(home):
     assert fp.read_text() == "permission_prompt"
 
 
-def test_notification_idle_prompt_writes_flag(home):
+def test_notification_idle_prompt_is_ignored(home):
+    """Pink-2026-09-01: idle_prompt fires 60s after Claude hands control
+    back and simply means "it is your turn and you are not here". Pink:
+    "I don't need her to tell me what to do next, only to speak up when
+    she needs me." Only permission_prompt -- an actual blocked request --
+    is worth interrupting for now.
+
+    Note this does NOT weaken the stepped-away case: a permission prompt
+    raised while you are away still waves and still fires the banner. What
+    is gone is the alert that fires when nothing is blocked at all."""
     r = _run({
         "session_id": "sess-2", "hook_event_name": "Notification",
         "notification_type": "idle_prompt",
     }, home)
     assert r.returncode == 0, r.stderr
-    assert _flag_path(home, "sess-2").exists()
+    assert not _flag_path(home, "sess-2").exists()
 
 
 def test_notification_unhandled_type_does_not_write_flag(home):
@@ -90,7 +99,7 @@ def test_notification_unhandled_type_does_not_write_flag(home):
 
 def test_user_prompt_submit_removes_flag(home):
     _run({"session_id": "sess-4", "hook_event_name": "Notification",
-          "notification_type": "idle_prompt"}, home)
+          "notification_type": "permission_prompt"}, home)
     assert _flag_path(home, "sess-4").exists()
 
     r = _run({"session_id": "sess-4", "hook_event_name": "UserPromptSubmit"}, home)
@@ -179,15 +188,15 @@ def test_stop_clears_a_stuck_awaiting_input_flag(home):
     assert _finished_path(home, "sess-p2").exists()
 
 
-def test_idle_prompt_rearms_after_stop_cleared_the_flag(home):
-    """Clearing on Stop must not suppress a genuine "you stepped away" wave.
-    idle_prompt fires ~60s AFTER Stop on its own clock, and has to be able to
-    re-arm the flag Stop just cleared."""
+def test_a_later_permission_prompt_rearms_after_stop_cleared_the_flag(home):
+    """Clearing on Stop must not permanently suppress the next wave: a
+    permission prompt raised afterwards has to be able to re-arm the flag
+    Stop cleared."""
     _run({"session_id": "sess-p3", "hook_event_name": "Stop"}, home)
     assert not _flag_path(home, "sess-p3").exists()
 
     _run({"session_id": "sess-p3", "hook_event_name": "Notification",
-          "notification_type": "idle_prompt"}, home)
+          "notification_type": "permission_prompt"}, home)
     assert _flag_path(home, "sess-p3").exists()
 
 
@@ -290,7 +299,7 @@ def test_user_prompt_submit_on_nonexistent_flag_is_a_noop(home):
 
 def test_multiple_sessions_are_independent(home):
     _run({"session_id": "sess-A", "hook_event_name": "Notification",
-          "notification_type": "idle_prompt"}, home)
+          "notification_type": "permission_prompt"}, home)
     _run({"session_id": "sess-B", "hook_event_name": "Notification",
           "notification_type": "permission_prompt"}, home)
     assert _flag_path(home, "sess-A").exists()
@@ -318,7 +327,7 @@ def test_malformed_json_does_not_crash(home):
 
 def test_missing_session_id_does_not_crash(home):
     r = _run({"hook_event_name": "Notification",
-              "notification_type": "idle_prompt"}, home)
+              "notification_type": "permission_prompt"}, home)
     assert r.returncode == 0, r.stderr
     # No flag directory content should be produced at all.
     flag_dir = home / "claude_awaiting_input"
@@ -333,7 +342,7 @@ def test_unknown_hook_event_does_not_crash(home):
 
 def test_log_file_is_written(home):
     _run({"session_id": "sess-7", "hook_event_name": "Notification",
-          "notification_type": "idle_prompt"}, home)
+          "notification_type": "permission_prompt"}, home)
     log = home / "claude_hook.log"
     assert log.exists()
     assert "sess-7" in log.read_text()
@@ -351,7 +360,7 @@ def test_log_file_is_truncated_when_large(home):
     assert size_before > 200_000
 
     r = _run({"session_id": "sess-8", "hook_event_name": "Notification",
-              "notification_type": "idle_prompt"}, home)
+              "notification_type": "permission_prompt"}, home)
     assert r.returncode == 0, r.stderr
 
     size_after = log.stat().st_size
@@ -371,7 +380,7 @@ def test_defaults_to_real_home_when_env_unset(tmp_path, monkeypatch):
     r = subprocess.run(
         [sys.executable, str(SCRIPT)],
         input=json.dumps({"session_id": "sess-9", "hook_event_name": "Notification",
-                          "notification_type": "idle_prompt"}),
+                          "notification_type": "permission_prompt"}),
         capture_output=True, text=True, timeout=10, env=env,
     )
     assert r.returncode == 0, r.stderr
