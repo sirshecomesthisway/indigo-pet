@@ -53,6 +53,35 @@
     @keyframes breathe { 0%,100%{transform:translate(-50%,-50%) scale(1);} 50%{transform:translate(-50%,-50%) scale(1.04);} }
     .pet[data-state="idle"] { animation: breathe 3s ease-in-out infinite; }
 
+    /* Idle stretch-and-snap (Pink-2026-09-01): an occasional squash-and-
+       stretch flourish so idle has a third beat alongside breathing and
+       the look-around. She elongates upward, overshoots on the way back,
+       then settles -- classic squash-and-stretch, which is what sells it
+       as a body rather than a picture being scaled.
+
+       transform-origin is her FEET, not her centre: she stands hugging a
+       screen edge and the wrapper rotates her to match it, so "up" in her
+       local frame is always away from whatever she's standing on. Growing
+       from the centre would push her into the edge. Switching the origin
+       is invisible because the animation both starts and ends at scale(1),
+       where the pivot has no effect.
+
+       !important matches the walk-bob/look-around idiom: it has to beat
+       .pet[data-state="idle"]'s breathe. One-shot, and squishLoop() only
+       arms it when no sub-state animation is running, so they never fight. */
+    @keyframes idle-squish {
+      0%   { transform: translate(-50%,-50%) scale(1, 1); }
+      22%  { transform: translate(-50%,-50%) scale(0.90, 1.20); }
+      45%  { transform: translate(-50%,-50%) scale(1.12, 0.88); }
+      65%  { transform: translate(-50%,-50%) scale(0.96, 1.06); }
+      82%  { transform: translate(-50%,-50%) scale(1.03, 0.98); }
+      100% { transform: translate(-50%,-50%) scale(1, 1); }
+    }
+    .pet.squishing {
+      transform-origin: bottom center;
+      animation: idle-squish 900ms ease-in-out !important;
+    }
+
     @keyframes thinking-tilt { 0%,100%{transform:translate(-50%,-50%) rotate(-4deg);} 50%{transform:translate(-50%,-50%) rotate(4deg);} }
     .pet[data-state="thinking"] { animation: thinking-tilt 2.4s ease-in-out infinite; }
 
@@ -624,6 +653,12 @@
     const BLINK_MAX_SEC     = 9;
     const BLINK_DURATION_MS = 120;
     const STRETCH_DURATION_MS = 1500;
+    // Idle squash-and-stretch. Much rarer than a blink (6-9s): a blink is
+    // punctuation, a full-body stretch is a gesture, and a gesture on a
+    // blink's cadence reads as a twitch.
+    const SQUISH_MIN_SEC     = 24;
+    const SQUISH_MAX_SEC     = 42;
+    const SQUISH_DURATION_MS = 900;
 
     function setSpriteSrcDirect(src) {
       // Instant sprite swap, no fade. Used by expression/sub-state layers.
@@ -782,6 +817,27 @@
           }, BLINK_DURATION_MS);
         }
         blinkLoop();  // schedule next beat
+      }, interval);
+    }
+
+    function squishLoop() {
+      const interval = (SQUISH_MIN_SEC + Math.random() * (SQUISH_MAX_SEC - SQUISH_MIN_SEC)) * 1000;
+      setTimeout(() => {
+        // Same gate as blinkLoop: only while genuinely idle and unbothered.
+        // Also skipped while a squish is already running, so a slow frame
+        // can never stack two and double the scale.
+        const canSquish = currentState === "idle"
+                       && !pet.dataset.substate
+                       && !_mood
+                       && !document.body.classList.contains("dragging")
+                       && !pet.classList.contains("squishing");
+        if (canSquish) {
+          pet.classList.add("squishing");
+          setTimeout(() => {
+            pet.classList.remove("squishing");
+          }, SQUISH_DURATION_MS + 60);
+        }
+        squishLoop();  // schedule next beat
       }, interval);
     }
 
@@ -1019,7 +1075,12 @@
         }, fast ? 80 : 800);
       }
       scheduleNextPoll();
-      blinkLoop();  // start the blink heartbeat
+      blinkLoop();   // start the blink heartbeat
+      squishLoop();  // ...and the idle stretch. Started here, inside the
+                     // _pollingStarted guard, for the same reason blinkLoop
+                     // is: both self-recurse via setTimeout with no
+                     // cancellation handle, so a second startPolling() would
+                     // spawn a second permanent chain racing the first.
     }
 
     function showHint(msg, ms = 2500) {
