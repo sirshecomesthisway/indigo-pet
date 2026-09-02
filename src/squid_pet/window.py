@@ -877,7 +877,7 @@ class PetApi:
             current_state = self._latest.state
         if current_state == "working":
             return
-        bubble = self._observer.on_interaction("idle_chatter")
+        bubble = self._observer.on_idle_chatter()
         if bubble is not None:
             with self._lock:
                 self._pending_bubble = bubble

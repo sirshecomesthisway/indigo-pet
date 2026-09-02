@@ -27,6 +27,12 @@ log = logging.getLogger(__name__)
 # _pick(): out-of-spec lines return None and log a warning.
 MAX_BUBBLE_CHARS = 32
 
+# How often an idle chatter beat becomes an idea prompt instead of
+# ordinary filler. 1-in-5: idle chatter fires every 26-34s and she goes
+# drowsy after a few minutes, so this lands roughly once or twice per
+# awake-idle stretch -- present without hounding you.
+IDEA_PROMPT_CHANCE = 0.2
+
 # ----------------------------------------------------------------------
 # LLM enrichment layer (llm-bubbles change 2026-06-24)
 # ----------------------------------------------------------------------
@@ -170,6 +176,32 @@ BUBBLE_LINES: dict[str, LineSpec] = {
                      "ink levels: fine", "*floats sideways*",
                      "clock is not moving", "*stares at nothing*",
                      "still floating", "low tide today"],
+
+    # Pink-2026-09-01: idle lines that invite the next project rather than
+    # just filling silence. Deliberately a SEPARATE pool, not more
+    # idle_chatter entries: chatter fires every 26-34s, and a squid asking
+    # "what should we build?" at that rate stops reading as company and
+    # starts reading as nagging. Blended in at IDEA_PROMPT_CHANCE by
+    # on_idle_chatter so it stays an occasional nudge.
+    #
+    # Same register as the rest of her voice -- lowercase, short, dry,
+    # never exclaiming. Half of them offer an idea ("i got an idea") and
+    # half ask for one; she should feel like a collaborator with her own
+    # half-formed thoughts, not a prompt box.
+    "idle_idea_prompt": ["i got an idea", "ok, i got an idea",
+                         "*has an idea* ...maybe",
+                         "got anything to build?",
+                         "what are we making?",
+                         "wanna build something?",
+                         "any half-baked ideas?",
+                         "pitch me something",
+                         "*taps a tentacle* ideas?",
+                         "i've been thinking...",
+                         "got a project in mind?",
+                         "something worth making?",
+                         "ideas? arms are free",
+                         "*brainstorming, allegedly*",
+                         "new thing today?"],
 
     # "Still working" reannounce fallback (2026-08-27k) -- fired by
     # _maybe_reannounce_working when there's no concrete shell command to
@@ -704,6 +736,19 @@ class Observer:
     def on_interaction(self, kind: str) -> Optional[str]:
         """Called when the user interacts with Squid (poke, sprint, etc.)."""
         return self._pick(kind)
+
+    def on_idle_chatter(self) -> Optional[str]:
+        """The ~26-34s ambient idle beat (RoutineController's chatter_cb).
+
+        Mostly ordinary idle filler, but IDEA_PROMPT_CHANCE of the time she
+        asks what you want to build -- or claims to have thought of
+        something herself. Separate pool rather than more idle_chatter
+        entries so the rate is a knob: the difference between a pet with
+        her own ideas and one that pesters you is entirely frequency.
+        """
+        if random.random() < IDEA_PROMPT_CHANCE:
+            return self._pick("idle_idea_prompt")
+        return self._pick("idle_chatter")
 
     # ------------------------------------------------------------------
     # Mood trigger (frontend mood notifications: drowsy, sleeping, stretch)

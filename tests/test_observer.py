@@ -458,3 +458,53 @@ def test_idle_chatter_registered_and_reachable_via_on_interaction(obs):
 
 def test_idle_chatter_muted_returns_none(muted_obs):
     assert muted_obs.on_interaction("idle_chatter") is None
+
+
+# ── Idle "what are we building?" prompts (Pink-2026-09-01) ─────────────
+# Pink asked for idle bubbles that invite the next project -- "I got an
+# idea" -- in her own voice. Kept as a SEPARATE pool rather than dumped
+# into idle_chatter so the frequency is controllable: idle_chatter fires
+# every 26-34s, and a squid asking "what should we build?" that often
+# stops reading as company and starts reading as nagging.
+def test_idea_prompt_pool_exists_and_fits_the_bubble():
+    from squid_pet.observer import BUBBLE_LINES, MAX_BUBBLE_CHARS
+
+    pool = BUBBLE_LINES["idle_idea_prompt"]
+    assert len(pool) >= 10, "needs enough variety not to repeat noticeably"
+    for line in pool:
+        assert len(line) <= MAX_BUBBLE_CHARS, f"{line!r} would be dropped by _pick"
+
+
+def test_idea_prompts_are_in_her_voice():
+    """The pool has a consistent register -- lowercase, short, dry. A line
+    that shouts breaks the character more than a boring line does."""
+    from squid_pet.observer import BUBBLE_LINES
+
+    for line in BUBBLE_LINES["idle_idea_prompt"]:
+        assert line == line.lower(), f"{line!r} breaks the all-lowercase voice"
+        assert not line.endswith("!"), f"{line!r} is too loud for her"
+
+
+def test_idle_chatter_usually_stays_ordinary_chatter(monkeypatch):
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: False)
+    monkeypatch.setattr(obs.random, "random", lambda: 0.99)
+    line = o.on_idle_chatter()
+    assert line in obs.BUBBLE_LINES["idle_chatter"]
+
+
+def test_idle_chatter_sometimes_asks_what_to_build(monkeypatch):
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: False)
+    monkeypatch.setattr(obs.random, "random", lambda: 0.0)
+    line = o.on_idle_chatter()
+    assert line in obs.BUBBLE_LINES["idle_idea_prompt"]
+
+
+def test_idea_prompts_respect_mute():
+    from squid_pet import observer as obs
+
+    o = obs.Observer(get_muted=lambda: True)
+    assert o.on_idle_chatter() is None
