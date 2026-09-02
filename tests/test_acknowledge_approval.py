@@ -86,7 +86,11 @@ def test_bubble_shows_immediately_but_calm_is_deferred(monkeypatch):
     result = api.acknowledge_approval()
 
     # Bubble + return value land immediately.
-    assert result == {"status": "calmed", "bubble": "gotcha!"}
+    # focus="skipped": this api was built via __new__ with no _focus_fn, so
+    # the "take me to it" path is inert here by construction -- see
+    # acknowledge_approval's comment on why it reads the callable off self.
+    assert result == {"status": "calmed", "bubble": "gotcha!",
+                      "focus": "skipped"}
     api._observer.on_interaction.assert_called_once_with("like")
     assert api._pending_bubble == "gotcha!"
 
@@ -144,6 +148,51 @@ def test_acknowledge_does_not_publish_bubble_when_observer_returns_none(monkeypa
     result = api.acknowledge_approval()
 
     assert api._pending_bubble is None
-    assert result == {"status": "calmed", "bubble": None}
+    assert result == {"status": "calmed", "bubble": None,
+                      "focus": "skipped"}
     # Calm is still scheduled even when there's no bubble to show.
     assert len(fake.instances) == 1
+
+
+# ── "take me to it" (Pink-2026-09-01) ──────────────────────────────────
+def test_ack_focuses_the_waiting_window(monkeypatch):
+    api = _make_api()
+    api._latest = PetState(state="approval_needed")
+    api._observer.on_interaction.return_value = "on it"
+    api._focus_fn = lambda: "matched"
+    monkeypatch.setattr(window_mod.threading, "Timer", _FakeTimer)
+    _FakeTimer.instances.clear()
+
+    result = api.acknowledge_approval()
+    assert result["focus"] == "matched"
+    assert result["status"] == "calmed", "still calms as well as jumps"
+
+
+def test_ack_still_calms_when_focusing_blows_up(monkeypatch):
+    """The calm is what you asked for; a failed window raise must not eat
+    it."""
+    api = _make_api()
+    api._latest = PetState(state="approval_needed")
+    api._observer.on_interaction.return_value = "on it"
+    def _boom():
+        raise RuntimeError("osascript exploded")
+    api._focus_fn = _boom
+    monkeypatch.setattr(window_mod.threading, "Timer", _FakeTimer)
+    _FakeTimer.instances.clear()
+
+    result = api.acknowledge_approval()
+    assert result["status"] == "calmed"
+    assert result["focus"] == "error"
+    assert len(_FakeTimer.instances) == 1, "the deferred calm was still armed"
+
+
+def test_ack_does_not_focus_when_not_waving():
+    """No wave, no jump -- a dblclick at any other time is still just a
+    poke and a heart."""
+    api = _make_api()
+    api._latest = PetState(state="idle")
+    called = []
+    api._focus_fn = lambda: called.append(1) or "matched"
+
+    assert api.acknowledge_approval()["status"] == "not-waving"
+    assert called == []

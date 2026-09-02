@@ -435,3 +435,4 @@ def test_turn_active_flag_holds_no_prompt_content(home):
     _run({"session_id": "sess-t6", "hook_event_name": "UserPromptSubmit",
           "prompt": "something private the user typed"}, home)
     assert "private" not in _turn_active_path(home, "sess-t6").read_text()
+
