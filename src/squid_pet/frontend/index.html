@@ -47,7 +47,24 @@
       transition: opacity 200ms ease;
       pointer-events: none;     /* let body capture mouse for drag */
     }
-    .pet.swapping { opacity: 0; }
+    /* Sprite swap fade. Pink-2026-09-01: this used to be a bare
+       `opacity: 0`, removed 150ms later by a setTimeout -- which made her
+       VISIBILITY depend on a JS timer firing. The comment on that timer
+       already described the failure ("WKWebView is known to throttle/drop
+       queued timers while occluded ... could strand swapping (opacity:0)
+       indefinitely with no visible sprite"); the 2026-08-15 hardening cut
+       two timers to one but kept the dependency. Confirmed live: she went
+       fully invisible while the screen was covered, window healthy the
+       whole time (CGWindowList: layer=25 alpha=1.0 onscreen=True), and
+       only a restart brought her back.
+
+       Now it is a finite animation that ENDS at opacity 1. With the
+       default fill-mode the element reverts to its base style once the
+       animation finishes -- and its base style is visible. A dropped
+       timer, a throttled view, a stranded class: none of them can leave
+       her invisible any more, because nothing has to run to restore her. */
+    @keyframes sprite-swap-in { from { opacity: 0; } to { opacity: 1; } }
+    .pet.swapping { animation: sprite-swap-in 220ms ease !important; }
 
     /* ─── Per-state animations ─── */
     @keyframes breathe { 0%,100%{transform:translate(-50%,-50%) scale(1);} 50%{transform:translate(-50%,-50%) scale(1.04);} }
@@ -480,6 +497,11 @@
       return VALID.has(state) ? `sprites/${state}.png` : `sprites/idle.png`;
     }
 
+    // When the swap class was last armed, so poll() can sweep a stale one.
+    // Belt and braces: the animation already ends visible, this just stops
+    // a stranded class from freezing her state animation too.
+    let _swapClassSince = 0;
+
     function setState(state, force = false) {
       if (!state) return;
       // 2026-06-29: restored real per-state sprite swapping. The
@@ -522,11 +544,19 @@
       // `transition: opacity 200ms ease` already drives the actual fade
       // declaratively, so JS only needs to toggle the class around the
       // src swap -- no onload dependency, no second timer.
+      // Swap immediately -- the fade is now the CSS animation's job, so
+      // nothing is hidden while we wait for a timer. The class is only
+      // re-armed (remove -> reflow -> add) to restart the animation.
+      pet.src = targetSrc;
+      pet.classList.remove("swapping");
+      void pet.offsetWidth;              // force reflow so the anim restarts
       pet.classList.add("swapping");
+      _swapClassSince = Date.now();
+      // Tidy-up only. If this never fires she is still visible: the
+      // animation has already ended at opacity 1.
       setTimeout(() => {
-        pet.src = targetSrc;
         pet.classList.remove("swapping");
-      }, 150);
+      }, 260);
     }
 
     // Apply walking/look-around sub-state (set by Python wanderer/pulse).
@@ -993,6 +1023,15 @@
     // second path. Idempotent on the Python side.
     let _readySignaled = false;
     async function poll() {
+      // Sweep a stranded swap class. The animation ending at opacity 1
+      // already guarantees she stays visible, so this only recovers her
+      // STATE animation (breathe/tilt), which the class would otherwise
+      // keep overridden. Runs first so a wedged view heals on the very
+      // first tick after timers resume.
+      if (_swapClassSince && Date.now() - _swapClassSince > 1000) {
+        pet.classList.remove("swapping");
+        _swapClassSince = 0;
+      }
       try {
         if (window.pywebview?.api?.get_state) {
           if (!_readySignaled && window.pywebview.api.signal_ready) {
