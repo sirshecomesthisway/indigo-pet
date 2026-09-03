@@ -57,15 +57,19 @@ def test_sleeping_when_macos_idle_exceeds_threshold(monkeypatch):
     assert "idle" in st.message
 
 
-def test_sleeping_takes_priority_over_everything(monkeypatch):
-    """Sleeping wins even when a celebrate window is armed -- as long as
-    no agent detector is reporting active busy-ness (with no detectors
-    at all, make_machine_bare() has nothing to be busy). See
-    test_watcher_claude_code_cascade.py for the 2026-08-27g case where
-    a REAL agent busy signal suppresses sleeping instead."""
+def test_sleeping_still_leads_the_cascade(monkeypatch):
+    """Sleeping is still priority 1 -- for its own scenario.
+
+    Until 2026-09-03 this test was named "takes priority over
+    everything" and asserted that an armed celebrate window LOST to
+    sleeping. That swallowed every completion announced while the user
+    was away from the keyboard, so celebration now suppresses sleeping
+    the same way an active agent already did (2026-08-27g). See
+    test_armed_celebrate_window_beats_sleeping and
+    test_completed_task_beats_sleeping.
+    """
     install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
     sm = make_machine_bare()
-    sm.celebrate_until = time.time() + 20
     st = sm.compute()
     assert st.state == "sleeping"
 
@@ -163,3 +167,47 @@ def test_petstate_default_fields():
     assert st.message == ""
     assert st.concern_reason == ""
     assert st.concern_severity == ""
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Finishing is news whether or not the human is at the keyboard
+# ──────────────────────────────────────────────────────────────────────
+def test_completed_task_beats_sleeping(monkeypatch):
+    """A finished task must celebrate even past the idle threshold.
+
+    Sleeping is about USER presence; finishing is about AGENT activity,
+    and an agent *busy* signal already suppresses sleeping (2026-08-27g).
+    Celebration was left on the wrong side of that fence: the sleeping
+    branch returns before the celebrating branch is ever evaluated, so a
+    task finishing while the user was away for 5+ minutes was swallowed
+    entirely -- the marker's 20s freshness window expired unseen and the
+    completion was never announced.
+    """
+    install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
+    monkeypatch.setattr(
+        watcher, "claude_task_marked_complete_recently", lambda now=None: True
+    )
+    sm = make_machine_bare()
+
+    st = sm.compute()
+    assert st.state == "celebrating"
+
+
+def test_armed_celebrate_window_beats_sleeping(monkeypatch):
+    """The held celebrate window survives the user stepping away too."""
+    install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
+    sm = make_machine_bare()
+    sm.celebrate_until = time.time() + 20
+
+    st = sm.compute()
+    assert st.state == "celebrating"
+
+
+def test_sleeping_still_wins_with_nothing_to_celebrate(monkeypatch):
+    """Guard rail: suppressing sleeping is scoped to celebration only."""
+    install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
+    sm = make_machine_bare()
+    sm.celebrate_until = 0.0
+
+    st = sm.compute()
+    assert st.state == "sleeping"

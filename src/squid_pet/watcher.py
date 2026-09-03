@@ -6,8 +6,11 @@ State model:
   - thinking     : Claude Code / Codex transcript written recently (streaming)
   - working      : Claude Code / Codex has a live shell child, or a project
                    file was just written
-  - celebrating  : Claude Code's/Codex's busy signal just dropped to idle
-                   (sticky window), or GitDetector saw a fresh commit
+  - celebrating  : Claude wrote the explicit task-complete marker
+                   (scripts/squid_task_complete.py), Codex's own busy->idle
+                   edge, or GitDetector saw a fresh commit (sticky window)
+  - grooving     : Claude Code's Stop hook fired and nothing resumed since
+                   -- the lighter per-turn "still making progress" beat
   - sleeping     : macOS idle > 5 min
   - approval_needed : Claude Code's Notification hook (scripts/
                    claude_pet_hook.py) reports a session is waiting on you
@@ -1242,7 +1245,23 @@ class StateMachine:
         # working/thinking, so this can never disagree with what the
         # rest of the cascade would call "busy".
         agent_actively_busy = working_evidence_merged or streaming_merged
-        if idle >= IDLE_THRESHOLD_SEC and not agent_actively_busy:
+        # Pink-2026-09-03: finishing is news whether or not the human is
+        # at the keyboard. Sleeping is about USER presence; a completed
+        # task is AGENT activity, and agent busy-ness already suppresses
+        # sleeping (see the note above). Celebration sat on the wrong
+        # side of that fence: this branch returns before the celebrating
+        # branch below is ever evaluated, so a task that finished while
+        # the user was away for 5+ minutes was swallowed outright -- the
+        # marker's freshness window (celebrate_hold_sec, 20s) expired
+        # while squid dozed, and the completion was never announced.
+        claude_task_complete = claude_task_marked_complete_recently(now)
+        celebration_pending = (
+            claude_task_complete
+            or codex_celebrating
+            or now < self.celebrate_until
+        )
+        if (idle >= IDLE_THRESHOLD_SEC and not agent_actively_busy
+                and not celebration_pending):
             st.state = "sleeping"
             st.state_reason = f"idle {int(idle // 60)}m"
             st.message = f"💤 idle {int(idle // 60)}m"
@@ -1266,7 +1285,9 @@ class StateMachine:
         claude_resumed_work = claude_shell_active or claude_file_active
         claude_just_stopped = claude_finished_age is not None and not claude_resumed_work
         claude_grooving_now = claude_just_stopped
-        claude_task_complete = claude_task_marked_complete_recently(now)
+        # claude_task_complete is computed above, before the sleeping
+        # gate that now consults it -- recomputing here would scan the
+        # marker directory a second time for the same answer.
 
         # ── TURN EDGES (Pink-2026-09-01) ─────────────────────────────
         # A turn opening clears the per-turn latches; a turn closing is
