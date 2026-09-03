@@ -78,6 +78,31 @@ CORNERS = ["top-right", "bottom-right", "bottom-left", "top-left"]
 # ──────────────────────────────────────────────────────────────────
 # NSWindow helpers (Cocoa direct — no accessibility needed)
 # ──────────────────────────────────────────────────────────────────
+# AppKit hands us every window the app owns, not just ours. The menu-bar
+# NSStatusItem has a backing NSStatusBarWindow, and an open right-click
+# NSMenu has one too -- and the order of NSApp.windows() is NOT stable
+# across launches. "First visible window" therefore sometimes returned a
+# 29x24 menu-bar item instead of the 200x300 sprite, silently retargeting
+# positioning, alpha, all-Spaces and the passthrough hit-test at the wrong
+# window. To the user that reads as Squid freezing (observed 2026-09-03:
+# `squid doctor` reported "window at (1147,0) size 38x24" after a restart).
+_NOT_THE_PET_WINDOW = ("StatusBar", "Menu")
+
+
+def _pick_pet_window(windows):
+    """Return the sprite's NSWindow from an NSApp.windows() sequence."""
+    for w in windows:
+        try:
+            if not w.isVisible():
+                continue
+            if any(tag in w.className() for tag in _NOT_THE_PET_WINDOW):
+                continue
+            return w
+        except Exception:
+            continue
+    return None
+
+
 def _get_ns_window():
     """Return the NSWindow for our pywebview window, or None."""
     try:
@@ -85,13 +110,7 @@ def _get_ns_window():
         app = NSApp() if callable(NSApp) else NSApp
         if app is None:
             return None
-        for w in app.windows():
-            # Filter — skip helper/hidden windows
-            try:
-                if w.isVisible():
-                    return w
-            except Exception:
-                continue
+        return _pick_pet_window(app.windows())
     except Exception as e:
         print(f"[squid-pet] NSWindow fetch failed: {e}", flush=True)
     return None
