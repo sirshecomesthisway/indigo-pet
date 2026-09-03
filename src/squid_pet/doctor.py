@@ -165,6 +165,25 @@ def check_launchd_loaded(label: str = LAUNCHD_LABEL) -> CheckResult:
     )
 
 
+def _pick_pet_cgwindow(entries: list) -> Optional[dict]:
+    """Choose the sprite's window from the CGWindowList entries our pid owns.
+
+    Every window the process owns appears there, and the menu-bar
+    NSStatusItem is on-screen with alpha 1.0 exactly like the sprite --
+    so "first match wins" made this report the 38x24 menu-bar item after
+    a restart (observed 2026-09-03), which sends anyone reading a bug
+    report chasing the wrong thing. Prefer an exact sprite-sized match;
+    otherwise take the largest, since the status item is tiny either way.
+    """
+    if not entries:
+        return None
+    from .window import WINDOW_WIDTH, WINDOW_HEIGHT
+    for e in entries:
+        if e["w"] == float(WINDOW_WIDTH) and e["h"] == float(WINDOW_HEIGHT):
+            return e
+    return max(entries, key=lambda e: e["w"] * e["h"])
+
+
 def _get_visible_window_for_pid(pid: int) -> Optional[dict]:
     """Return CGWindowList entry for the given pid where alpha>0 and on-screen,
     or None. Returns None gracefully on non-Mac / Quartz import failure."""
@@ -181,6 +200,7 @@ def _get_visible_window_for_pid(pid: int) -> Optional[dict]:
     except ImportError:
         return None
     info = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID)
+    candidates = []
     for w in info:
         if w.get(kCGWindowOwnerPID) != pid:
             continue
@@ -191,13 +211,14 @@ def _get_visible_window_for_pid(pid: int) -> Optional[dict]:
         bounds = w.get(kCGWindowBounds)
         if bounds is None:
             continue
-        return {
+        candidates.append({
             "x": float(bounds.get("X", 0)),
             "y": float(bounds.get("Y", 0)),
             "w": float(bounds.get("Width", 0)),
             "h": float(bounds.get("Height", 0)),
             "alpha": float(w.get(kCGWindowAlpha, 0)),
-        }
+        })
+    return _pick_pet_cgwindow(candidates)
     return None
 
 
@@ -341,13 +362,20 @@ REQUIRED_STARTUP_MARKERS = (
 
 
 def check_startup_log_complete(log_path: Path = STDOUT_LOG,
-                                head_bytes: int = 16_000) -> CheckResult:
-    """Check 6: log HEAD (first ~16KB) contains all expected startup markers.
+                                tail_bytes: int = 4_000_000) -> CheckResult:
+    """Check 6: the MOST RECENT boot logged every startup marker.
 
-    Startup markers fire once when Squid boots. After hours of runtime
-    the log is full of per-tick lines; the startup markers are at the
-    top. We read only the head of the log (small, fast) to verify the
-    boot sequence completed cleanly even on long-running instances.
+    This used to read the log's HEAD, on the assumption that "startup
+    markers are at the top". launchd APPENDS across restarts, so the top
+    is the first boot ever recorded -- stale, and often partial. On
+    Pink's machine (2026-09-03) that made this check report FAIL
+    permanently: a 6.3MB log whose first 16KB began mid-session, while
+    all five markers were in fact present 70 times over. The same bug
+    ran the other way too -- a boot that died halfway still PASSED,
+    because the old complete sequence was still sitting up top.
+
+    So grade the newest boot: find the last occurrence of the first
+    marker and require the rest to follow it.
     """
     name = "startup log markers"
     if not log_path.exists():
@@ -359,21 +387,35 @@ def check_startup_log_complete(log_path: Path = STDOUT_LOG,
         )
     try:
         with log_path.open("rb") as f:
-            head = f.read(head_bytes)
-        head_text = head.decode("utf-8", errors="replace")
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            tail_text = f.read().decode("utf-8", errors="replace")
     except OSError as e:
         return CheckResult(
             name=name, passed=False,
             diagnostic=f"could not read log: {e}",
             drawer_ref="design.md D6",
         )
-    missing = [m for m in REQUIRED_STARTUP_MARKERS if m not in head_text]
+    first_marker = REQUIRED_STARTUP_MARKERS[0]
+    boot_at = tail_text.rfind(first_marker)
+    if boot_at < 0:
+        return CheckResult(
+            name=name, passed=False,
+            diagnostic=(f"no startup sequence in the last {tail_bytes} bytes "
+                        f"of log (never saw {first_marker!r})"),
+            suggested_fix=("Squid may not have reached init. Check the end of "
+                           "the log for an exception."),
+            drawer_ref="design.md D5",
+        )
+    latest_boot = tail_text[boot_at:]
+    missing = [m for m in REQUIRED_STARTUP_MARKERS if m not in latest_boot]
     if missing:
         return CheckResult(
             name=name, passed=False,
-            diagnostic=(f"missing startup markers in first {head_bytes} "
-                       f"bytes of log: {', '.join(missing)}"),
-            suggested_fix=("Squid may have started but not completed init. "
+            diagnostic=("missing startup markers in the most recent boot: "
+                        f"{', '.join(missing)}"),
+            suggested_fix=("Squid started but did not complete init. "
                           "Check log around the missing markers for an exception."),
             drawer_ref="design.md D5",
         )

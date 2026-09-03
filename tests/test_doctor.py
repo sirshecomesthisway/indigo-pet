@@ -304,17 +304,20 @@ def test_startup_log_missing_file(tmp_path):
     assert "no log file" in r.diagnostic
 
 
-def test_startup_log_only_reads_head(tmp_path):
-    """If markers are present only AFTER the head_bytes budget, must fail."""
+def test_startup_log_reports_when_no_boot_is_in_the_window(tmp_path):
+    """A tail window with no startup sequence at all must fail.
+
+    Until 2026-09-03 this test asserted the opposite framing -- that
+    markers past a `head_bytes` budget SHOULD fail -- which encoded the
+    bug: the log is appended to across restarts, so the head grades a
+    boot from days ago. See
+    test_startup_markers_are_read_from_the_most_recent_boot.
+    """
     log = tmp_path / "out.log"
-    # 20 KB of padding, then markers
-    padding = ("[squid-pet] tick X: lots of runtime noise here " * 200)
-    body = padding + "\n" + "\n".join(
-        f"[squid-pet] {m}" for m in doctor.REQUIRED_STARTUP_MARKERS
-    )
-    log.write_text(body)
-    r = doctor.check_startup_log_complete(log_path=log, head_bytes=4_000)
-    assert not r.passed, "should not find markers past the head budget"
+    log.write_text("[squid-pet] tick X: lots of runtime noise here\n" * 200)
+    r = doctor.check_startup_log_complete(log_path=log)
+    assert not r.passed
+    assert "no startup sequence" in r.diagnostic
 
 
 # ----------------------------------------------------------------------
@@ -363,3 +366,86 @@ def test_run_doctor_json_output(monkeypatch, capsys):
     assert payload["checks"][0]["passed"] is True
     assert payload["checks"][1]["passed"] is False
     assert rc == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Which window is the pet? (2026-09-03)
+# ──────────────────────────────────────────────────────────────────────
+def _cg(x, y, w, h, alpha=1.0):
+    return {"x": float(x), "y": float(y), "w": float(w), "h": float(h),
+            "alpha": float(alpha)}
+
+
+def test_menu_bar_item_is_not_reported_as_the_pet_window():
+    """CGWindowList hands back every window our pid owns.
+
+    The menu-bar NSStatusItem is on-screen with alpha 1.0 just like the
+    sprite, so reporting "the first match" made `squid doctor` print
+    "window at (1147,0) size 38x24" after a restart -- which would send
+    anyone reading a bug report chasing the wrong thing entirely.
+    """
+    from squid_pet.doctor import _pick_pet_cgwindow
+    from squid_pet.window import WINDOW_WIDTH, WINDOW_HEIGHT
+
+    status = _cg(1147, 0, 38, 24)
+    sprite = _cg(1282, 688, WINDOW_WIDTH, WINDOW_HEIGHT)
+    assert _pick_pet_cgwindow([status, sprite]) == sprite
+
+
+def test_pet_window_found_regardless_of_order():
+    from squid_pet.doctor import _pick_pet_cgwindow
+    from squid_pet.window import WINDOW_WIDTH, WINDOW_HEIGHT
+
+    sprite = _cg(1282, 688, WINDOW_WIDTH, WINDOW_HEIGHT)
+    status = _cg(1147, 0, 38, 24)
+    assert _pick_pet_cgwindow([sprite, status]) == sprite
+
+
+def test_falls_back_to_the_largest_when_no_exact_size_match():
+    """Mid-resize or on a scaled display the sprite may not measure
+    exactly WINDOW_WIDTH x WINDOW_HEIGHT; the menu-bar item is still
+    tiny, so the largest window is the right answer."""
+    from squid_pet.doctor import _pick_pet_cgwindow
+
+    status = _cg(1147, 0, 38, 24)
+    sprite = _cg(1282, 688, 201, 301)
+    assert _pick_pet_cgwindow([status, sprite]) == sprite
+
+
+def test_no_windows_returns_none():
+    from squid_pet.doctor import _pick_pet_cgwindow
+    assert _pick_pet_cgwindow([]) is None
+
+
+def test_startup_markers_are_read_from_the_most_recent_boot(tmp_path):
+    """The log survives restarts, so its head holds the FIRST boot ever.
+
+    launchd appends stdout; every `kickstart -k` writes a fresh startup
+    burst at the END of the file. Reading only the first 16KB therefore
+    validated a boot from days ago -- and on this machine that head did
+    not even contain "watcher thread started", so check 6 reported FAIL
+    permanently while every actual restart was clean. (6.3MB log, all
+    five markers present 70x, most recent burst 300 lines from the end.)
+    """
+    log = tmp_path / "squid.log"
+    log.write_text(
+        "[squid-pet] passthrough loop started\n"          # partial old boot
+        + "[squid-pet] tick\n" * 4000                     # a day of per-tick noise
+        + "".join(f"[squid-pet] {m}\n"
+                  for m in doctor.REQUIRED_STARTUP_MARKERS)
+    )
+    res = doctor.check_startup_log_complete(log_path=log)
+    assert res.passed, res.diagnostic
+
+
+def test_incomplete_latest_boot_still_fails(tmp_path):
+    """Guard rail: looking at the newest boot must not mean passing
+    everything -- a boot that died halfway must still be reported."""
+    log = tmp_path / "squid.log"
+    log.write_text(
+        "".join(f"[squid-pet] {m}\n" for m in doctor.REQUIRED_STARTUP_MARKERS)
+        + "[squid-pet] tick\n" * 4000
+        + "[squid-pet] watcher thread started\n"          # newest boot stalls here
+    )
+    res = doctor.check_startup_log_complete(log_path=log)
+    assert not res.passed
