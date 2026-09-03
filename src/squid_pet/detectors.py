@@ -722,6 +722,7 @@ class IDEDetector:
         self.cpu_percent: float = 0.0
         self.recent_file_count_busy: int = 0
         self.recent_file_count_grooving: int = 0
+        self._last_scan_ts: float = 0.0
 
     def _iter_procs(self):
         if self._process_iter is not None:
@@ -749,6 +750,12 @@ class IDEDetector:
         return _scan_recent_file_ages(self.project_dirs, window_sec)
 
     def _scan(self, now: float) -> None:
+        # Same once-per-tick guard as ClaudeCodeDetector/CodexDetector.
+        # The watcher calls is_busy() AND is_grooving() every tick, and
+        # both used to re-scan -- so each tick paid for two full process
+        # enumerations and two project-tree walks instead of one.
+        if now == self._last_scan_ts:
+            return
         self.cpu_percent = self._aggregate_cpu()
         # Two windows: 5s busy / 30s grooving. Compute the larger then partition.
         recent = self._recent_files(self.GROOVING_WINDOW_SEC)
@@ -756,6 +763,7 @@ class IDEDetector:
         self.recent_file_count_busy = sum(
             1 for a in recent if a < self.RECENT_FILE_WINDOW_SEC
         )
+        self._last_scan_ts = now
 
     def is_busy(self, now: float) -> bool:
         if not self.enabled:

@@ -132,3 +132,53 @@ def test_default_recent_files_skips_junk_dirs(tmp_path):
     )
     ages = d._default_recent_files(window_sec=10.0)
     assert len(ages) == 1  # node_modules skipped
+
+
+def test_scan_runs_once_per_watcher_tick():
+    """One tick == one scan.
+
+    ClaudeCodeDetector and CodexDetector both short-circuit on
+    _last_scan_ts; IDEDetector did not, so a single watcher tick paid
+    for two full process enumerations and two project-tree walks.
+    """
+    calls = {"procs": 0, "files": 0}
+
+    def procs():
+        calls["procs"] += 1
+        return iter([_Proc("Code", cpu=10.0)])
+
+    def files(window):
+        calls["files"] += 1
+        return [2.0]
+
+    d = IDEDetector(
+        project_dirs=["/nonexistent-test-path"],
+        process_iter_fn=procs,
+        recent_files_fn=files,
+    )
+    now = 1.0
+    d.is_busy(now)
+    d.is_celebrating(now)
+    d.is_grooving(now)
+    d.diagnostic()
+
+    assert calls["procs"] == 1, f"process scan ran {calls['procs']}x in one tick"
+    assert calls["files"] == 1, f"project-tree walk ran {calls['files']}x in one tick"
+
+
+def test_next_tick_does_rescan():
+    """The guard must not freeze state: a later tick scans again."""
+    calls = {"n": 0}
+
+    def procs():
+        calls["n"] += 1
+        return iter([_Proc("Code", cpu=10.0)])
+
+    d = IDEDetector(
+        project_dirs=["/nonexistent-test-path"],
+        process_iter_fn=procs,
+        recent_files_fn=lambda w: [2.0],
+    )
+    d.is_busy(1.0)
+    d.is_busy(2.0)
+    assert calls["n"] == 2
