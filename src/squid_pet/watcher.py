@@ -11,7 +11,8 @@ State model:
                    edge, or GitDetector saw a fresh commit (sticky window)
   - grooving     : Claude Code's Stop hook fired and nothing resumed since
                    -- the lighter per-turn "still making progress" beat
-  - sleeping     : macOS idle > 5 min
+  - sleeping     : no agent activity for > 5 min (NOT user presence --
+                   see the sleeping branch in _compute_inner)
   - approval_needed : Claude Code's Notification hook (scripts/
                    claude_pet_hook.py) reports a session is waiting on you
 
@@ -50,7 +51,7 @@ STATE_DIR = Path.home() / ".squid-pet"
 STATE_FILE = STATE_DIR / "state.json"
 
 POLL_INTERVAL_SEC = 1.0
-IDLE_THRESHOLD_SEC = 300           # 5 min macOS idle → sleeping
+IDLE_THRESHOLD_SEC = 300           # 5 min with no agent activity → sleeping
 # Names of transient CLI tools that indicate ACTIVE tool use. Shared by
 # has_active_shell_children() for Claude Code / Codex's shell_active signal.
 # Excludes shells (bash/sh/zsh) because shells are always the wrapper —
@@ -1350,7 +1351,8 @@ class StateMachine:
             timestamp=now,
         )
 
-        # ── 1. SLEEPING ── user is away AND the agent isn't actively busy.
+        # ── 1. SLEEPING ── the AGENTS have been quiet, and none of them
+        # is busy right now.
         # Pink-2026-08-27g: sleeping used to override EVERYTHING
         # unconditionally ("regardless of any other signal", including
         # active agent work). A user caught this looking wrong live:
@@ -1364,6 +1366,17 @@ class StateMachine:
         # working/thinking, so this can never disagree with what the
         # rest of the cascade would call "busy".
         agent_actively_busy = working_evidence_merged or streaming_merged
+        # Pink-2026-09-04: sleeping used to require the HUMAN to be away
+        # (macOS HID idle >= 5 min). That is the wrong question for a pet
+        # that watches agents: Pink sitting at the keyboard writing docs
+        # while nothing has run for an hour kept her wide awake, and a
+        # run finishing thirty seconds ago while Pink was out for lunch
+        # put her to sleep. She now dozes on the agents' own quiet.
+        # The clock is the one compute() already maintains for
+        # agent_idle_seconds: when she last left an active state. It is 0.0
+        # until compute() has run once -- reading that as a timestamp
+        # would mean "quiet since 1970" and sleep on the first tick.
+        agent_quiet_for = (now - self._agent_idle_since) if self._agent_idle_since else 0.0
         # Pink-2026-09-03: finishing is news whether or not the human is
         # at the keyboard. Sleeping is about USER presence; a completed
         # task is AGENT activity, and agent busy-ness already suppresses
@@ -1379,11 +1392,11 @@ class StateMachine:
             or codex_celebrating
             or now < self.celebrate_until
         )
-        if (idle >= IDLE_THRESHOLD_SEC and not agent_actively_busy
+        if (agent_quiet_for >= IDLE_THRESHOLD_SEC and not agent_actively_busy
                 and not celebration_pending):
             st.state = "sleeping"
-            st.state_reason = f"idle {int(idle // 60)}m"
-            st.message = f"💤 idle {int(idle // 60)}m"
+            st.state_reason = f"agents quiet {int(agent_quiet_for // 60)}m"
+            st.message = f"💤 idle {int(agent_quiet_for // 60)}m"
             return st
 
         # claude_finished_age (set above) can't by itself tell "finished

@@ -38,6 +38,11 @@ def install_world(monkeypatch, idle=0.0):
     monkeypatch.setattr(watcher, "CLAUDE_AWAITING_INPUT_DIR", "/nonexistent")
 
 
+def _agents_quiet_for(sm, seconds: float) -> None:
+    """Backdate the agent-quiet clock compute() maintains."""
+    import time as _t
+    sm._agent_idle_since = _t.time() - seconds
+
 def make_machine_bare() -> StateMachine:
     """StateMachine with no detectors at all -- exercises the sleeping /
     celebrating / default-idle branches without any Claude/Codex
@@ -48,9 +53,10 @@ def make_machine_bare() -> StateMachine:
 # ──────────────────────────────────────────────────────────────────────
 # Priority 1 — SLEEPING
 # ──────────────────────────────────────────────────────────────────────
-def test_sleeping_when_macos_idle_exceeds_threshold(monkeypatch):
+def test_sleeping_when_the_agents_have_been_quiet_past_the_threshold(monkeypatch):
     install_world(monkeypatch, idle=400.0)
     sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
 
     st = sm.compute()
     assert st.state == "sleeping"
@@ -70,6 +76,7 @@ def test_sleeping_still_leads_the_cascade(monkeypatch):
     """
     install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
     sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
     st = sm.compute()
     assert st.state == "sleeping"
 
@@ -170,13 +177,12 @@ def test_petstate_default_fields():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Finishing is news whether or not the human is at the keyboard
+# Finishing is news even after a long quiet stretch
 # ──────────────────────────────────────────────────────────────────────
 def test_completed_task_beats_sleeping(monkeypatch):
-    """A finished task must celebrate even past the idle threshold.
+    """A finished task must celebrate even past the quiet threshold.
 
-    Sleeping is about USER presence; finishing is about AGENT activity,
-    and an agent *busy* signal already suppresses sleeping (2026-08-27g).
+    An agent *busy* signal already suppresses sleeping (2026-08-27g).
     Celebration was left on the wrong side of that fence: the sleeping
     branch returns before the celebrating branch is ever evaluated, so a
     task finishing while the user was away for 5+ minutes was swallowed
@@ -188,15 +194,17 @@ def test_completed_task_beats_sleeping(monkeypatch):
         watcher, "claude_task_marked_complete_recently", lambda now=None: True
     )
     sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
 
     st = sm.compute()
     assert st.state == "celebrating"
 
 
 def test_armed_celebrate_window_beats_sleeping(monkeypatch):
-    """The held celebrate window survives the user stepping away too."""
+    """The held celebrate window survives a long quiet stretch too."""
     install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
     sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
     sm.celebrate_until = time.time() + 20
 
     st = sm.compute()
@@ -207,7 +215,49 @@ def test_sleeping_still_wins_with_nothing_to_celebrate(monkeypatch):
     """Guard rail: suppressing sleeping is scoped to celebration only."""
     install_world(monkeypatch, idle=watcher.IDLE_THRESHOLD_SEC + 1)
     sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
     sm.celebrate_until = 0.0
 
     st = sm.compute()
     assert st.state == "sleeping"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sleeping is about AGENT quiet, not user presence (2026-09-03)
+# ──────────────────────────────────────────────────────────────────────
+# Until now sleeping required the HUMAN to be away: macOS HID idle >= 5
+# min. Pink's rule is the opposite -- Squid watches the agents, so she
+# should doze when THEY have been quiet for five minutes, whether or not
+# anyone is at the keyboard. The clock is the one compute() already
+# maintains for agent_idle_seconds (_agent_idle_since: when she last left an
+# active state).
+def test_sleeps_when_agents_go_quiet_even_while_the_user_is_typing(monkeypatch):
+    """The case the old rule got wrong: Pink is writing docs at the
+    keyboard, nothing has run for five minutes -- she should doze."""
+    install_world(monkeypatch, idle=0.0)
+    sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
+
+    assert sm.compute().state == "sleeping"
+
+
+def test_stays_awake_when_the_user_is_away_but_agents_only_just_stopped(monkeypatch):
+    """The mirror image, which the old rule also got wrong: Pink has
+    been gone an hour, but a run finished thirty seconds ago -- that is
+    not five minutes of quiet."""
+    install_world(monkeypatch, idle=3600.0)
+    sm = make_machine_bare()
+    _agents_quiet_for(sm, 30.0)
+
+    assert sm.compute().state != "sleeping"
+
+
+def test_a_fresh_machine_does_not_sleep_on_its_first_tick(monkeypatch):
+    """_agent_idle_since starts at 0.0 and only compute() sets it. Reading
+    that zero as a timestamp would mean 'quiet since 1970' and put her
+    to sleep the instant she boots."""
+    install_world(monkeypatch, idle=0.0)
+    sm = make_machine_bare()
+    assert sm._agent_idle_since == 0.0
+
+    assert sm.compute().state != "sleeping"

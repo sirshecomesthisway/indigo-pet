@@ -34,7 +34,8 @@ def install_world(monkeypatch, idle=0.0, finished_dir="/nonexistent", recap_dir=
 
 
 def _claude_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float("inf"),
-                     file_ages=None, idle=0.0, turn_active_dir="/nonexistent"):
+                     file_ages=None, idle=0.0, turn_active_dir="/nonexistent",
+                     agent_quiet_sec=0.0):
     install_world(monkeypatch, idle=idle, turn_active_dir=turn_active_dir)
     now_ref = {"v": 1_000_000.0}
 
@@ -58,6 +59,10 @@ def _claude_machine(monkeypatch, *, shell_active=False, transcript_age_sec=float
         recent_file_ages_fn=lambda: list(file_ages or []),
     )
     sm = StateMachine(detectors=[claude])
+    # agent_quiet_sec backdates the clock compute() keeps for
+    # agent_idle_seconds -- the one sleeping reads since 2026-09-04.
+    if agent_quiet_sec:
+        sm._agent_idle_since = now_ref["v"] - agent_quiet_sec
     # StateMachine.compute() uses time.time() internally for `now`, but
     # our fake stat_fn keys off a fixed reference instead -- patch
     # time.time so the transcript-age math lines up with now_ref.
@@ -437,13 +442,14 @@ def test_recap_flag_expires_after_fresh_window(monkeypatch, tmp_path):
 
 # ── Regression: 2026-08-27g -- sleeping used to win unconditionally ────
 # A user caught this looking wrong live: squid showed sleeping while
-# Claude Code was actively working in the background, because the user
-# had stepped away from the keyboard for 5+ minutes mid-session.
-# Sleeping is about USER presence; working/thinking are about AGENT
-# activity -- when the agent is genuinely busy, that should win.
+# Claude Code was actively working in the background while squid dozed.
+# Sleeping is gated on the agents having gone quiet (2026-09-04; it used
+# to be gated on the user being away) -- so an agent that is busy RIGHT
+# NOW must win even when the quiet clock has not been reset yet.
 def test_agent_busy_suppresses_sleeping_via_shell_active(monkeypatch):
     sm = _claude_machine(
         monkeypatch, shell_active=True, idle=watcher.IDLE_THRESHOLD_SEC + 1,
+        agent_quiet_sec=watcher.IDLE_THRESHOLD_SEC + 1,
     )
     st = sm.compute()
     assert st.state != "sleeping", (
@@ -460,6 +466,7 @@ def test_agent_busy_suppresses_sleeping_via_streaming(monkeypatch):
     suppression reuses."""
     sm = _claude_machine(
         monkeypatch, transcript_age_sec=1.0, idle=watcher.IDLE_THRESHOLD_SEC + 1,
+        agent_quiet_sec=watcher.IDLE_THRESHOLD_SEC + 1,
     )
     st = sm.compute()
     assert st.state != "sleeping"
@@ -467,11 +474,12 @@ def test_agent_busy_suppresses_sleeping_via_streaming(monkeypatch):
 
 
 def test_sleeping_still_wins_when_agent_genuinely_idle(monkeypatch):
-    """Contrast case: user away AND agent not busy -> sleeping still
-    fires normally. The suppression is specifically busy-gated, not a
-    blanket disable."""
+    """Contrast case: agents quiet past the threshold AND none busy ->
+    sleeping still fires normally. The suppression is specifically
+    busy-gated, not a blanket disable."""
     sm = _claude_machine(
         monkeypatch, shell_active=False, idle=watcher.IDLE_THRESHOLD_SEC + 1,
+        agent_quiet_sec=watcher.IDLE_THRESHOLD_SEC + 1,
     )
     st = sm.compute()
     assert st.state == "sleeping"

@@ -204,8 +204,11 @@ def _explain_verdict(state, per_detector, approval_alert=None) -> str:
     fired = [d for d in per_detector
              if d["fired_busy"] or d["fired_celebrating"] or d["fired_grooving"]]
     if state.state == "sleeping":
-        return (f"sleeping because macOS HID idle = "
-                f"{state.idle_seconds:.0f}s (>= 300s threshold)")
+        # 2026-09-04: gated on the AGENTS being quiet, not on the user
+        # being away -- state.idle_seconds (HID) is reported below as a
+        # diagnostic but no longer decides this.
+        return (f"sleeping because no agent activity for "
+                f"{state.agent_idle_seconds:.0f}s (>= 300s threshold)")
     if state.state == "approval_needed":
         # Pink-2026-08-26: approval_needed is an OVERRIDE on top of
         # whatever the cascade picked underneath (see StateMachine.
@@ -250,8 +253,8 @@ def _print_why_human(report: dict) -> None:
     st = report["state"]
     print(f"squid-pet state: {BOLD}{st['state']}{RST}")
     print(f"  message:        {st['message']}")
-    print(f"  idle (HID):     {st['idle_seconds']}s")
-    print(f"  agent_idle:        {st['agent_idle_seconds']}s")
+    print(f"  idle (HID):     {st['idle_seconds']}s  (diagnostic only)")
+    print(f"  agent quiet:    {st['agent_idle_seconds']}s  (drives sleeping)")
     # Fix C (2026-06-28): show state_reason -- the one-line answer to
     # "why is she in this state right now?" without decoding CPU and
     # detector booleans by hand.
