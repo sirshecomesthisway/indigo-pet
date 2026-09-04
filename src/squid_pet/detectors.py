@@ -58,6 +58,36 @@ class Detector(Protocol):
 
 
 # ----------------------------------------------------------------------
+# Shared shell-activity signal
+# ----------------------------------------------------------------------
+def _shell_signals(procs, active_fn, cmdline_fn) -> tuple[bool, list[str] | None]:
+    """(shell_active, shell_cmdline) for one agent's processes.
+
+    CPU fix 2 (2026-09-03): production now reads both signals from a
+    single descendant-tree walk (watcher.shell_child_activity) instead
+    of calling has_active_shell_children and then, on a hit,
+    latest_shell_child_cmdline -- which re-walked the very same tree to
+    re-find the child the first call had already seen and discarded.
+    Two agents at 1 Hz meant four full walks a second.
+
+    The merge lives here, behind the seams, rather than in _scan: six
+    test files inject `has_active_shell_children_fn` / `shell_cmdline_fn`
+    and must keep working, so an injected seam still wins and still gets
+    called exactly as before (cmdline only consulted when active, so a
+    stale command can never be reported).
+    """
+    if not procs:
+        return False, None
+    if active_fn is None and cmdline_fn is None:
+        from . import watcher as _w
+        return _w.shell_child_activity(procs)
+    from . import watcher as _w
+    if not (active_fn or _w.has_active_shell_children)(procs):
+        return False, None
+    return True, (cmdline_fn or _w.latest_shell_child_cmdline)(procs)
+
+
+# ----------------------------------------------------------------------
 # ClaudeCodeDetector -- detects `claude` CLI activity
 # ----------------------------------------------------------------------
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -143,7 +173,9 @@ class ClaudeCodeDetector:
             from . import watcher as _w
             self._find_processes = _w.find_claude_code_processes
             self._aggregate_cpu = _w.aggregate_cpu
-            self._has_active_shell_children = _w.has_active_shell_children
+            # Deliberately NOT pre-filling _has_active_shell_children:
+            # leaving it None is what routes production through the
+            # merged single-walk path in _shell_signals().
 
     def _discover(self, now: float) -> list:
         if self._candidates and (now - self._candidates_at) < self.DISCOVERY_CACHE_SEC:
@@ -184,17 +216,9 @@ class ClaudeCodeDetector:
         self.cpu_percent = round(
             self._aggregate_cpu(procs) if procs else 0.0, 1
         )
-        self.shell_active = (
-            self._has_active_shell_children(procs) if procs else False
+        self.shell_active, self.shell_cmdline = _shell_signals(
+            procs, self._has_active_shell_children, self._shell_cmdline_fn
         )
-        if self.shell_active:
-            cmdline_fn = self._shell_cmdline_fn
-            if cmdline_fn is None:
-                from . import watcher as _w
-                cmdline_fn = _w.latest_shell_child_cmdline
-            self.shell_cmdline = cmdline_fn(procs)
-        else:
-            self.shell_cmdline = None
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
@@ -314,7 +338,9 @@ class CodexDetector:
             from . import watcher as _w
             self._find_processes = _w.find_codex_processes
             self._aggregate_cpu = _w.aggregate_cpu
-            self._has_active_shell_children = _w.has_active_shell_children
+            # Deliberately NOT pre-filling _has_active_shell_children:
+            # leaving it None is what routes production through the
+            # merged single-walk path in _shell_signals().
 
     def _discover(self, now: float) -> list:
         if self._candidates and (now - self._candidates_at) < self.DISCOVERY_CACHE_SEC:
@@ -355,17 +381,9 @@ class CodexDetector:
         self.cpu_percent = round(
             self._aggregate_cpu(procs) if procs else 0.0, 1
         )
-        self.shell_active = (
-            self._has_active_shell_children(procs) if procs else False
+        self.shell_active, self.shell_cmdline = _shell_signals(
+            procs, self._has_active_shell_children, self._shell_cmdline_fn
         )
-        if self.shell_active:
-            cmdline_fn = self._shell_cmdline_fn
-            if cmdline_fn is None:
-                from . import watcher as _w
-                cmdline_fn = _w.latest_shell_child_cmdline
-            self.shell_cmdline = cmdline_fn(procs)
-        else:
-            self.shell_cmdline = None
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC

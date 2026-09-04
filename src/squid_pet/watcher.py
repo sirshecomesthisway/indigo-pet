@@ -735,78 +735,88 @@ def count_currently_waving_sessions() -> int:
 # Live tool-activity detection
 # ────────────────────────────────────────────────────────────────────────
 
-def has_active_shell_children(procs) -> bool:
-    """True if any of the given processes has an actively-running CLI
-    tool underneath it (at ANY depth — so we catch agent → bash → grep,
-    not just direct children). Shared by ClaudeCodeDetector and
-    CodexDetector for their shell_active signal.
+def shell_child_activity(procs) -> tuple[bool, list[str] | None]:
+    """One descendant-tree walk yielding BOTH tool-activity signals:
+    ``(shell_active, cmdline)``.
 
-    Strict exact-name match against SHELL_CHILD_NAMES (which excludes
-    shells and language runtimes — they're the wrapper, not the tool).
+    CPU fix 2 (2026-09-03): has_active_shell_children() and
+    latest_shell_child_cmdline() each walked every agent's whole process
+    tree, and the second ran only to re-find the child the first had
+    already seen and discarded -- four full walks a second with two
+    agents live. Both are now thin wrappers over this.
+
+    The two signals disagree about wrapper shells on purpose, so this
+    keeps two accumulators:
+
+    * ``active`` latches on ANY SHELL_CHILD_NAMES match, wrappers
+      included -- a live bash/zsh under the agent IS evidence a tool is
+      running underneath (often the tool has not spawned yet).
+    * ``cmdline`` latches only on a NON-wrapper match with a non-empty
+      cmdline -- see SHELL_WRAPPER_NAMES: Claude Code's real Bash-tool
+      invocation is ``zsh -c 'source <snapshot> ... && eval "<cmd>"'``,
+      so the wrapper is almost always the first match and its own
+      cmdline is a long, useless housekeeping string.
+
+    recursive=True walks grandchildren too -- needed because bash is the
+    immediate child and the tool is a grandchild. Best-effort throughout:
+    any failure returns what was already proven rather than raising.
     """
     if not procs:
-        return False
+        return False, None
+    active = False
     try:
         import psutil
         for p in procs:
             try:
-                # recursive=True walks grandchildren too — needed because
-                # bash is the immediate child and the tool is a grandchild.
                 for ch in p.children(recursive=True):
                     try:
                         name = (ch.name() or "").lower()
-                        if name in SHELL_CHILD_NAMES:
-                            return True
+                        if name not in SHELL_CHILD_NAMES:
+                            continue
+                        # Name matched: a tool is running, whatever we
+                        # end up being able to report about it.
+                        active = True
+                        if name in SHELL_WRAPPER_NAMES:
+                            continue
+                        cmdline = ch.cmdline()
+                        if cmdline:
+                            return True, cmdline
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except Exception:
-        return False
-    return False
+        # Keep what we already proved -- the old bool function returned
+        # True the instant it matched, so a broken process object later
+        # in the list could never undo it.
+        return active, None
+    return active, None
+
+
+def has_active_shell_children(procs) -> bool:
+    """True if any of the given processes has an actively-running CLI
+    tool underneath it (at ANY depth -- so we catch agent -> bash ->
+    grep, not just direct children). Shared by ClaudeCodeDetector and
+    CodexDetector for their shell_active signal.
+
+    Strict exact-name match against SHELL_CHILD_NAMES (which excludes
+    language runtimes -- they're the wrapper, not the tool).
+
+    Kept as a named function because six test files inject it as a seam;
+    production reads both signals from shell_child_activity() directly.
+    """
+    return shell_child_activity(procs)[0]
 
 
 def latest_shell_child_cmdline(procs) -> list[str] | None:
     """Pink-2026-08-27k: cmdline of the first actively-running CLI tool
-    found under any of the given processes -- same SHELL_CHILD_NAMES /
-    recursive-children walk as has_active_shell_children, but returns
-    the actual command instead of just a bool, so a "still working"
+    found under any of the given processes, so a "still working"
     reannounce can say "running pytest" instead of staying silent.
-    Replaces the removed TPA-only latest_shell_child_cmdline that
-    fed this same feature before TPA was pulled out.
+    Skips wrapper shells -- see shell_child_activity().
 
-    Skips SHELL_WRAPPER_NAMES matches (bash/sh/zsh/fish) -- see that
-    constant's comment: Claude Code's actual Bash-tool invocation wraps
-    everything in a shell-snapshot-sourcing preamble, so the wrapper
-    shell is almost always the FIRST match in the walk, and its own
-    cmdline is a long, useless housekeeping string, not the real command.
-    Confirmed live. Keeps walking past it for an actual reportable tool.
-
-    Any error (including a fake/test process object with no .children())
-    -> None, matching has_active_shell_children's best-effort contract.
+    Kept as a named function for the same seam reason as its sibling.
     """
-    if not procs:
-        return None
-    try:
-        import psutil
-        for p in procs:
-            try:
-                for ch in p.children(recursive=True):
-                    try:
-                        name = (ch.name() or "").lower()
-                        if name in SHELL_WRAPPER_NAMES:
-                            continue
-                        if name in SHELL_CHILD_NAMES:
-                            cmdline = ch.cmdline()
-                            if cmdline:
-                                return cmdline
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-    except Exception:
-        return None
-    return None
+    return shell_child_activity(procs)[1]
 
 
 class StateMachine:

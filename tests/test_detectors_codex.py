@@ -194,3 +194,46 @@ def test_discovery_cache_reused_within_window():
     assert calls["n"] == 1  # still within 60s cache window
     d.is_busy(now=1000.0 + CodexDetector.DISCOVERY_CACHE_SEC + 1)
     assert calls["n"] == 2  # cache expired, re-globbed
+
+
+# ── CPU fix 2 (2026-09-03): one child-tree walk per tick ──────────────
+class _WalkCountingProc:
+    def __init__(self, children):
+        self.pid = 4321
+        self._children = children
+        self.walks = 0
+
+    def children(self, recursive=False):
+        self.walks += 1
+        return self._children
+
+
+class _WalkChild:
+    def __init__(self, name, cmdline):
+        self._name, self._cmdline = name, cmdline
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        return self._cmdline
+
+
+def test_uninjected_shell_signals_walk_the_child_tree_once_per_tick():
+    """Codex runs the same shell wiring as Claude Code, so it pays the
+    same double walk -- both agents live meant four traversals a second."""
+    proc = _WalkCountingProc([_WalkChild("rg", ["rg", "-n", "TODO"])])
+    d = CodexDetector(
+        find_processes_fn=lambda: [proc],
+        aggregate_cpu_fn=lambda p: 0.0,
+        sessions_dir=Path("/fake/.codex/sessions"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+
+    d.is_busy(now=1000.0)
+
+    assert proc.walks == 1
+    assert d.shell_active is True
+    assert d.shell_cmdline == ["rg", "-n", "TODO"]

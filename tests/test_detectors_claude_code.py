@@ -259,3 +259,68 @@ def test_discovery_cache_reused_within_window():
     assert calls["n"] == 1  # still within 60s cache window
     d.is_busy(now=1000.0 + ClaudeCodeDetector.DISCOVERY_CACHE_SEC + 1)
     assert calls["n"] == 2  # cache expired, re-globbed
+
+
+# ── CPU fix 2 (2026-09-03): one child-tree walk per tick ──────────────
+class _WalkCountingProc:
+    """A process whose descendant tree we can count traversals of."""
+
+    def __init__(self, children):
+        self.pid = 4321
+        self._children = children
+        self.walks = 0
+
+    def children(self, recursive=False):
+        self.walks += 1
+        return self._children
+
+
+class _WalkChild:
+    def __init__(self, name, cmdline):
+        self._name, self._cmdline = name, cmdline
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        return self._cmdline
+
+
+def _walk_counting_detector(proc):
+    """Production shell wiring: neither shell seam injected, so the
+    detector must reach for watcher.shell_child_activity itself."""
+    return ClaudeCodeDetector(
+        find_processes_fn=lambda: [proc],
+        aggregate_cpu_fn=lambda p: 0.0,
+        projects_dir=Path("/fake/.claude/projects"),
+        glob_fn=lambda root: iter([]),
+        stat_fn=lambda p: (_ for _ in ()).throw(OSError()),
+        recent_file_ages_fn=lambda: [],
+    )
+
+
+def test_uninjected_shell_signals_walk_the_child_tree_once_per_tick():
+    """Both signals came from one walk, not two: has_active_shell_children
+    and latest_shell_child_cmdline used to traverse the same tree back to
+    back every tick, for both agents."""
+    proc = _WalkCountingProc([_WalkChild("pytest", ["pytest", "-v"])])
+    d = _walk_counting_detector(proc)
+
+    d.is_busy(now=1000.0)
+
+    assert proc.walks == 1
+    assert d.shell_active is True
+    assert d.shell_cmdline == ["pytest", "-v"]
+
+
+def test_uninjected_wrapper_only_child_is_active_with_no_cmdline():
+    """The wrapper shell still counts as tool activity (unchanged
+    contract) even though there is nothing reportable to say."""
+    proc = _WalkCountingProc([_WalkChild("zsh", ["/bin/zsh", "-c", "source snap.sh"])])
+    d = _walk_counting_detector(proc)
+
+    d.is_busy(now=1000.0)
+
+    assert proc.walks == 1
+    assert d.shell_active is True
+    assert d.shell_cmdline is None
