@@ -606,8 +606,14 @@ class TerminalDetector:
     def _iter_procs(self):
         if self._process_iter is not None:
             return self._process_iter()
-        import psutil
-        return psutil.process_iter(["name", "pid", "create_time"])
+        # No attrs, and through watcher.iter_processes: asking psutil to
+        # prefetch "name" is what produces the KERN_PROCARGS2
+        # SystemError (its macOS name() re-reads the whole cmdline at
+        # the 15-char truncation limit), and that error comes out of the
+        # generator, past the per-process guard below. name() and
+        # create_time() are read per process inside that guard instead.
+        from . import watcher as _w
+        return _w.iter_processes()
 
     def _count_active(self, now: float) -> int:
         count = 0
@@ -795,13 +801,15 @@ class IDEDetector:
     def _iter_procs(self):
         if self._process_iter is not None:
             return self._process_iter()
-        import psutil
         # No attrs. Asking psutil for "name" measured 30.95ms across 520
         # processes -- on macOS its name() falls back to reading the
         # whole cmdline whenever the raw name sits at the kernel's
         # 15-char truncation limit, so prefetching "name" quietly
-        # prefetches every process's argv. A bare iteration is 0.995ms.
-        return psutil.process_iter()
+        # prefetches every process's argv. A bare iteration is 0.995ms,
+        # and iter_processes keeps a C-layer failure from ending the
+        # tick.
+        from . import watcher as _w
+        return _w.iter_processes()
 
     def _proc_name(self, p, now: float) -> str | None:
         """The name to match against ide_processes.
@@ -820,7 +828,7 @@ class IDEDetector:
         skipped rather than paying a name() syscall to find out.
         """
         info = getattr(p, "info", None)
-        if info:
+        if info and info.get("name") is not None:
             return info.get("name")
         from . import watcher as _w
         cmdline = _w._cmdline_cached(p, now)

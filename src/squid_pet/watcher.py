@@ -243,6 +243,38 @@ def _cmdline_cached(p, now: float) -> list[str] | None:
     return cmdline
 
 
+def iter_processes():
+    """psutil.process_iter(), guarded so a C-layer failure costs the rest
+    of ONE scan instead of the whole tick.
+
+    Seen live at startup: psutil raises
+
+        SystemError: <built-in function proc_cmdline> returned a result
+        with an exception set
+
+    out of macOS's KERN_PROCARGS2 path -- and it comes out of the
+    GENERATOR, so it lands outside the per-process try/except that every
+    scan loop already has. It escaped compute(), and the watcher
+    thread's blanket handler dropped the whole tick: no state computed,
+    no state.json written, Squid frozen for that second.
+
+    A generator cannot be resumed once an exception has left its frame,
+    so this ends the scan early and the next tick starts over. Fetching
+    is separated from yielding on purpose: with `yield next(it)` inside
+    the try, an exception raised by the CALLER while we are suspended at
+    the yield would be thrown back into this frame and swallowed here.
+    """
+    it = psutil.process_iter()
+    while True:
+        try:
+            proc = next(it)
+        except StopIteration:
+            return
+        except Exception:
+            return
+        yield proc
+
+
 def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Process]:
     """Return processes whose cmdline()[0] basename is in ``names``.
 
@@ -267,7 +299,7 @@ def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Proc
     # No attrs: psutil's prefetch runs as_dict()+oneshot() per process
     # (7.76ms across 520 here) to hand back `pid`, which is a plain
     # attribute on the object anyway. A bare iteration is 0.995ms.
-    for p in psutil.process_iter():
+    for p in iter_processes():
         live.add(p.pid)
         cmdline = _cmdline_cached(p, now)
         if not cmdline:
@@ -894,7 +926,11 @@ def shell_child_activity(procs) -> tuple[bool, list[str] | None]:
                         cmdline = ch.cmdline()
                         if cmdline:
                             return True, cmdline
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    except (psutil.NoSuchProcess, psutil.AccessDenied,
+                            SystemError):
+                        # SystemError: psutil's macOS cmdline path can
+                        # fail at the C layer -- that child is
+                        # unreadable, the walk is not.
                         continue
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
