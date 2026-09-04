@@ -1198,7 +1198,7 @@ window._pokePending = setTimeout(() => {
       } catch (err) { console.warn("corner snap failed", err); }
     });
 
-    /* ─────── Double-click: cycle states (forces watcher override) ─────── */
+    /* ─────── Double-click: LIKE (heart + wake) + ack wave + take me there ─────── */
 document.addEventListener("dblclick", async (e) => {
       e.preventDefault();
 
@@ -1283,7 +1283,7 @@ document.addEventListener("dblclick", async (e) => {
       window.addEventListener("pywebviewready", startPolling);
       setTimeout(startPolling, 500);
     }
-    setTimeout(() => showHint("drag • poke • R-click=menu • dbl-click=state", 3500), 1200);
+    setTimeout(() => showHint("drag • poke • R-click=menu • dbl-click=take me there", 3500), 1200);
   </script>
 </body>
 </html>
