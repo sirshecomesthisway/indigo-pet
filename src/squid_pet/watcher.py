@@ -264,7 +264,10 @@ def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Proc
     matches = []
     now = time.time()
     live = set()
-    for p in psutil.process_iter(["pid"]):
+    # No attrs: psutil's prefetch runs as_dict()+oneshot() per process
+    # (7.76ms across 520 here) to hand back `pid`, which is a plain
+    # attribute on the object anyway. A bare iteration is 0.995ms.
+    for p in psutil.process_iter():
         live.add(p.pid)
         cmdline = _cmdline_cached(p, now)
         if not cmdline:

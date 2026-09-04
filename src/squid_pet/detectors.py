@@ -746,14 +746,43 @@ class IDEDetector:
         if self._process_iter is not None:
             return self._process_iter()
         import psutil
-        return psutil.process_iter(["name"])
+        # No attrs. Asking psutil for "name" measured 30.95ms across 520
+        # processes -- on macOS its name() falls back to reading the
+        # whole cmdline whenever the raw name sits at the kernel's
+        # 15-char truncation limit, so prefetching "name" quietly
+        # prefetches every process's argv. A bare iteration is 0.995ms.
+        return psutil.process_iter()
 
-    def _aggregate_cpu(self) -> float:
+    def _proc_name(self, p, now: float) -> str | None:
+        """The name to match against ide_processes.
+
+        Honours a prefetched .info when a caller supplies one (the
+        injected seam does), otherwise takes argv[0]'s basename from the
+        per-pid cache the agent lookup already fills in this same tick,
+        so this costs nothing.
+
+        Checked live before switching: name() and basename(argv[0])
+        agreed on 307 processes and differed on 9 -- the `claude` binary
+        (whose name is its version string), login shells (-zsh) and
+        python version suffixes. All 75 GUI .app processes agreed, and
+        every IDE we look for is a GUI app. A process whose cmdline we
+        cannot read is not one of the user's IDE windows, so it is
+        skipped rather than paying a name() syscall to find out.
+        """
+        info = getattr(p, "info", None)
+        if info:
+            return info.get("name")
+        from . import watcher as _w
+        cmdline = _w._cmdline_cached(p, now)
+        if not cmdline:
+            return None
+        return cmdline[0].rsplit("/", 1)[-1]
+
+    def _aggregate_cpu(self, now: float) -> float:
         total = 0.0
         for p in self._iter_procs():
             try:
-                info = getattr(p, "info", None) or {"name": p.name()}
-                if info.get("name") not in self.ide_processes:
+                if self._proc_name(p, now) not in self.ide_processes:
                     continue
                 if hasattr(p, "cpu_percent"):
                     total += float(p.cpu_percent())
@@ -774,7 +803,7 @@ class IDEDetector:
         # enumerations and two project-tree walks instead of one.
         if now == self._last_scan_ts:
             return
-        self.cpu_percent = self._aggregate_cpu()
+        self.cpu_percent = self._aggregate_cpu(now)
         # Two windows: 5s busy / 30s grooving. Compute the larger then partition.
         recent = self._recent_files(self.GROOVING_WINDOW_SEC)
         self.recent_file_count_grooving = len(recent)

@@ -182,3 +182,68 @@ def test_next_tick_does_rescan():
     d.is_busy(1.0)
     d.is_busy(2.0)
     assert calls["n"] == 2
+
+
+# ── CPU fix 4 (2026-09-04): stop paying for psutil's attr prefetch ────
+# `process_iter(["name"])` measured 30.95ms across 520 processes, once a
+# tick, because psutil's macOS name() falls back to reading the whole
+# cmdline for any name at the 15-char truncation limit -- so asking for
+# "name" quietly asks for every process's argv. A bare process_iter() is
+# 0.995ms, and argv[0]'s basename is already cached per pid by the agent
+# lookup (watcher._cmdline_cached).
+#
+# Checked before switching: across the live process table, name() and
+# basename(argv[0]) agreed for 307 processes and differed for 9 -- the
+# `claude` binary (name is its version), login shells (-zsh) and python
+# version suffixes. All 75 GUI .app processes agreed, and every entry in
+# DEFAULT_IDE_PROCESSES is a GUI app.
+class _CmdlineProc:
+    """A process the way psutil hands it over with no attrs prefetched:
+    no .info, cmdline read on demand."""
+
+    def __init__(self, pid, argv, cpu=0.0):
+        self.pid = pid
+        self._argv = argv
+        self._cpu = cpu
+
+    def cmdline(self):
+        return self._argv
+
+    def cpu_percent(self):
+        return self._cpu
+
+
+def test_matches_ide_on_argv0_basename_without_prefetched_info():
+    procs = [
+        _CmdlineProc(1, ["/Applications/Cursor.app/Contents/MacOS/Cursor"], cpu=7.5),
+        _CmdlineProc(2, ["/usr/bin/some_daemon"], cpu=99.0),
+    ]
+    d = IDEDetector(process_iter_fn=lambda: iter(procs),
+                    recent_files_fn=lambda w: [])
+    d._scan(now=1000.0)
+
+    assert d.cpu_percent == 7.5
+
+
+def test_iterates_processes_without_asking_psutil_to_prefetch_attributes():
+    """The prefetch IS the cost -- 31ms of the tick. Guard it."""
+    seen = {}
+
+    class _Spy:
+        def __call__(self, *a, **k):
+            seen["args"] = (a, k)
+            return iter([])
+
+    import psutil
+    real_iter = psutil.process_iter
+    spy = _Spy()
+    psutil.process_iter = spy
+    try:
+        d = IDEDetector(recent_files_fn=lambda w: [])   # no seam: real psutil
+        d._scan(now=1000.0)
+    finally:
+        psutil.process_iter = real_iter
+
+    assert seen["args"] == ((), {}), (
+        f"process_iter must be called with no attrs, got {seen['args']}"
+    )

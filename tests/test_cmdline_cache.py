@@ -153,3 +153,22 @@ def test_codex_subcommand_filter_reuses_the_cached_cmdline(monkeypatch):
     assert [p.pid for p in watcher.find_codex_processes()] == [11]
     assert interactive.cmdline_calls == 1
     assert headless.cmdline_calls == 1
+
+
+# ── CPU fix 4 (2026-09-04) ────────────────────────────────────────────
+def test_agent_lookup_does_not_ask_psutil_to_prefetch_attributes(monkeypatch):
+    """`process_iter(["pid"])` costs 7.76ms across 520 processes and
+    `process_iter()` costs 0.995ms -- for a field (pid) that is a plain
+    attribute on every Process object anyway."""
+    seen = {}
+
+    def _spy(*a, **k):
+        seen["args"] = (a, k)
+        return iter([])
+
+    monkeypatch.setattr(psutil, "process_iter", _spy)
+    watcher.find_claude_code_processes()
+
+    assert seen["args"] == ((), {}), (
+        f"process_iter must be called with no attrs, got {seen['args']}"
+    )
