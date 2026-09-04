@@ -1,7 +1,11 @@
 # pet-reactions Specification
 
 ## Purpose
-TBD - created by archiving change hearts-on-poke. Update Purpose after archive.
+Define the ephemeral visual reaction effects Squid renders in response to
+user gestures -- today, the heart spawned by the double-click LIKE gesture.
+Reactions are pure decoration: they never change sprite state, never
+participate in click-passthrough, and always clean themselves up.
+
 ## Requirements
 ### Requirement: Ephemeral visual reactions to user gestures
 
@@ -19,15 +23,24 @@ one gesture (poke API still fires on dblclick).
 #### Scenario: Double-click spawns one blinking heart and wakes Squid
 - **WHEN** the user double-clicks Squid on an opaque pixel
 - **THEN** any pending single-click poke is cancelled
-- **AND** the poke API is invoked (sets 60 s wake override, shows "boop!" hint)
-- **AND** one heart emoji appears centered above Squid's sprite
-- **AND** the heart pops in (scale 0.3 -> 1.3), settles, pulses once, and fades over 900 ms
-- **AND** the heart does NOT translate vertically (no rise) so it cannot be clipped by the 220 px window
-- **AND** the heart is removed from the DOM after its animation completes
+- **AND** the poke API is invoked (sets the 60 s wake override and publishes
+  the observer's poke bubble)
+- **AND** `HEART_COUNT` (1) `sprites/heart.png` element appears centered
+  above Squid's sprite, 38×35 px and pixel-rendered
+- **AND** the heart pops in (scale 0.3 → 1.4), settles to 1.0, pulses once
+  to 1.15, and fades out over 1200 ms
+- **AND** the heart does NOT translate vertically (no rise) so it cannot be
+  clipped by the window's 120 px of headroom
+- **AND** the heart is removed from the DOM on `animationend`
+
+#### Scenario: Heart anchors correctly at the top screen edge
+- **WHEN** Squid is docked at the top edge (sprite flipped, face pointing down)
+- **THEN** the heart anchors to the sprite's bottom rather than its top
+- **AND** the stacking order stays face → heart → bubble
 
 #### Scenario: Single click does NOT spawn a heart
 - **WHEN** the user single-clicks Squid (no follow-up dblclick within 260 ms)
-- **THEN** the poke API fires for wake / boop behavior
+- **THEN** the poke API fires for wake behavior
 - **AND** zero hearts appear (heart is reserved for the dblclick LIKE gesture)
 
 #### Scenario: Hearts never block user interaction
@@ -36,10 +49,10 @@ one gesture (poke API still fires on dblclick).
 - **AND** the user can still drag, click, or right-click Squid through the heart
 
 #### Scenario: Cap on concurrent hearts prevents runaway spawn
-- **WHEN** the user pokes Squid repeatedly such that the cap (HEART_MAX_LIVE) hearts already exist on screen
-- **AND** the user pokes again
-- **THEN** no new hearts spawn for that poke
-- **AND** the poke itself still fires the wake override (functional poke is unaffected)
+- **WHEN** `HEART_MAX_LIVE` (12) hearts already exist on screen
+- **AND** the user double-clicks again
+- **THEN** no new hearts spawn for that gesture
+- **AND** the gesture itself still fires normally (wake, ack, take-me-there)
 
 #### Scenario: Drag misclassified as poke does not spawn heart
 - **WHEN** a click is classified as a single poke (no dblclick follow-up)
@@ -47,12 +60,19 @@ one gesture (poke API still fires on dblclick).
 
 #### Scenario: Hearts do not fire on swing-to-wake
 - **WHEN** the user performs a swing gesture during drag that triggers wake
-- **THEN** the "wheee!" hint appears as designed
-- **AND** zero hearts appear (the gesture already has its own visual feedback)
+- **THEN** the observer's shake bubble appears as designed
+- **AND** zero hearts appear (the gesture already has its own feedback)
 
 #### Scenario: Hearts ride along with Squid during drag
 - **WHEN** hearts are mid-animation
 - **AND** the user drags Squid to a new screen position
-- **THEN** the hearts follow Squid because they are children of the sprite container
-- **AND** the hearts complete their rise+fade animation in the new position
+- **THEN** the hearts move with her, because they are positioned inside the
+  window and the whole window is what moves
+- **AND** the hearts complete their pop+fade animation in the new position
 
+#### Scenario: A failed spawn never breaks the gesture
+- **WHEN** heart spawning raises for any reason
+- **THEN** the error is logged to the console and routed to the Python log
+  via `debug_log`
+- **AND** the wake, acknowledge, and take-me-there parts of the gesture are
+  unaffected

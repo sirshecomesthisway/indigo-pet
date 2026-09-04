@@ -3,19 +3,31 @@
 ## Purpose
 Define how Squid is presented as a desktop companion window: a frameless,
 transparent, always-on-top pywebview window with a stable JS/Python bridge.
-Covers window creation, positioning, drag-without-Accessibility, state
-controls (dblclick/Esc), the JS API surface, multi-Space persistence,
-singleton enforcement, and the external CLI for launch/control.
+Covers window creation, positioning, drag-without-Accessibility, the JS API
+surface, multi-Space persistence, singleton enforcement, and the external
+CLI for launch/control.
+
+Gestures themselves (poke, LIKE, swing, right-click menu) are specified in
+`user-interactions`; this capability owns only the window and the bridge
+they call through.
+
 ## Requirements
 ### Requirement: Render as a frameless, transparent, always-on-top window
 
 The pet window SHALL be created via pywebview with `frameless=True`,
 `transparent=True`, `on_top=True`, `resizable=False`, and dimensions
-200×220 pixels. It SHALL load `frontend/index.html` as a `file://` URL.
+200×300 pixels (`WINDOW_WIDTH` × `WINDOW_HEIGHT`). It SHALL load
+`frontend/index.html` as a `file://` URL.
+
+The 180×180 sprite sits flush with the window bottom, leaving 120 px of
+headroom above it for the heart and the speech bubble.
+- **Why**: height was 220 px originally; hearts spawned above her head were
+  clipped by the window edge. `passthrough.py` mirrors both constants and
+  must be changed with it.
 
 #### Scenario: Window is created
 - **WHEN** `python -m squid_pet` starts
-- **THEN** a 200×220 frameless, transparent, always-on-top window appears on the main display
+- **THEN** a 200×300 frameless, transparent, always-on-top window appears on the main display
 - **AND** no title bar, traffic-light buttons, or window chrome are visible
 
 #### Scenario: Other windows come to the foreground
@@ -30,19 +42,27 @@ pywebview `x, y` parameters MAY be used for initial placement but a final
 snap via NSWindow SHALL run inside the `loaded` event to guarantee correct
 position on multi-display setups.
 
+Corner snapping SHALL use the same `_char_bounds()` tight character bounds
+the wander system is tuned to reach, NOT a cosmetic inset from the visible
+frame.
+- **Why**: Pink-2026-08-27o. With the old 20 px `EDGE_MARGIN`, a
+  corner-snapped Squid sat 60-70 px further from the true screen edge than
+  she did after WANDERING to that same corner, which read as her not
+  hugging the edge. It was never a rotation problem; the position itself
+  was ~65 px short.
+
+Startup position SHALL resolve in priority order: `position.json` (last
+saved location) → `settings.json` → default.
+
 #### Scenario: Snap to a corner of the visible frame
 - **WHEN** `move_to_corner("top-right")` is called
-- **THEN** the window's top-right pixel sits exactly `EDGE_MARGIN` (20 px) inside the visible frame's top-right corner
+- **THEN** the window lands at the identical position wandering to that
+  corner would produce, tentacles touching the edge
 - **AND** the menu bar and dock are not overlapped
-
-#### Scenario: Right-click cycles corners
-- **WHEN** the user right-clicks Squid
-- **THEN** the window snaps to the next corner in the order top-right → bottom-right → bottom-left → top-left → top-right
-- **AND** the new corner is persisted to `~/.squid-pet/position.json`
 
 #### Scenario: App restarts after a corner snap
 - **WHEN** Squid is restarted
-- **THEN** she appears at the last-saved corner
+- **THEN** she appears at the last-saved position from `~/.squid-pet/position.json`
 
 ### Requirement: Drag the window without macOS Accessibility permission
 
@@ -63,19 +83,18 @@ and no macOS Accessibility permission prompt SHALL be triggered.
 #### Scenario: User clicks without moving
 - **WHEN** the user presses left mouse and releases at the same position within 250 ms
 - **THEN** the window does not move
-- **AND** this is treated as a tap (currently no-op; reserved for future click action)
+- **AND** the click is classified as a poke (see `user-interactions`)
 
-### Requirement: Cycle and force states via double-click and Esc
+### Requirement: Esc releases a forced state
 
-The user SHALL be able to preview each state by double-clicking the window,
-which forces the next state in the canonical order. Pressing `Esc` SHALL
-release the forced state and resume the auto-detected state from the
-watcher.
+Pressing `Esc` while the window has keyboard focus SHALL release any forced
+state and resume the auto-detected state from the watcher. `Ctrl+D` SHALL
+toggle the debug overlay.
 
-#### Scenario: Double-click cycles through states
-- **WHEN** the user double-clicks Squid
-- **THEN** the displayed state advances to the next in the order: idle → thinking → working → grooving → celebrating → sleeping → concerned → idle
-- **AND** the watcher's emitted state is overridden until Esc
+Double-click SHALL NOT cycle or force states. That behavior was removed in
+2026-06-08; forcing a specific state for debug lives in the right-click
+menu's Mood submenu, and dblclick is the LIKE gesture (see
+`user-interactions`).
 
 #### Scenario: User presses Esc
 - **WHEN** the user presses Escape while the window has keyboard focus
@@ -89,17 +108,39 @@ to JavaScript via pywebview's `js_api`:
 
 | Method | Purpose |
 |---|---|
-| `get_state()` | Return current `PetState` dict (with any forced override applied) |
-| `force_state(name)` | Pin pet to a specific state name |
-| `clear_force()` | Release the forced state |
+| `get_state()` | Return current `PetState` dict plus derived fields (below) |
+| `force_state(name)` / `clear_force()` | Pin / release a specific state |
 | `next_corner()` | Snap to the next corner; return its name |
 | `move_window_by(dx, dy)` | Move the window by the given screen-pixel delta |
-| `drag_start()` / `drag_end()` | Notify Python that a drag is starting / ending so passthrough can pause |
+| `drag_start()` / `drag_end()` | Bracket a drag so passthrough can pause |
+| `poke()` | Poke gesture: 60 s wake override, clear force, observer bubble |
+| `acknowledge_approval()` | Calm the flag-wave; returns `{status, bubble}` |
+| `take_me_there()` | Raise the terminal window behind the current state |
+| `show_context_menu()` | Open the native right-click menu |
+| `clear_bubble()` | Ack a displayed bubble so it is not replayed |
+| `set_wander_edge(edge)` / `set_wander_sub_state(s)` / `get_wander_sub_state()` | Wander → frontend animation cues |
+| `notify_mood(mood)` / `get_frontend_mood()` | Frontend-derived mood (drowsy etc.) reported back |
+| `is_hidden()` / `is_muted()` / `is_llm_bubbles_enabled()` / `is_approval_alert_enabled()` / `is_squid_waving()` | Menu + frontend state queries |
+| `signal_ready()` | Frontend boot handshake |
+| `debug_log(msg)` | Route a frontend log line into the Python log |
 | `quit()` | Close the window |
+
+`get_state()` SHALL return the full `PetState` dict (see `state-detection`)
+with the forced-state override applied, plus these derived fields:
+`edge`, `sub_state` overlay, `hint_text`, `hint_seq`, `pinned`,
+`wrapper_deg`, `wake_trigger_seq`, `user_wake_remaining`,
+`sprint_fast_transition`, `pending_bubble`.
+
+The `sub_state` overlay SHALL be gated to `state == "idle"` for ambient
+wander sub-states, EXCEPT `nudge-*` sub-states, which apply in any state.
+- **Why**: 2026-08-19. A nudge hop can fire in any backend state, but
+  without the exemption the window physically moved while the frontend was
+  never told to show the walking cue -- nudging looked like it silently did
+  nothing whenever she was not idle.
 
 #### Scenario: JavaScript reads current state
 - **WHEN** `window.pywebview.api.get_state()` is awaited
-- **THEN** the returned object includes `state`, `idle_seconds`, `agent_idle_seconds`, `claude_code_running`, `codex_running`, `timestamp`, and `message` fields
+- **THEN** the returned object includes `state`, `idle_seconds`, `agent_idle_seconds`, `claude_code_running`, `codex_running`, `timestamp`, `message`, `state_reason`, `user_wake_remaining`, and `pending_bubble`
 
 ### Requirement: Persist across all macOS Spaces and fullscreen apps
 
@@ -149,39 +190,36 @@ shutdown, OR by the kernel's automatic fd cleanup on SIGKILL.
 
 A command-line tool SHALL be installed at `~/.local/bin/squid` providing
 operational control without requiring direct knowledge of the Python module
-or process details. The CLI SHALL support at minimum:
+or process details. Lifecycle SHALL be delegated to launchd rather than
+managed by the CLI itself:
 
-- `squid start` — launch if not running
-- `squid stop` — terminate cleanly (with escalating SIGTERM -> SIGKILL retries up to 6 attempts)
-- `squid restart` — stop then start, with up to 3 launch retries to handle
-  WKWebView startup flakiness on the host
-- `squid status` — report running/healthy/unhealthy + pid
-- `squid logs` — tail the log file
-- `squid why` — print recent state log entries explaining current state
+- `squid start` — load + run the LaunchAgent
+- `squid stop` — `launchctl bootout` the LaunchAgent
+- `squid restart` — `launchctl kickstart -k` (atomic bounce); falls back to
+  `start` when the agent is not loaded
+- `squid status` — running? watcher ticking? (cross-checks `state.json`)
+- `squid logs [-f]` — recent stdout+stderr; `-f` to follow
+- `squid update` — git pull + reinstall + restart
+- `squid uninstall [...]` — shell into the project's `uninstall.sh`
+- `squid why` — explain the current state and which detectors fired
+- `squid doctor` — run the six-check self-diagnostic (see `startup-integrity`)
 
-The `squid status` command SHALL distinguish between true duplicate processes
-(multiple roots) and benign parent-child pairs (pywebview spawns a WebKit
-content child sharing the parent's cmdline). It SHALL count only ROOT
-processes whose parent is NOT also an squid_pet process.
+- **Why**: the CLI used to own the process itself, with escalating
+  SIGTERM→SIGKILL retries and a 10-second watchdog wrapping launch attempts
+  to survive WKWebView startup flake. launchd already does supervision and
+  restart-on-crash properly; `launchctl` is now the single source of truth
+  and the retry scaffolding is gone.
 
-For backward compatibility, the binary `~/.local/bin/squid` SHALL exist
-as a symlink to `squid`.
+`squid status` SHALL query launchctl for the managed pid and then cross-check
+that `state.json` is fresh, so a live process with a dead watcher reports
+unhealthy rather than running.
 
 #### Scenario: Status command after normal launch
 - **WHEN** Squid is running healthily
 - **AND** the user runs `squid status`
-- **THEN** the output reports "running + healthy" with the parent pid
-- **AND** no duplicate warning appears despite the pywebview child process
+- **THEN** the output reports the launchd-managed pid and a fresh `state.json`
 
-#### Scenario: Restart survives WKWebView flake
-- **WHEN** the user runs `squid restart`
-- **AND** the first launch attempt hangs in WKWebView startup
-- **THEN** the CLI's 10-second watchdog kills the stuck attempt
-- **AND** the CLI retries up to 3 times until startup succeeds
-- **AND** the final status reports running + healthy
-
-#### Scenario: Backward-compatible binary name
-- **WHEN** the user runs `squid status` (old muscle memory)
-- **THEN** the symlink resolves to `squid status`
-- **AND** the output identifies the pet as "Squid"
-
+#### Scenario: Process alive but watcher wedged
+- **WHEN** launchctl reports a running pid
+- **AND** `state.json` has not been written for well over one poll interval
+- **THEN** `squid status` reports unhealthy rather than running

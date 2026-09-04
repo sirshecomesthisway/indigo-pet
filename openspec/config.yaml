@@ -16,11 +16,16 @@ context: |
 
   Pink-2026-08-27: the project started life watching TPA (a separate,
   internal CLI coding agent) specifically. All TPA-specific
-  code was fully removed 2026-08-27 -- TPA was never actually
+  DETECTION was removed 2026-08-27 -- TPA was never actually
   installed/run in this environment, so it never fired anything in
   practice. Squid now watches Claude Code and Codex as its primary
   detectors; the sections below describe the current architecture, not
   the original TPA-only one.
+
+  Pink-2026-09-02: one TPA dependency survives — llm_client.py reads
+  the LLM token from the user's own ~/.tpa/puppy.cfg and calls
+  internal-hosted model endpoints. LLM bubbles are therefore unavailable to
+  anyone without that file; everything else works without it.
 
   ## Tech stack
   - Language: Python 3.13
@@ -30,41 +35,72 @@ context: |
   - Process inspection: psutil
   - Image processing: Pillow (for alpha-mask hit-testing)
   - Frontend: vanilla HTML + CSS keyframe animations (no framework, no bundler)
-  - Sprites: 7 hand-generated PNG sprites (one per state), transparent background,
-    pixel-art / chibi style, ~180x180 displayed
+  - Sprites: 20 hand-generated PNGs (7 state sprites + drowsy/stretch, blink,
+    look-left/right, 5 flag-wave frames, heart, 2 menu-bar icons), transparent
+    background, pixel-art / chibi style, 180x180 displayed in a 200x300 window
 
   ## Architecture (high level)
-  - watcher.py    — pure-Python state machine that polls process/CPU/log signals
+  - watcher.py    — pure-Python state machine that polls process/file/hook signals
                     and writes ~/.squid-pet/state.json every 1s.
+  - detectors.py  — one Detector per signal source (claude_code, codex, git,
+                    terminal, ide), built from settings.json's `triggers`.
   - window.py     — pywebview window + JS↔Python bridge (PetApi class).
                     Owns the NSWindow directly via PyObjC for accurate positioning,
                     dragging, and click-passthrough.
   - passthrough.py— background thread that performs pixel-perfect alpha hit-testing
-                    so transparent regions of the window do not block clicks behind.
+                    so transparent regions of the window do not block clicks behind;
+                    also owns hover fade-through and nudge/corner-flee tracking.
+  - wanderer.py   — WanderController: autonomous motion, stroll modes, sprint
+                    perimeter, nudge and flee hops.
+  - routine.py    — RoutineController: the jittered idle rhythm (rest / look-around
+                    / walk) and the 26-34s idle-chatter beat.
+  - observer.py   — Squid's voice: BUBBLE_LINES + trigger dispatch to the bubble.
+  - llm_client.py — optional LLM enrichment for bubbles (token from the user's own
+                    ~/.tpa/puppy.cfg; unavailable without it).
+  - menu.py       — native right-click menu + menu-bar NSStatusItem.
+  - focus.py      — take_me_there: state -> session -> project -> tty -> terminal tab.
+  - doctor.py     — the six-check `squid doctor` self-diagnostic.
+  - config.py     — user settings in ~/.squid-pet/config.json (mute, llm_bubbles,
+                    approval alert, hold windows). Distinct from settings.json,
+                    which holds detector `triggers` and project_dirs.
+  - threading_guards.py — @cocoa_main_thread / _blocking decorators.
   - frontend/index.html — full UI: <img> sprite that swaps based on state, CSS
-                    keyframe animation per state, JS event handlers for drag /
+                    keyframe animation per state, the flag-wave frame cycler,
+                    speech bubble, hearts, JS event handlers for drag /
                     right-click / dbl-click.
-  - frontend/sprites/   — 7 PNGs: idle, thinking, working, grooving, celebrating,
-                    sleeping, concerned.
+  - frontend/sprites/   — 20 PNGs: 7 state sprites, drowsy/stretch, blink and
+                    look-left/right, 5 flag-wave frames, heart, 2 menu-bar icons.
+  - scripts/claude_pet_hook.py — Claude Code hook receiver; writes the per-session
+                    flag files the watcher reads.
+  - scripts/squid_task_complete.py — the explicit "whole task done" marker.
 
   ## State model (current)
   Priority order — first match wins each tick (see watcher.py:StateMachine.compute):
-    1. sleeping     — macOS idle > 5 min
-    2. celebrating  — held ~20 sec after Claude Code's/Codex's busy signal
-                       drops to idle, or Git sees a fresh commit
-    3. grooving     — extensibility hook; no detector currently implements this
+    1. sleeping     — macOS idle > 5 min, AND the agent is not actively busy
+    2. celebrating  — the explicit claude_task_complete marker, Codex's own
+                       busy->idle edge, or Git sees a fresh commit (held
+                       celebrate_hold_sec, default 20s). A non-agent celebrate
+                       mid-turn is deferred to the turn's end.
+    3. grooving     — Claude Code's Stop hook fired, nothing resumed since;
+                       the lighter per-turn "made progress" beat
+    3b. thinking    — "recapping": Claude Code's PreCompact hook fired
     4. working      — live shell child, or a project file was just written
-                       (Claude Code or Codex)
-    5. thinking      — Claude Code/Codex wrote a session transcript recently,
-                       no shell/file evidence
-    6. (non-agent detector busy — generic OR fallback: git/terminal/ide)
+                       (Claude Code or Codex); sticky for working_hold_sec
+    5. thinking     — transcript written recently, or a turn is in flight
+    6. thinking     — non-agent detector busy (generic OR fallback: git/terminal/ide)
     fallback        — idle/watching
-  approval_needed (the flag-wave) can override any of the above -- driven
-  entirely by Claude Code's own Notification hook, see
-  openspec/specs/state-detection/spec.md and
+  approval_needed (the flag-wave) overrides any of the above; the
+  ~/.squid-pet/force_state debug file overrides even that. Both the wave and
+  the celebrate/groove/recap signals come from Claude Code's own hooks via
+  scripts/claude_pet_hook.py — see openspec/specs/state-detection/spec.md and
   openspec/specs/user-interactions/spec.md.
   concerned has no detector implementation (was TPA-only, no
-  Claude Code/Codex equivalent exists) -- documented non-goal.
+  Claude Code/Codex equivalent exists) -- documented non-goal, reachable
+  only via force_state.
+
+  Frontend-derived states (not emitted by the watcher): drowsy and stretch,
+  computed in index.html from agent_idle_seconds + the user_wake_remaining
+  override, with a periodic auto-wake every 15 min.
 
   ## Constraints & conventions
   - macOS only (uses PyObjC, NSWindow, NSEvent, NSScreen)
