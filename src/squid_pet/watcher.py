@@ -51,7 +51,12 @@ STATE_DIR = Path.home() / ".squid-pet"
 STATE_FILE = STATE_DIR / "state.json"
 
 POLL_INTERVAL_SEC = 1.0
-IDLE_THRESHOLD_SEC = 300           # 5 min with no agent activity → sleeping
+IDLE_THRESHOLD_SEC = 315           # 5m15s with no agent activity → sleeping
+# 315, not 300, on purpose: the frontend stages drowsy at 300s (a slump
+# animation) and only advances that stage while the BACKEND still says
+# idle. At 300 the backend would report sleeping first and the slump
+# would be unreachable. 15s of dozing, then out -- Pink-2026-09-04.
+# tests/test_window_constants_agree.py pins both halves.
 # Names of transient CLI tools that indicate ACTIVE tool use. Shared by
 # has_active_shell_children() for Claude Code / Codex's shell_active signal.
 # Excludes shells (bash/sh/zsh) because shells are always the wrapper —

@@ -192,3 +192,49 @@ def test_corner_origin_recognized_by_wanderers_distance_classifier(monkeypatch):
             f"corner_origin() and wanderer.py's margins have drifted "
             f"out of sync again."
         )
+
+
+# ── backend sleeping vs the frontend's drowsy stage (2026-09-04) ──────
+# Sleeping moved off macOS HID idle onto the agents' own quiet clock
+# (84953db), which put the backend threshold on the same axis the
+# frontend already used to stage drowsy -> sleeping. Cross that staging
+# and the slump animation silently dies: the frontend only advances its
+# mood while the backend state is idle/sleeping, and once a mood is set
+# it BLOCKS state-driven sprite swaps ("Mood layer owns the sprite when
+# active" in index.html), so a mismatch can also strand her on
+# drowsy.png while state.json says sleeping.
+import re
+from pathlib import Path
+
+from squid_pet import watcher
+
+
+def _frontend_const(name: str) -> int:
+    """Read a numeric const out of index.html -- the frontend has no test
+    harness of its own, and these two values must track Python's."""
+    html = (Path(window.__file__).parent / "frontend" / "index.html").read_text()
+    m = re.search(rf"const\s+{name}\s*=\s*(\d+)", html)
+    assert m, f"{name} not found in index.html"
+    return int(m.group(1))
+
+
+def test_backend_sleeping_leaves_room_for_the_drowsy_stage():
+    drowsy = _frontend_const("DROWSY_IDLE_SEC")
+    assert watcher.IDLE_THRESHOLD_SEC > drowsy, (
+        f"watcher.IDLE_THRESHOLD_SEC={watcher.IDLE_THRESHOLD_SEC} must be "
+        f"GREATER than the frontend's DROWSY_IDLE_SEC={drowsy}. The drowsy "
+        f"slump only plays while the backend still reports idle; at or "
+        f"below the drowsy mark she jumps straight to the sleeping sprite "
+        f"and the stage is dead code."
+    )
+
+
+def test_both_layers_call_the_same_moment_asleep():
+    sleeping = _frontend_const("SLEEPING_IDLE_SEC")
+    assert sleeping == watcher.IDLE_THRESHOLD_SEC, (
+        f"index.html SLEEPING_IDLE_SEC={sleeping} but "
+        f"watcher.IDLE_THRESHOLD_SEC={watcher.IDLE_THRESHOLD_SEC}. If the "
+        f"frontend's deep-sleep mark lands later than the backend's, the "
+        f"mood layer stays 'drowsy' and blocks the sprite swap -- she sits "
+        f"on drowsy.png while state.json says sleeping."
+    )

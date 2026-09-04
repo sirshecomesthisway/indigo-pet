@@ -678,7 +678,14 @@
     // down, rather than making one lap take longer. 60s drowsy->sleeping
     // gap preserved from the original 120/180 pair.
     const DROWSY_IDLE_SEC   = 300;   // 5 min idle -> drowsy mood
-    const SLEEPING_IDLE_SEC = 360;   // 6 min idle total (1 min after drowsy) -> sleeping
+    const SLEEPING_IDLE_SEC = 315;   // 15s after drowsy -> sleeping. MUST equal
+                                     // watcher.IDLE_THRESHOLD_SEC: past it the
+                                     // backend reports "sleeping", and the mood
+                                     // layer below blocks state-driven sprite
+                                     // swaps -- a later mark here would strand
+                                     // her on drowsy.png while state.json says
+                                     // sleeping. Pinned by
+                                     // tests/test_window_constants_agree.py.
     const BLINK_MIN_SEC     = 6;
     const BLINK_MAX_SEC     = 9;
     const BLINK_DURATION_MS = 120;
@@ -786,14 +793,21 @@
       //
       // Sleep cycle (TPA-idle based):
       //   0-300s       -> idle.png (mood="")
-      //   300-360s     -> drowsy.png (mood="drowsy")
-      //   360s+        -> sleeping.png (mood="sleeping")
+      //   300-315s     -> drowsy.png (mood="drowsy")
+      //   315s+        -> sleeping.png (mood="sleeping")
       //   on TPA wake   -> stretch.png for 1.5s, then idle.png
       const state = result?.state || "idle";
       const idleSeconds = result?.agent_idle_seconds || 0;
       const subState = result?.sub_state || "";
       const isDragging = document.body.classList.contains("dragging");
-      const trulyIdle = state === "idle" && !subState && !isDragging;
+      // 2026-09-04: "sleeping" counts here too. The backend now reports
+      // sleeping off the same agent_idle clock (at SLEEPING_IDLE_SEC), so
+      // gating on state === "idle" alone would freeze this machine at
+      // drowsy the moment the backend crossed over -- and the mood layer
+      // blocks state-driven sprite swaps, so she would sit on drowsy.png
+      // for the rest of the quiet stretch.
+      const trulyIdle = (state === "idle" || state === "sleeping")
+                        && !subState && !isDragging;
       // user_wake_remaining > 0 = Pink poked / sprint-triggered recently.
       // User interaction takes prime over the TPA-idle counter -> Squid
       // stays awake-faced even if TPA is silent.
