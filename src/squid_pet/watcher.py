@@ -138,6 +138,57 @@ def macos_idle_seconds() -> float:
     return 0.0
 
 
+# CPU fix 3 (2026-09-03): per-pid cmdline cache.
+#
+# _find_processes_by_argv0_basename has to read cmdline() for EVERY
+# process to find the two or three agent binaries (Process.name() lies
+# about `claude` -- see the docstring below), which measured ~35ms
+# across 520 processes, paid once per agent per 1Hz tick.
+#
+# A process's argv is fixed once it has exec'd, so last tick's answer is
+# still correct -- provided it is still the same process. Identity is
+# (pid, create_time); create_time costs nothing here because psutil
+# already fetched it when it built the Process object (measured: an
+# iteration reading create_time on all 520 runs in 7ms, the same as a
+# bare iteration; reading cmdline on all 520 takes 42ms).
+#
+# Denials are cached too: 202 of 520 processes refuse cmdline access at
+# ~6ms a pass, and a refusal is as fixed as the argv for a given
+# process instance.
+_CMDLINE_CACHE: dict[int, tuple[float, list[str] | None]] = {}
+
+# A child between fork() and exec() still carries its PARENT's argv, and
+# exec() does not change create_time -- so caching that snapshot would
+# leave Squid permanently blind to, say, a `claude` that we happened to
+# glimpse while it was still `zsh`. Processes younger than this are read
+# fresh every tick instead; only 3 of 520 are ever that young.
+_CMDLINE_SETTLE_SEC = 5.0
+
+
+def _cmdline_cached(p, now: float) -> list[str] | None:
+    """cmdline for ``p``, reusing the previous answer when it is provably
+    the same, settled process. None when unavailable (dead, denied,
+    kernel thread) -- callers already treat missing and empty alike.
+    """
+    try:
+        created = p.create_time()
+    except Exception:
+        # Identity unprovable (exotic psutil failure, or a test double
+        # without create_time) -> read fresh, cache nothing.
+        created = None
+    if created is not None:
+        hit = _CMDLINE_CACHE.get(p.pid)
+        if hit is not None and hit[0] == created:
+            return hit[1]
+    try:
+        cmdline = p.cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, SystemError):
+        cmdline = None
+    if created is not None and (now - created) >= _CMDLINE_SETTLE_SEC:
+        _CMDLINE_CACHE[p.pid] = (created, cmdline)
+    return cmdline
+
+
 def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Process]:
     """Return processes whose cmdline()[0] basename is in ``names``.
 
@@ -152,20 +203,25 @@ def _find_processes_by_argv0_basename(names: frozenset[str]) -> list[psutil.Proc
     `cmdline()[0]` is reliable, so matching goes through it instead --
     cmdline is fetched per-process (not via process_iter's bulk prefetch)
     because psutil can raise an uncaught SystemError from KERN_PROCARGS2
-    during that bulk prefetch on macOS; the per-process try/except here
-    isolates the failure to one process instead of the whole scan.
+    during that bulk prefetch on macOS; the per-process try/except in
+    _cmdline_cached isolates the failure to one process instead of the
+    whole scan.
     """
     matches = []
+    now = time.time()
+    live = set()
     for p in psutil.process_iter(["pid"]):
-        try:
-            cmdline = p.cmdline()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, SystemError):
-            continue
+        live.add(p.pid)
+        cmdline = _cmdline_cached(p, now)
         if not cmdline:
             continue
         exe = cmdline[0].rsplit("/", 1)[-1]
         if exe in names:
             matches.append(p)
+    # Drop processes that have exited, so the cache tracks the process
+    # table rather than growing for the life of the daemon.
+    for pid in [pid for pid in _CMDLINE_CACHE if pid not in live]:
+        del _CMDLINE_CACHE[pid]
     return matches
 
 
@@ -203,10 +259,10 @@ def find_codex_processes() -> list[psutil.Process]:
     """
     matches = _find_processes_by_argv0_basename(frozenset({"codex", "codex-tui"}))
     interactive = []
+    now = time.time()
     for p in matches:
-        try:
-            cmdline = p.cmdline()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, SystemError):
+        cmdline = _cmdline_cached(p, now)
+        if not cmdline:
             continue
         if len(cmdline) > 1 and cmdline[1] in CODEX_HEADLESS_SUBCOMMANDS:
             continue
