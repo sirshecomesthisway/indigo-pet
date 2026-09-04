@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Privacy — what Squid reads
+    url: https://github.com/sirshecomesthisway/squid-pet/blob/main/docs/PRIVACY.md
+    about: Every detector, exactly what it observes, and how to switch it off.
+  - name: Install and troubleshooting
+    url: https://github.com/sirshecomesthisway/squid-pet/blob/main/docs/INSTALL.md
+    about: Manual install steps and the common failure modes.

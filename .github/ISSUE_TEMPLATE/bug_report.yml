@@ -1,0 +1,80 @@
+name: Bug report
+description: Squid did the wrong thing, or nothing at all
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Squid is a state machine reacting to timing on *your* machine, so
+        the diagnostics below are usually the difference between a fix and
+        a guess. `squid doctor` and `squid why` take a second each.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What Squid did, and what you expected instead.
+      placeholder: |
+        Claude Code hit a permission prompt and Squid never waved. She
+        stayed on the "working" sprite until I answered it myself.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: squid doctor
+      description: Output of `squid doctor` (6-check self-test).
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: squid why
+      description: >
+        Output of `squid why` — ideally captured *while* the problem is on
+        screen, since it reports which detector fired and why.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Chip
+      options:
+        - Apple Silicon (M1/M2/M3/M4)
+        - Intel
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agents
+    attributes:
+      label: Which agents were running
+      options:
+        - label: Claude Code
+        - label: Codex
+        - label: More than one session at the same time
+        - label: Neither — this is about git / terminal / IDE detection
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >
+        From `squid logs`. Please skim before pasting — the log records
+        file paths from the projects you were working in.
+      render: text
+    validations:
+      required: false

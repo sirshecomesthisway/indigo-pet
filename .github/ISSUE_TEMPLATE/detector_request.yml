@@ -1,0 +1,41 @@
+name: Support another agent
+description: You want Squid to watch a tool she doesn't know about yet
+labels: ["detector"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding a detector is a contained change — see
+        [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md#adding-a-detector-for-a-new-agent).
+        This issue is for working out whether the signal exists at all.
+
+  - type: input
+    id: tool
+    attributes:
+      label: Which tool
+      placeholder: "Cursor / Aider / Cline / …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: signals
+    attributes:
+      label: What can be observed from outside it
+      description: >
+        Squid reads metadata only — file mtimes, process names, CPU. Does
+        this tool write a transcript or session file? Expose a hook or
+        event? Leave a recognisable process running? An official hook
+        beats anything Squid would have to guess at.
+    validations:
+      required: true
+
+  - type: textarea
+    id: states
+    attributes:
+      label: How would you tell its states apart
+      description: >
+        What distinguishes "thinking" from "working" from "waiting on the
+        human" for this tool? This is the hard part and the reason the
+        issue exists.
+    validations:
+      required: false
