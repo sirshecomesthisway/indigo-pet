@@ -918,10 +918,19 @@ class PetApi:
         command. Without this guard the two timers race and idle_chatter
         sometimes wins, popping an idle-flavored line ("8 arms, 0
         tasks") while she's actually mid-task -- confusing since it
-        reads as "nothing to do" during a real working stretch."""
+        reads as "nothing to do" during a real working stretch.
+
+        Pink-2026-09-03: generalised from that one state to a whitelist.
+        The same race spoiled every other non-idle state -- observed
+        live when a completed task was announced with "8 arms, 0 tasks",
+        and worst of all on approval_needed, where she is waving for
+        attention while claiming to have nothing to do. Every state
+        already has its own pool in observer.py; idle chatter was simply
+        talking over them, so it now speaks only when she really is
+        idle."""
         with self._lock:
             current_state = self._latest.state
-        if current_state == "working":
+        if current_state != "idle":
             return
         bubble = self._observer.on_idle_chatter()
         if bubble is not None:
