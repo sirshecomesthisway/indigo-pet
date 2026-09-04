@@ -287,6 +287,29 @@ def load_alpha_masks() -> dict[str, "Image.Image"]:
     return masks
 
 
+def _heartbeat_line(*, tick, cursor, win, inside, sprite, state, opaque,
+                    faded, click_through, ignore) -> str:
+    """The ~3s passthrough heartbeat, built as a string so it is testable.
+
+    2026-09-03: this line used to be an f-string inside the loop
+    referencing `dwelling`, a name the hover-fade rewrite removed.
+    Python evaluates an f-string only when the line runs, so it raised
+    NameError once every 100 ticks -- and the loop's blanket
+    `except Exception` swallowed it, replacing Squid's only passthrough
+    diagnostic with `passthrough error: name 'dwelling' is not defined`.
+    The dwell state it meant to report is now the hover tracker's two
+    actual outputs, faded and click_through.
+    """
+    cx, cy = cursor
+    win_x, win_y, win_w, win_h = win
+    sprite_x, sprite_y = sprite
+    return (f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
+            f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
+            f"inside={inside} sprite=({sprite_x},{sprite_y}) "
+            f"state={state} opaque={opaque} faded={faded} "
+            f"click_through={click_through} ignore={ignore}")
+
+
 def _occluded_by_menu_bar(cy: float, visible_frame_top: float) -> bool:
     """Is this cursor Y at/above the system menu bar strip?
 
@@ -735,12 +758,13 @@ class PassthroughController:
                 if tick % 100 == 0:  # ~3 seconds
                     with self._lock:
                         _ignore_for_log = self._last_ignore
-                    print(f"[squid-pet] tick {tick}: cursor=({cx:.0f},{cy:.0f}) "
-                          f"win=({win_x:.0f},{win_y:.0f},{win_w:.0f}x{win_h:.0f}) "
-                          f"inside={inside} sprite=({sprite_x},{sprite_y}) "
-                          f"state={state} opaque={opaque} dwelling={dwelling} "
-                          f"ignore={_ignore_for_log}",
-                          flush=True)
+                    print(_heartbeat_line(
+                        tick=tick, cursor=(cx, cy),
+                        win=(win_x, win_y, win_w, win_h), inside=inside,
+                        sprite=(sprite_x, sprite_y), state=state,
+                        opaque=opaque, faded=faded,
+                        click_through=click_through, ignore=_ignore_for_log,
+                    ), flush=True)
 
             except Exception as e:
                 print(f"[squid-pet] passthrough error: {e}", flush=True)
