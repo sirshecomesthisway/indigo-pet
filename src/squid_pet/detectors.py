@@ -154,8 +154,14 @@ class ClaudeCodeDetector:
         self._stat = stat_fn or os.stat
         raw_dirs = list(project_dirs) if project_dirs is not None else [str(Path.home() / "Projects")]
         self.project_dirs = [Path(d).expanduser() for d in raw_dirs]
+        # _scan_now carries the tick timestamp to the default walk:
+        # recent_file_ages_fn's no-argument signature is load-bearing
+        # across the detector tests, so the shared walk cannot take it
+        # as a parameter here.
+        self._scan_now: float = 0.0
         self._recent_file_ages = recent_file_ages_fn or (
-            lambda: _scan_recent_file_ages(self.project_dirs, self.FILE_ACTIVE_WINDOW_SEC)
+            lambda: _recent_file_ages_for_tick(
+                self.project_dirs, self.FILE_ACTIVE_WINDOW_SEC, self._scan_now)
         )
         self._candidates: list = []
         self._candidates_at: float = 0.0
@@ -219,6 +225,7 @@ class ClaudeCodeDetector:
         self.shell_active, self.shell_cmdline = _shell_signals(
             procs, self._has_active_shell_children, self._shell_cmdline_fn
         )
+        self._scan_now = now
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
@@ -319,8 +326,14 @@ class CodexDetector:
         self._stat = stat_fn or os.stat
         raw_dirs = list(project_dirs) if project_dirs is not None else [str(Path.home() / "Projects")]
         self.project_dirs = [Path(d).expanduser() for d in raw_dirs]
+        # _scan_now carries the tick timestamp to the default walk:
+        # recent_file_ages_fn's no-argument signature is load-bearing
+        # across the detector tests, so the shared walk cannot take it
+        # as a parameter here.
+        self._scan_now: float = 0.0
         self._recent_file_ages = recent_file_ages_fn or (
-            lambda: _scan_recent_file_ages(self.project_dirs, self.FILE_ACTIVE_WINDOW_SEC)
+            lambda: _recent_file_ages_for_tick(
+                self.project_dirs, self.FILE_ACTIVE_WINDOW_SEC, self._scan_now)
         )
         self._candidates: list = []
         self._candidates_at: float = 0.0
@@ -384,6 +397,7 @@ class CodexDetector:
         self.shell_active, self.shell_cmdline = _shell_signals(
             procs, self._has_active_shell_children, self._shell_cmdline_fn
         )
+        self._scan_now = now
         self.file_active = bool(self._recent_file_ages()) if procs else False
         self.transcript_age = self._newest_transcript_age(now)
         self.streaming = self.transcript_age < self.STREAMING_STALE_SEC
@@ -695,6 +709,41 @@ def _scan_recent_file_ages(
     return ages
 
 
+# CPU fix 5 (2026-09-04): ClaudeCodeDetector (10s window) and
+# IDEDetector (30s window) each walked ~/Projects separately, every
+# second. The walk measures 67-186ms here -- essentially all of what
+# those two detectors cost in the daemon (74ms and 65ms of a ~100ms
+# tick). The windows are nested, so ONE walk over the widest window
+# answers both and each detector filters down to its own. IDEDetector
+# already did exactly this internally for its own 5s/30s pair.
+#
+# Keyed on (project dirs, tick timestamp): an earlier attempt keyed on
+# time alone was measured SLOWER, because the two detectors ask for
+# different windows and collided.
+#
+# Caveat, deliberate: _scan_recent_file_ages stops early once max_files
+# (200) matches are collected, so walking the WIDER window can stop
+# sooner than the narrow one would have. That needs 200+ files changed
+# within 30s; a 30s window matches 0 files on this machine, and
+# IDEDetector has always accepted the same trade-off for its own pair.
+_WIDEST_FILE_WINDOW_SEC = 30.0
+_tree_walk_cache: tuple[tuple[str, ...], float, list[float]] | None = None
+
+
+def _recent_file_ages_for_tick(project_dirs, window_sec: float,
+                               now: float) -> list[float]:
+    """Ages within window_sec, from one shared walk per tick."""
+    global _tree_walk_cache
+    key = tuple(str(d) for d in project_dirs)
+    if (_tree_walk_cache is None or _tree_walk_cache[0] != key
+            or _tree_walk_cache[1] != now):
+        widest = max(window_sec, _WIDEST_FILE_WINDOW_SEC)
+        _tree_walk_cache = (
+            key, now, _scan_recent_file_ages(project_dirs, widest, now=now),
+        )
+    return [a for a in _tree_walk_cache[2] if a <= window_sec]
+
+
 # ----------------------------------------------------------------------
 # IDEDetector -- psutil for IDE processes + project file mtime cross-check
 # ----------------------------------------------------------------------
@@ -739,6 +788,7 @@ class IDEDetector:
         self._recent_files = recent_files_fn or self._default_recent_files
         self.cpu_percent: float = 0.0
         self.recent_file_count_busy: int = 0
+        self._scan_now: float = 0.0
         self.recent_file_count_grooving: int = 0
         self._last_scan_ts: float = 0.0
 
@@ -794,7 +844,8 @@ class IDEDetector:
         """Return list of ages (sec) of files modified within ``window_sec``
         across project_dirs. Capped at 200 files and depth 5 to stay cheap.
         Skips junk dirs."""
-        return _scan_recent_file_ages(self.project_dirs, window_sec)
+        return _recent_file_ages_for_tick(
+            self.project_dirs, window_sec, self._scan_now)
 
     def _scan(self, now: float) -> None:
         # Same once-per-tick guard as ClaudeCodeDetector/CodexDetector.
@@ -803,6 +854,7 @@ class IDEDetector:
         # enumerations and two project-tree walks instead of one.
         if now == self._last_scan_ts:
             return
+        self._scan_now = now
         self.cpu_percent = self._aggregate_cpu(now)
         # Two windows: 5s busy / 30s grooving. Compute the larger then partition.
         recent = self._recent_files(self.GROOVING_WINDOW_SEC)
