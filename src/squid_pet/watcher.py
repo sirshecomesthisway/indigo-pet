@@ -119,10 +119,51 @@ class PetState:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# macOS idle time (no pyobjc required)
+# macOS idle time
 # ────────────────────────────────────────────────────────────────────────
-def macos_idle_seconds() -> float:
-    """Return system idle time in seconds via ioreg."""
+# CPU fix 6 (2026-09-03): this used to fork `ioreg -c IOHIDSystem` every
+# second and scan 96KB of text for one number. Measured inside the real
+# daemon, that fork cost 134ms of CPU per tick -- half of Squid's entire
+# tick, and four times what a small test harness suggested, because the
+# process being forked carries Cocoa, WebKit and 11 threads.
+#
+# CoreGraphics already tracks the same number and hands it over for
+# 0.0014ms. Checked side by side against ioreg: the two agree to within
+# the time ioreg itself takes to run, against a 5-minute threshold.
+# ioreg stays as the fallback for a machine without the bindings.
+_QUARTZ_IDLE_FN = None      # resolved on first use; False once known missing
+
+
+def _quartz_idle_seconds() -> float | None:
+    """Seconds since the last system-wide keyboard/mouse event, straight
+    from CoreGraphics. None when unavailable, so the caller can fall
+    back rather than guess."""
+    global _QUARTZ_IDLE_FN
+    if _QUARTZ_IDLE_FN is None:
+        try:
+            from Quartz import (
+                CGEventSourceSecondsSinceLastEventType,
+                kCGEventSourceStateHIDSystemState,
+                kCGAnyInputEventType,
+            )
+        except Exception:
+            # Remembered, so a machine without pyobjc-framework-Quartz
+            # does not pay an ImportError once a second forever.
+            _QUARTZ_IDLE_FN = False
+        else:
+            _QUARTZ_IDLE_FN = lambda: CGEventSourceSecondsSinceLastEventType(
+                kCGEventSourceStateHIDSystemState, kCGAnyInputEventType
+            )
+    if _QUARTZ_IDLE_FN is False:
+        return None
+    try:
+        return float(_QUARTZ_IDLE_FN())
+    except Exception:
+        return None
+
+
+def _ioreg_idle_seconds() -> float:
+    """Fallback: system idle time in seconds via ioreg."""
     try:
         result = subprocess.run(
             ["ioreg", "-c", "IOHIDSystem"],
@@ -136,6 +177,18 @@ def macos_idle_seconds() -> float:
     except Exception:
         pass
     return 0.0
+
+
+def macos_idle_seconds() -> float:
+    """Return system idle time in seconds.
+
+    0.0 on total failure -- best-effort by design: a failed read must
+    read as "the user is right here", never put her to sleep.
+    """
+    secs = _quartz_idle_seconds()
+    if secs is not None:
+        return secs
+    return _ioreg_idle_seconds()
 
 
 # CPU fix 3 (2026-09-03): per-pid cmdline cache.
