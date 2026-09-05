@@ -63,7 +63,7 @@ BUBBLE_LINES: dict[str, LineSpec] = {
     "back_to_idle": ["pheww", "hhh", "*flops*", "*sigh*"],
     "waking":       ["mmf...", "nhg", "wh-", "*stretches*"],
 
-    # TPA is waving flag -- awaiting Pink's input (Pink 2026-07-02)
+    # The agent is waving a flag -- awaiting Pink's input (Pink 2026-07-02)
     "approval_needed": ["your turn!", "psst!!", "yoo??", "input?",
                         "heyy!!", "you? you!", "peek", "hi hi!"],
 
@@ -187,7 +187,7 @@ BUBBLE_LINES: dict[str, LineSpec] = {
 #   If from_set is a set/frozenset, only those old_states fire.
 # ----------------------------------------------------------------------
 STATE_TRIGGERS: list[tuple[str, Optional[frozenset[str]], str]] = [
-    # TPA is waving flag -- awaiting Pink's input (Pink 2026-07-02).
+    # The agent is waving a flag -- awaiting Pink's input (Pink 2026-07-02).
     # Fires on any transition INTO approval_needed. Rule-based lines
     # from BUBBLE_LINES["approval_needed"].
     ("approval_needed", None, "approval_needed"),
@@ -216,8 +216,8 @@ STATE_TRIGGERS: list[tuple[str, Optional[frozenset[str]], str]] = [
 # ----------------------------------------------------------------------
 # Concern-reason formatting
 # ----------------------------------------------------------------------
-# Pink-2026-08-22: the natural trigger for "concerned" (TPADetector
-# reading errors.log) was removed along with TPADetector -- no
+# Pink-2026-08-22: the natural trigger for "concerned" (the legacy agent's
+# detector reading its errors.log) was removed along with it -- no
 # equivalent exists for Claude Code / Codex. "concerned" is presently only
 # reachable via the ~/.squid-pet/force_state debug override, which never
 # populates concern_reason, so this formatting always falls through to the
@@ -393,8 +393,9 @@ def _explain_reason(state_reason: str,
 # is True, we can read the shell child's cmdline directly from psutil for a
 # concrete "what's it doing" bubble. Pink-2026-08-22: window.py currently
 # always passes shell_cmdline=None -- the only wiring that ever populated it
-# (find_tpa_processes + latest_shell_child_cmdline) was TPA-
-# only and was removed. Kept for a future Claude Code / Codex equivalent.
+# (the legacy agent's process scan + latest_shell_child_cmdline) was
+# specific to it and was removed. Kept for a future Claude Code / Codex
+# equivalent.
 #
 # We trim flags + paths to get a short verb-noun bubble. Examples:
 #   pytest tests/test_observer.py -v  ->  "running pytest"

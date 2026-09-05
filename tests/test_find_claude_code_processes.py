@@ -5,7 +5,7 @@ Guards against the bug found while wiring up ClaudeCodeDetector
 (2026-08-14): psutil.Process.name() is NOT reliable for the `claude`
 binary on macOS -- it returns the versioned install path's basename
 (e.g. "2.1.227"), not "claude". Matching must go through cmdline()[0]
-instead, same as find_tpa_processes.
+instead, same as the legacy agent's removed process scan.
 """
 from __future__ import annotations
 

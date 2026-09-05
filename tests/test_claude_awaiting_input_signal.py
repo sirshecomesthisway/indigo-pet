@@ -1,15 +1,15 @@
-"""Pink-2026-08-26: Claude-Code-native sibling of
-test_awaiting_input_signal.py's TPA direct-signal tests.
+"""Pink-2026-08-26: Claude-Code-native sibling of the legacy agent's
+direct-signal tests (since removed).
 
-Background: TPA's approval_needed alert is driven by a private
-sitecustomize.py patch writing ~/.tpa/awaiting_input/<pid>.
+Background: that agent's approval_needed alert was driven by a private
+sitecustomize.py patch writing a PID-keyed flag file.
 Claude Code has no equivalent private hook, but DOES have an official
 Notification hook. scripts/claude_pet_hook.py is wired into
 ~/.claude/settings.json (Notification/UserPromptSubmit/SessionEnd) and
 writes/removes ~/.squid-pet/claude_awaiting_input/<session_id> the same
 way -- except keyed by session_id (no PID in the hook payload) instead
 of PID, and with NO engagement gate (see filter_eligible_claude_sessions'
-docstring for why one isn't needed here, unlike TPA's).
+docstring for why one isn't needed here, unlike the legacy path's).
 
 These tests exercise watcher.py's side only (claude_sessions_awaiting_input,
 filter_eligible_claude_sessions, the compute() integration, and the
@@ -102,8 +102,8 @@ def test_fresh_session_is_eligible():
     assert watcher.filter_eligible_claude_sessions(["sess-1"]) == ["sess-1"]
 
 
-def test_no_engagement_gate_unlike_cp():
-    """Unlike TPA's filter_eligible_awaiting_pids, a session with NO prior
+def test_no_engagement_gate_unlike_the_legacy_path():
+    """Unlike the legacy filter_eligible_awaiting_pids, a session with no prior
     activity tracking still fires -- Claude's Notification hook only
     ever fires mid/post-turn, so there's no 'fresh, never engaged' class
     of false positive to gate against."""
@@ -181,7 +181,7 @@ def test_compute_fires_approval_needed_from_claude_session(tmp_claude_dir):
     assert "sess-xyz" in st.state_reason
     assert "claude" in st.state_reason.lower()
     # Pink-2026-08-26 regression: notification must name "Claude Code",
-    # not the previously-hardcoded "TPA" (caught via live testing).
+    # not the previously-hardcoded legacy agent (caught via live testing).
     # source_label defaults to "Claude Code" now that it's the only caller.
     mock_notify.assert_called_once_with("your turn", "Glass")
 
@@ -206,7 +206,7 @@ def test_compute_notify_false_suppresses_notification_but_still_reports_state(tm
     mock_notify.assert_not_called()
 
 
-def test_compute_does_not_fire_when_no_claude_or_tpa_flag(tmp_claude_dir):
+def test_compute_does_not_fire_without_a_claude_flag(tmp_claude_dir):
     """Sanity: an otherwise-quiet cascade must not spontaneously fire
     approval_needed just because the (empty) Claude dir exists."""
     sm = watcher.StateMachine()

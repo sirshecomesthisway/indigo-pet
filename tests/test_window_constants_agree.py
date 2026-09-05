@@ -238,3 +238,28 @@ def test_both_layers_call_the_same_moment_asleep():
         f"mood layer stays 'drowsy' and blocks the sprite swap -- she sits "
         f"on drowsy.png while state.json says sleeping."
     )
+
+
+def test_frontend_reads_the_field_name_petstate_actually_writes():
+    """The agent-idle clock crosses a language boundary: watcher.PetState
+    defines the field, asdict() puts it in the get_state() payload, and
+    index.html reads it back off the poll result. A mismatch fails
+    SILENTLY -- `result?.wrong_name` is undefined, `|| 0` turns it into
+    zero, and she simply never gets drowsy. Nothing throws, no test that
+    only looks at one side of the boundary notices.
+
+    Pinned when the field was renamed off its legacy-agent prefix
+    (2026-09-04), which is exactly the kind of change that breaks it.
+    """
+    from dataclasses import fields
+    field_names = {f.name for f in fields(watcher.PetState)}
+    assert "agent_idle_seconds" in field_names, (
+        "PetState no longer defines agent_idle_seconds -- if it was renamed "
+        "again, index.html and this test must move with it."
+    )
+    html = (Path(window.__file__).parent / "frontend" / "index.html").read_text()
+    assert "result?.agent_idle_seconds" in html, (
+        "index.html does not read result?.agent_idle_seconds. The frontend "
+        "drowsy/sleeping machine would silently see 0 forever and she would "
+        "never fall asleep."
+    )

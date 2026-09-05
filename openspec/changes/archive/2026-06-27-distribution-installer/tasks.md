@@ -136,7 +136,7 @@
   Architecture/states pushed down. Old "Install & first run" +
   "Auto-start at login" sections removed (now redundant).
 * Group 7.6: test suite 219/219 still green (no runtime regression).
-* Group 8 (commits + memory): 4 commits pushed to internal main:
+* Group 8 (commits + memory): 4 commits pushed to the internal remote's main:
   - f5f6179 feat(launcher,plist): bin/squid + template + drop stale
   - 9786a57 feat(install): install.sh + uninstall.sh pipelines
   - [pending] docs+README+tasks

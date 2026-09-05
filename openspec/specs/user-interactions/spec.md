@@ -97,9 +97,9 @@ While waving, the system SHALL:
   `osascript -e 'display notification'` when it is installed.
 
 The notification banner SHALL name the agent that is actually waiting.
-- **Why**: Pink-2026-08-26 found it hardcoded to "TPA", so a Claude
-  Code session produced a banner reading "TPA: your turn" for an
-  agent that was never running.
+- **Why**: Pink-2026-08-26 found the name hardcoded to a single agent, so
+  a Claude Code session produced a banner announcing a different agent
+  entirely -- one that was never running.
 
 Config values interpolated into AppleScript SHALL be escaped before use.
 

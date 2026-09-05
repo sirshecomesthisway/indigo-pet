@@ -8,13 +8,13 @@ Code hook signal channel, the priority cascade for one-state-per-tick
 emission, JSON state file publication, per-detector opt-out, and the
 drowsy/user-wake-override layer for prolonged idle periods.
 
-Pink-2026-08-22/27: the project originally watched TPA (a
-separate, internal CLI coding agent) as a general busy/thinking/
-working/celebrating/grooving/concerned source, plus a TPA-driven
-approval_needed/flag-wave signal. TPA was never actually
-installed/run on this machine, so none of it ever fired anything in
-practice, and it has been fully removed -- including
-`tpa_running`, which no longer exists in the schema.
+Pink-2026-08-22/27: the project originally watched a third-party CLI
+coding agent as a general busy/thinking/working/celebrating/grooving/
+concerned source, plus an approval_needed/flag-wave signal driven by
+that same agent. It was never actually installed/run on this machine, so
+none of it ever fired anything in practice, and it has been fully
+removed -- including the `*_running` field that reported it, which no
+longer exists in the schema.
 
 Pink-2026-09-01: the agent-facing signals that used to be CPU/mtime
 heuristics are now Claude Code's own hook events. See the hook signal
@@ -340,10 +340,10 @@ embeddings) SHALL keep that list immutable and skip reloading.
 ### Requirement: `concerned` has no detector -- documented non-goal
 
 No detector SHALL implement `concerned`. It had no Claude Code or Codex
-equivalent when TPA was removed, and inventing one would mean
-guessing at failure from signals that do not carry it. The sprite,
-animation, and alpha mask remain so `force_state` can still reach it for
-testing and demos.
+equivalent when the original third-party agent was removed, and
+inventing one would mean guessing at failure from signals that do not
+carry it. The sprite, animation, and alpha mask remain so `force_state`
+can still reach it for testing and demos.
 
 #### Scenario: Nothing naturally emits concerned
 - **WHEN** any combination of real agent signals is present

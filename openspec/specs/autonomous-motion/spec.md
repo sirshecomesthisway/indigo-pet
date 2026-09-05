@@ -30,7 +30,7 @@ exist.
 
 Pink-2026-08-22 note: this gate is currently wired to `is_busy=lambda: False`
 in window.py (a 2026-06-08 decision, predating and unrelated to the
-TPADetector removal) -- Squid wanders unconditionally today. The
+third-party agent detector's removal) -- Squid wanders unconditionally today. The
 contract below documents the intended semantics if/when the gate is
 re-enabled, not current runtime behavior.
 

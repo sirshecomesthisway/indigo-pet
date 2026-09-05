@@ -55,7 +55,7 @@ def test_no_processes_is_quiet():
 
 def test_shell_active_fires_busy_immediately():
     """Live tool subprocess (e.g. a shell command) is busy on tick 1 --
-    no streak needed, same as TPADetector's shell_active."""
+    no streak needed, same as the legacy detector's shell_active."""
     d = _make(procs=[_FakeProc()], cpu=0.5, shell_active=True)
     assert d.is_busy(now=1000.0) is True
 

@@ -29,7 +29,7 @@ graph TD
 
 Bootstrapping Python tooling FROM Python is a chicken-egg trap (user has no
 venv yet, system Python may be wrong version). The installer must run in plain
-zsh/bash with only POSIX utilities + `curl` + `git` + `brew` (which internal
+zsh/bash with only POSIX utilities + `curl` + `git` + `brew` (which the company
 engineers already have via Homebrew or AI Launchpad onboarding). Once `uv venv`
 is created, all heavy lifting moves into Python land via the package's existing
 entry points.

@@ -4,8 +4,9 @@ fires again), PetApi should periodically surface what she's currently
 watching via Observer.on_still_working -- throttled to
 WORKING_REANNOUNCE_SEC and silent when there's nothing new to say.
 
-Follows the same __new__ + manual-attribute + MagicMock-observer pattern
-as test_petapi_llm_context_enrichment.py.
+Uses the __new__ + manual-attribute + MagicMock-observer pattern (see
+_make_api below): PetApi's real __init__ builds a window, a menu and a
+watcher thread, none of which this test needs.
 """
 from __future__ import annotations
 
@@ -52,9 +53,9 @@ def test_same_state_within_throttle_window_does_not_reannounce():
 def test_same_state_past_throttle_window_reannounces():
     """api._sm is None in this synthetic fixture (see _make_api), so
     _current_shell_cmdline() has no detector to read and legitimately
-    returns None here -- see test_petapi_llm_context_enrichment.py /
-    the detector-level tests for real shell_cmdline population. This
-    test is only about the throttle/reannounce timing itself."""
+    returns None here -- see the detector-level tests for real
+    shell_cmdline population. This test is only about the
+    throttle/reannounce timing itself."""
     api = _make_api()
     api._observer.on_still_working.return_value = "running pytest"
 

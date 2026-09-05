@@ -6,7 +6,7 @@ away. get_state() now force-wakes her every PERIODIC_WAKE_CADENCE_SEC while
 she's drowsy/sleeping, granting a PERIODIC_WAKE_AWAKE_SEC stay-awake window
 (reusing the existing user_wake_until/wake_trigger_seq plumbing poke() uses)
 so RoutineController un-pauses and runs a real stretch/idle/walk lap before
-she's allowed to drift back to sleep under the normal agent_idle logic.
+she's allowed to drift back to sleep under the normal agent-idle logic.
 
 _wake() is the shared helper behind poke()/swing/sprint/periodic-wake; it
 also resets the periodic clock, so a real interaction doesn't immediately

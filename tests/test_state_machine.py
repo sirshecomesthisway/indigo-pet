@@ -6,8 +6,8 @@ Strategy: monkeypatch every I/O function at the module level
 detector-agnostic parts of its priority cascade (sleeping, celebrating,
 default idle) plus cross-tick memory.
 
-Pink-2026-08-22/27: TPADetector, and later the entire TPA-
-driven approval mechanism, were removed (TPA was never actually
+Pink-2026-08-22/27: the legacy agent's detector, and later the entire
+approval mechanism it drove, were removed (that agent was never actually
 installed/run on this machine, so none of it ever fired anything in
 practice; the Claude-Code-native replacement -- an official Notification
 hook -- has been live since 2026-08-26). The rich working/thinking/
@@ -114,11 +114,11 @@ def test_default_idle_with_no_signals(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# agent_idle_seconds tracking (generic: tracks time since any active state,
-# not specific to TPA despite the field name)
+# agent_idle_seconds tracking (time since the state machine last left any
+# active state -- not tied to any one agent)
 # ──────────────────────────────────────────────────────────────────────
 def test_agent_idle_seconds_zero_when_active(monkeypatch):
-    """While state is active (e.g. celebrating), agent_idle should be 0."""
+    """While state is active (e.g. celebrating), agent-idle should be 0."""
     install_world(monkeypatch)
     sm = make_machine_bare()
     sm.celebrate_until = time.time() + 20

@@ -1,5 +1,5 @@
 """Tests for watcher.latest_shell_child_cmdline() -- Pink-2026-08-27k:
-replaces the removed TPA-only latest_shell_child_cmdline, feeding
+replaces the removed legacy-agent-only latest_shell_child_cmdline, feeding
 the "still working" reannounce bubble a concrete "running X" instead of
 staying silent. Mirrors has_active_shell_children's recursive-children
 walk / SHELL_CHILD_NAMES matching, but returns the cmdline instead of

@@ -214,7 +214,7 @@ def _explain_verdict(state, per_detector, approval_alert=None) -> str:
         # whatever the cascade picked underneath (see StateMachine.
         # compute()) -- explaining it via `fired` detectors is
         # misleading (it would describe the pre-override cascade, not
-        # the actual reason: a TPA or Claude Code direct-signal flag).
+        # the actual reason: a Claude Code direct-signal flag).
         # state.state_reason already carries the precise reason.
         return "state=approval_needed because " + (state.state_reason or "a direct awaiting_input signal fired")
     if state.state == "idle" and not fired:

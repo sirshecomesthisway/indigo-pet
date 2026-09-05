@@ -59,7 +59,7 @@ ACKNOWLEDGE_DISMISS_DELAY_SEC = 1.0
 # holds the awake override for PERIODIC_WAKE_AWAKE_SEC -- long enough for
 # RoutineController (unpaused once mood clears) to run a real stretch/idle/
 # walk lap (IDLE_ROUTINE averages ~91s/cycle) before she's allowed to drift
-# back to sleep under the normal agent_idle-based logic.
+# back to sleep under the normal agent-idle logic.
 PERIODIC_WAKE_CADENCE_SEC = 900.0   # 15 min
 PERIODIC_WAKE_AWAKE_SEC = 180.0     # 3 min stay-awake window
 
@@ -715,7 +715,7 @@ class PetApi:
         # Observer: fire on actual state transitions only
         if prev_state != state.state:
             # Pink-2026-08-27k: was hardcoded None -- the original wiring
-            # only ever read TPA's shell children (TPA-only), always
+            # only ever read the legacy agent's shell children, always
             # empty on this machine. Now reads the live Claude Code/Codex
             # detector's own shell_cmdline (see _current_shell_cmdline).
             shell_cmd = self._current_shell_cmdline()
@@ -820,7 +820,7 @@ class PetApi:
         if self._wrapper_deg_override is not None:
             d["wrapper_deg"] = self._wrapper_deg_override
         d["wake_trigger_seq"] = self._wake_trigger_seq
-        # User-interaction wake override (poke/sprint take prime over TPA-idle counter)
+        # User-interaction wake override (poke/sprint take prime over agent-idle counter)
         d["user_wake_remaining"] = max(0.0, self._user_wake_until - _time.time())
         d["sprint_fast_transition"] = self._sprint_fast_transition
         # Observer-mode: surface the pending bubble for frontend.
@@ -1032,7 +1032,7 @@ class PetApi:
         """JS-exposed: single click without drag = poke Squid.
         - Wakes if drowsy/sleeping (bumps wake_trigger_seq)
         - Sets user_wake override for 60s (Pink's poke takes prime over the
-          TPA-idle counter; without this, stretch transition completes and
+          agent-idle counter; without this, stretch transition completes and
           mood layer immediately re-enters drowsy)
         - Clears any forced state (poke = "go back to normal")
         - Fires observer bubble (was: dual "boop!" hint pill + bubble,
@@ -1327,7 +1327,7 @@ class PetApi:
         self._wander_paused_until = 0.0  # cancel pause so she can move
         # User-interaction wake override: keeps her awake-faced (idle.png)
         # during the entire sprint + buffer afterward. Without this, mood
-        # layer re-enters drowsy mid-sprint if agent_idle is high.
+        # layer re-enters drowsy mid-sprint if agent-idle is high.
         self._wake(60.0)                  # wake-from-drowsy stretch transition
         try:
             # Observer bubble: sprint start
@@ -1748,7 +1748,7 @@ def main() -> None:
                 get_state=lambda: api.get_state().get("state", "idle"),
                 is_drag_active=is_drag_active,
                 # is_busy gate disabled (2026-06-08 Pink decision): she
-                # roams even during active TPA work. State-gate handles
+                # roams even during active agent work. State-gate handles
                 # non-idle pauses; mood-gate handles drowsy/sleeping.
                 is_busy=lambda: False,
                 get_mood=api.get_frontend_mood,

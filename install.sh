@@ -245,15 +245,13 @@ first_run_wizard() {
     # so both default on unconditionally -- there's no cost to leaving
     # them on when the tool isn't running (they just report nothing).
     #
-    # Pink-2026-08-27: there used to be a third probe+prompt here for a
-    # "tpa" trigger (TPA, a separate CLI coding agent this
-    # project originally watched). TPADetector was removed
-    # entirely 2026-08-22/27 -- TPA was never actually installed/
-    # run on this machine, so it never fired anything in practice, and
-    # detectors.py no longer has a "tpa" trigger key to read at
-    # all. Squid's approval-needed "flag wave" is still available for
-    # TPA via its own sitecustomize-driven signal, independent of
-    # this triggers block -- see docs/PRIVACY.md.
+    # Pink-2026-08-27: there used to be a third probe+prompt here, for a
+    # third-party CLI coding agent this project originally watched. Its
+    # detector was removed entirely 2026-08-22/27 -- that agent was never
+    # actually installed/run on this machine, so it never fired anything
+    # in practice, and detectors.py no longer has a trigger key for it at
+    # all. Its sitecustomize-driven approval signal went with it; the
+    # "flag wave" is Claude-Code-only now -- see docs/PRIVACY.md.
     local claude_default="true"
     local codex_default="true"
 

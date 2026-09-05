@@ -16,13 +16,13 @@ State model:
   - approval_needed : Claude Code's Notification hook (scripts/
                    claude_pet_hook.py) reports a session is waiting on you
 
-  Pink-2026-08-27: TPA (a separate CLI coding agent this project
-  originally watched) has been fully removed, including the approval-
-  needed/flag-wave mechanism that used to be TPA-driven
-  (~/.tpa/awaiting_input/<pid> + a CPU-idle fallback) -- Code
-  Puppy was never actually installed/run on this machine, and the
-  Claude-Code-native replacement (an official Notification hook) has
-  been live and tested since 2026-08-26. "grooving" now has a real
+  Pink-2026-08-27: the legacy agent (a third-party CLI coding agent
+  this project originally watched) has been fully removed, including the
+  approval-needed/flag-wave mechanism it drove (a PID-keyed flag
+  directory plus a CPU-idle fallback). It was never actually
+  installed/run on this machine, and the Claude-Code-native replacement
+  (an official Notification hook) has been live and tested since
+  2026-08-26. "grooving" now has a real
   Claude Code path (Stop hook, no resumed work yet -- see
   claude_grooving_now below) and other-detector paths (e.g. IDE).
   "concerned" still has no Claude Code/Codex equivalent and remains
@@ -106,11 +106,10 @@ class PetState:
     state: str = "idle"
     sub_state: str = ""          # optional flavor text
     idle_seconds: float = 0.0          # macOS HID idle (kbd/mouse system-wide)
-    # Pink-2026-08-27: field name predates Claude Code/Codex support --
-    # despite the "cp" prefix this is generic now (seconds since the
-    # state machine last left an "active" state), not TPA-specific.
-    # Kept as-is rather than renamed: it's a load-bearing state.json field
-    # the frontend's drowsy-entry logic reads every tick.
+    # Seconds since the state machine last left an "active" state.
+    # Load-bearing: written to state.json and read by the frontend's
+    # drowsy-entry logic every tick, so producers and consumers must be
+    # renamed together. Carried a legacy-agent prefix until 2026-09-04.
     agent_idle_seconds: float = 0.0
     claude_code_running: bool = False
     codex_running: bool = False
@@ -428,12 +427,11 @@ def aggregate_cpu(procs: list[psutil.Process]) -> float:
 # ────────────────────────────────────────────────────────────────────────
 # Claude Code direct-signal approval detection (Notification hook)
 # ────────────────────────────────────────────────────────────────────────
-# Pink-2026-08-27: this used to run alongside a parallel TPA-driven
-# mechanism (~/.tpa/awaiting_input/<pid>, PID-keyed, with a CPU-
-# heuristic fallback) -- fully removed. TPA was never actually
-# installed/run on this machine, and this Claude-Code-native signal (fed
-# by an official hook, not a monkeypatch) has been live and tested since
-# 2026-08-26.
+# Pink-2026-08-27: this used to run alongside a parallel mechanism for the
+# legacy agent (a PID-keyed flag directory with a CPU-heuristic fallback)
+# -- fully removed. That agent was never actually installed/run on this
+# machine, and this Claude-Code-native signal (fed by an official hook,
+# not a monkeypatch) has been live and tested since 2026-08-26.
 # fed by an official Claude Code hook (scripts/claude_pet_hook.py, wired
 # into ~/.claude/settings.json under hooks.Notification/UserPromptSubmit/
 # SessionEnd) instead of a private sitecustomize.py patch. Key difference:
@@ -1071,11 +1069,10 @@ class StateMachine:
         # Hold "working" for working_hold_sec between tool calls
         # so Squid does not flicker to "thinking" in LLM-gen gaps.
         self.working_hold_until = 0.0
-        # agent_idle tracking: clock starts whenever state enters "idle".
+        # Agent-idle tracking: clock starts whenever state enters "idle".
         # Independent of macOS HID activity -- you can keep typing in Slack
-        # and this clock still ticks up. (Field/method names keep the "cp"
-        # prefix for state.json schema stability; the tracking itself is
-        # generic, not TPA-specific -- see PetState.agent_idle_seconds.)
+        # and this clock still ticks up. Surfaced as
+        # PetState.agent_idle_seconds.
         self._agent_idle_since: float = 0.0
         self._last_state: str = ""
         # v0.2.1 -- "your turn" alert latch. Fires once per approval_needed
@@ -1651,9 +1648,9 @@ def _fire_approval_notification(text: str, sound: str, source_label: str = "Clau
     as a parameter rather than a hardcoded string so a future agent-
     specific direct signal (e.g. Codex) can reuse this function without
     lying about the source -- Pink-2026-08-26 found a real bug where this
-    was hardcoded to "TPA" unconditionally, so a Claude Code
-    session firing this alert showed a banner reading "TPA: your
-    turn" even though TPA was never running.
+    was hardcoded to the legacy agent's name unconditionally, so a Claude
+    Code session firing this alert showed a banner naming an agent that
+    was never running.
 
     Pink-2026-08-27: prefers `terminal-notifier` (if installed) over
     plain `osascript -e 'display notification'`, because the latter has

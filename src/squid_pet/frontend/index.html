@@ -117,7 +117,7 @@
     @keyframes concerned-tremble { 0%,100%{transform:translate(-50%,-50%) translate(0,0);} 10%,30%,50%,70%,90%{transform:translate(-50%,-50%) translate(-1.5px,1.5px);} 20%,40%,60%,80%{transform:translate(-50%,-50%) translate(1.5px,-1.5px);} }
     .pet[data-state="concerned"] { animation: concerned-tremble 0.25s linear infinite; }
 
-    /* ── APPROVAL-NEEDED ── TPA waiting on user input. Big bouncy jump
+    /* ── APPROVAL-NEEDED ── agent waiting on user input. Big bouncy jump
        PLUS golden glow ring (drop-shadow follows alpha of idle.png so
        it hugs her silhouette, no ugly square box). Combined animation
        so jump and glow stay in phase. */
@@ -285,7 +285,7 @@
       border-radius: 0;                /* SQUARE corners = pixel art */
       padding: 6px 12px;
       /* Monospace gives the pixel/retro feel; system fonts so no
-         external load and no corporate font policy concerns */
+         external load and no corporate font-policy concerns */
       font: 12px/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
       font-weight: 600;
       /* Capped width + flexible height (2026-08-17 fix): was max-width
@@ -766,7 +766,7 @@
       _mood = "sleeping";
       notifyMoodToBackend("sleeping");
       setSpriteSrcDirect("sprites/sleeping.png");
-      console.log("[squid] -> sleeping mood (3 min agent_idle)");
+      console.log("[squid] -> sleeping mood (3 min agent-idle)");
     }
 
     function wakeUpWithStretch() {
@@ -787,21 +787,22 @@
     }
 
     function checkDrowsyState(result) {
-      // Use agent_idle_seconds (time since TPA left "idle" state). Pink wants
-      // her to nod off based on what TPA is doing, NOT whether Pink is typing
+      // Use agent_idle_seconds (time since the agent left "idle" state).
+      // Pink wants her to nod off based on what the AGENT is doing, NOT
+      // whether Pink is typing
       // in Slack/email/etc. macOS-wide idle is intentionally ignored.
       //
-      // Sleep cycle (TPA-idle based):
+      // Sleep cycle (agent-idle based):
       //   0-300s       -> idle.png (mood="")
       //   300-315s     -> drowsy.png (mood="drowsy")
       //   315s+        -> sleeping.png (mood="sleeping")
-      //   on TPA wake   -> stretch.png for 1.5s, then idle.png
+      //   on agent wake -> stretch.png for 1.5s, then idle.png
       const state = result?.state || "idle";
       const idleSeconds = result?.agent_idle_seconds || 0;
       const subState = result?.sub_state || "";
       const isDragging = document.body.classList.contains("dragging");
       // 2026-09-04: "sleeping" counts here too. The backend now reports
-      // sleeping off the same agent_idle clock (at SLEEPING_IDLE_SEC), so
+      // sleeping off the same agent-idle clock (at SLEEPING_IDLE_SEC), so
       // gating on state === "idle" alone would freeze this machine at
       // drowsy the moment the backend crossed over -- and the mood layer
       // blocks state-driven sprite swaps, so she would sit on drowsy.png
@@ -809,8 +810,8 @@
       const trulyIdle = (state === "idle" || state === "sleeping")
                         && !subState && !isDragging;
       // user_wake_remaining > 0 = Pink poked / sprint-triggered recently.
-      // User interaction takes prime over the TPA-idle counter -> Squid
-      // stays awake-faced even if TPA is silent.
+      // User interaction takes prime over the agent-idle counter -> Squid
+      // stays awake-faced even if the agent is silent.
       const userAwake = (result?.user_wake_remaining || 0) > 0;
 
       if (userAwake && (_mood === "drowsy" || _mood === "sleeping")) {
@@ -833,7 +834,7 @@
         enterDrowsy();
       } else if ((_mood === "drowsy" || _mood === "sleeping") &&
                  (idleSeconds < DROWSY_IDLE_SEC || isDragging)) {
-        // Wake trigger is SEMANTIC: real TPA activity (agent_idle reset) or
+        // Wake trigger is SEMANTIC: real agent activity (agent-idle reset) or
         // user dragging only. Pulse/wanderer sub_state animations are NOT
         // wake signals - they're cosmetic, mood stays sticky through them.
         wakeUpWithStretch();

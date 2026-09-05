@@ -57,7 +57,7 @@
 
 ## 8. Commit + memory
 - [x] 8.1 3 commits this session: 626d524 (decorator + migration), 7ae4032 (doctor + tests), THIS COMMIT (pre-commit hook + docs). Healthcheck/CI re-scoped/deferred per Groups 4-5.
-- [ ] 8.2 internal pushed each commit. github.com origin still VPN-blocked -- pending.
+- [ ] 8.2 internal remote pushed each commit. github.com origin still VPN-blocked -- pending.
 - [x] 8.3 Filed kennel drawer 434 (repo wing, decisions room) — four-layer defense pattern: decorator + liveness handshake + window-rendering smoke test + CI startup verification. Generalizes to any cross-platform UI project where the toolkit demands a specific thread.
 - [x] 8.4 Update memory file -- doctor-decorator pattern documented (see addendum to squid-pet.md added 2026-06-27 -- the @squid_doctor_check decorator pattern is now the canonical liveness gate; all new lifecycle checks should use it instead of inline if/else in startup.py)
 - [ ] 8.5 PENDING: archive when Group 5 (CI) is decided and 7.3 cross-link lands (after distribution-installer implementation)

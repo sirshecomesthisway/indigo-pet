@@ -73,7 +73,7 @@ verify) without flickering back to `thinking` between steps.
 ```
 any_agent_running       = tpa_running or claude_running or codex_running
 working_evidence_merged = shell_active(any of the three) or file_active(claude/codex)
-streaming_merged        = llm_streaming(cp) or streaming(claude) or streaming(codex)
+streaming_merged        = llm_streaming(tpa) or streaming(claude) or streaming(codex)
 ```
 
 `_working_reason()` / `_streaming_reason()` helpers in

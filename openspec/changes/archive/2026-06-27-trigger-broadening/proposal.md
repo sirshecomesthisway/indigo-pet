@@ -58,7 +58,7 @@ list. Add opt-out settings. Keep state vocabulary unchanged.
 
 ## Success criteria
 
-- A internal engineer with NO TPA installed sees Squid react to git
+- An internal engineer with NO TPA installed sees Squid react to git
   commit, VS Code activity, rapid file edits, walking away
 - A TPA user sees identical behavior to today — no regressions
 - Existing 121 tests still pass; ~25 new detector tests added

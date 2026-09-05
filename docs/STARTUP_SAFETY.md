@@ -66,8 +66,9 @@ setter call that isn't covered by **any one** of:
 Manual scan: `python scripts/check_cocoa_main_thread.py src/squid_pet/*.py`
 
 ## Layer 4 — CI smoke test
-> **Status: deferred.** internal GHE may not have macOS runners and
-> github.com push is currently VPN-blocked. Will land when one is sorted.
+> **Status: deferred.** Not wired up yet. The repo now lives on a private
+> github.com remote, so macOS-latest runners are available -- this is a
+> matter of spending the minutes, not of missing infrastructure.
 
 Intent: macOS-latest runner boots Squid, sleeps 10 s, runs
 `squid-pet --doctor-json`, asserts `healthy: true`. Catches Cocoa

@@ -7,9 +7,9 @@ hooks.UserPromptSubmit, hooks.SessionEnd, hooks.Stop, hooks.PreCompact,
 and hooks.PostCompact. Maintains three per-session flag-file signals
 that watcher.py reads:
   - "awaiting input" (claude_sessions_awaiting_input()) -- mirrors what
-    TPA's own sitecustomize.py patch does via
-    ~/.tpa/awaiting_input/<pid>, except keyed by session_id,
-    since Claude Code hook payloads carry no PID.
+    the legacy agent's own sitecustomize.py patch did via a PID-keyed
+    flag directory, except keyed by session_id, since Claude Code hook
+    payloads carry no PID.
   - "just finished" (claude_sessions_just_finished()) -- Pink-2026-08-27f:
     replaces the old busy->idle heuristic edge (ClaudeCodeDetector
     watching shell/file/transcript-mtime activity drop) as the

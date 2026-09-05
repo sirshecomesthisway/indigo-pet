@@ -9,9 +9,10 @@ from squid_pet.detectors import (
 def test_empty_settings_yields_four_enabled_one_off():
     """Default config: claude_code + codex + git + ide are on, terminal
     is off (2026-06-25: terminal misfires on any dev machine -- see
-    test_explicit_opt_out_disables_one_detector for context). TPA
-    (Pink-2026-08-22): removed -- never actually installed/run on this
-    machine, so it never fired anything in practice."""
+    test_explicit_opt_out_disables_one_detector for context). The legacy
+    agent's detector (Pink-2026-08-22): removed -- never actually
+    installed/run on this machine, so it never fired anything in
+    practice."""
     ds = build_detectors(settings=None)
     assert len(ds) == 5
     assert {d.name for d in ds} == {

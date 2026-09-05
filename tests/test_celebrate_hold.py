@@ -6,8 +6,8 @@ Covers:
       arm picks up the latest config value, no restart needed)
   (c) GitDetector fires celebrate on touched HEAD
 
-Pink-2026-08-22: TPADetector tests converted to ClaudeCodeDetector
-(TPADetector was removed -- TPA was never actually
+Pink-2026-08-22: the legacy agent's detector tests were converted to
+ClaudeCodeDetector (that detector was removed -- the agent was never actually
 installed/run on this machine). ClaudeCodeDetector gained the exact same
 busy->idle celebrate-edge mechanism this same day.
 

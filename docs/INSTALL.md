@@ -172,9 +172,10 @@ don't have installed just means that detector quietly reports nothing (no
 process found), it doesn't error. See the README's "Detectors & triggers"
 section for what each one watches.
 
-(TPA support was removed entirely 2026-08-27 -- it was never
-actually installed/run in this environment, so it never fired anything
-in practice. The approval-needed "flag wave" is now 100% Claude-Code-
+(Support for a third-party CLI coding agent was removed entirely
+2026-08-27 -- it was never actually installed/run in this environment,
+so it never fired anything in practice. The approval-needed "flag wave"
+is now 100% Claude-Code-
 driven, via an official hook rather than any `triggers` setting -- see
 the README's "Approval-needed flag wave" section for how to wire it up
 on a machine that doesn't have it yet.)

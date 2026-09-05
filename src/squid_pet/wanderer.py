@@ -19,7 +19,7 @@ What got removed in service-mode:
   - `_idle_since`, `_next_wander_at` scheduling state
   - `STROLL_MODE_*`, `_stroll_mode`, `set_stroll_mode`, `get_stroll_mode`
   - `walk_to_nearest_corner` + `_pending_destination` queue
-  - `PAUSE_WHEN_CP_IDLE_SEC` + `_get_agent_idle` (routine owns mood gating)
+  - the old agent-idle pause constant + getter (routine owns mood gating)
   - `is_pinned`, `is_busy` constructor params (routine owns gating)
 
 Why Python-side NSWindow moves (not CSS): pywebview's window is a real

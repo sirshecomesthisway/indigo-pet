@@ -7,25 +7,24 @@ context: |
   (Claude Code and/or Codex).
 
   ## Owner
-  Huiping "Pink" Tan — Senior Product Manager at internal (user pink)
+  Huiping "Pink" Tan — Senior Product Manager
 
   ## Why
   Pink runs long-lived agentic CLI sessions and wanted an ambient companion
   that gives an at-a-glance read of what the agent is doing without forcing her to
   flip to the terminal. The pet replaces a previous Cocoa-Pop-Cat-style indicator.
 
-  Pink-2026-08-27: the project started life watching TPA (a separate,
-  internal CLI coding agent) specifically. All TPA-specific
-  DETECTION was removed 2026-08-27 -- TPA was never actually
-  installed/run in this environment, so it never fired anything in
-  practice. Squid now watches Claude Code and Codex as its primary
-  detectors; the sections below describe the current architecture, not
-  the original TPA-only one.
+  Pink-2026-08-27: the project started life watching a third-party CLI
+  coding agent specifically. All detection specific to that agent was
+  removed 2026-08-27 -- it was never actually installed/run in this
+  environment, so it never fired anything in practice. Squid now watches
+  Claude Code and Codex as its primary detectors; the sections below
+  describe the current architecture, not the original single-agent one.
 
-  Pink-2026-09-02: one TPA dependency survives — llm_client.py reads
-  the LLM token from the user's own ~/.tpa/puppy.cfg and calls
-  internal-hosted model endpoints. LLM bubbles are therefore unavailable to
-  anyone without that file; everything else works without it.
+  Pink-2026-09-04: the last dependency on that agent -- llm_client.py,
+  which read a model token from one of its config files -- is gone, and
+  the optional LLM bubble enrichment went with it. Every bubble is
+  rule-based now.
 
   ## Tech stack
   - Language: Python 3.13
@@ -55,12 +54,10 @@ context: |
   - routine.py    — RoutineController: the jittered idle rhythm (rest / look-around
                     / walk) and the 26-34s idle-chatter beat.
   - observer.py   — Squid's voice: BUBBLE_LINES + trigger dispatch to the bubble.
-  - llm_client.py — optional LLM enrichment for bubbles (token from the user's own
-                    ~/.tpa/puppy.cfg; unavailable without it).
   - menu.py       — native right-click menu + menu-bar NSStatusItem.
   - focus.py      — take_me_there: state -> session -> project -> tty -> terminal tab.
   - doctor.py     — the six-check `squid doctor` self-diagnostic.
-  - config.py     — user settings in ~/.squid-pet/config.json (mute, llm_bubbles,
+  - config.py     — user settings in ~/.squid-pet/config.json (mute,
                     approval alert, hold windows). Distinct from settings.json,
                     which holds detector `triggers` and project_dirs.
   - threading_guards.py — @cocoa_main_thread / _blocking decorators.
@@ -94,9 +91,9 @@ context: |
   the celebrate/groove/recap signals come from Claude Code's own hooks via
   scripts/claude_pet_hook.py — see openspec/specs/state-detection/spec.md and
   openspec/specs/user-interactions/spec.md.
-  concerned has no detector implementation (was TPA-only, no
-  Claude Code/Codex equivalent exists) -- documented non-goal, reachable
-  only via force_state.
+  concerned has no detector implementation (its only source was the
+  removed third-party agent; no Claude Code/Codex equivalent exists) --
+  documented non-goal, reachable only via force_state.
 
   Frontend-derived states (not emitted by the watcher): drowsy and stretch,
   computed in index.html from agent_idle_seconds + the user_wake_remaining

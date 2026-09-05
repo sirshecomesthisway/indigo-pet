@@ -11,7 +11,7 @@ engineers". A 20-minute install pipeline that costs them 20 min of confusion
 
 Before this proposal, we don't actually know WHERE the time went. The
 terminal crashed before logs were captured. Best guess: `uv pip install -e .`
-building wheels for `psutil` + `pywebview` over internal's slow artifactory
+building wheels for `psutil` + `pywebview` over the internal, slow artifactory
 (`pypi.internal.example.com`). Other suspects: brew install of uv
 (though Pink had uv already), git clone of the 16 MiB repo over VPN,
 `verify_alive` polling. We need data before optimization.
@@ -34,7 +34,7 @@ than a 90-second install that hangs silently.
 - Code signing / notarization (separate `code-signing` change, governance-blocked)
 - Pre-built binary distribution / `.pkg` (separate `binary-distribution` change)
 - Self-hosted PyPI mirror (internal artifactory is the corporate-mandated source)
-- Distribution outside internal (separate `external-release` change, far future)
+- Distribution outside the company (separate `external-release` change, far future)
 - Replacing `uv` with `pip` / `poetry` / `pdm` (uv is correct, just needs tuning)
 - Removing the launchd plist render step (already fast, ~0.1s)
 

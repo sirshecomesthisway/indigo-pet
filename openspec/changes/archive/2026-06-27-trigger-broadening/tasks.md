@@ -114,7 +114,7 @@
   opt-out instructions via settings.json.
 * Group 6 (tests): 49 detector tests + 3 CLI smoke tests + updated
   test_state_machine.py (TPA-only detector list pattern). All pass.
-* Group 8 (commits + memory): 3 commits pushed to internal main:
+* Group 8 (commits + memory): 3 commits pushed to the internal remote's main:
   - 53f6292 feat(detectors): pluggable activity-detection module
   - 437bd81 feat(watcher): integrate StateMachine with pluggable detectors
   - [pending] docs(privacy) + feat(cli): --why + PRIVACY.md + tasks update

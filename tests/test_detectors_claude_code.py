@@ -1,4 +1,4 @@
-"""Tests for ClaudeCodeDetector -- mirrors test_detectors_tpa.py's
+"""Tests for ClaudeCodeDetector -- mirrors the legacy detector's removed
 style. All psutil / filesystem dependencies are injected so no real
 process table or disk is touched."""
 from __future__ import annotations
@@ -55,7 +55,7 @@ def test_no_processes_is_quiet():
 
 def test_shell_active_fires_busy_immediately():
     """Live tool subprocess (e.g. a Bash-tool call) is busy on tick 1 --
-    no streak needed, same as TPADetector's shell_active."""
+    no streak needed, same as the legacy detector's shell_active."""
     d = _make(procs=[_FakeProc()], cpu=0.5, shell_active=True)
     assert d.is_busy(now=1000.0) is True
 

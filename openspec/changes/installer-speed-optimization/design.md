@@ -29,11 +29,11 @@ nice-to-have (saves ~30s, helps perception more than wall time).
 
 Three plausible causes, in order of likelihood:
 
-1. **uv is downloading & building sdists** because internal artifactory doesn't
+1. **uv is downloading & building sdists** because the internal artifactory doesn't
    carry the macOS arm64 wheels. `psutil` (C extension) building from source
    is multi-minute on its own; `pywebview` pulls `pyobjc-*` which is
    notoriously slow on first install.
-2. **internal artifactory throughput is just slow** — the artifactory proxy
+2. **Internal artifactory throughput is just slow** — the artifactory proxy
    serves wheels but with very low throughput, so even cached wheels take
    minutes to download.
 3. **uv re-resolves the entire dep tree** every invocation because we don't

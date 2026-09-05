@@ -96,7 +96,7 @@ class RoutineController:
         wanderer,                                        # WanderController (service mode)
         get_state: Callable[[], str],                    # "idle" / "thinking" / etc.
         is_drag_active: Callable[[], bool],
-        is_busy: Callable[[], bool],                     # TPA is actively working
+        is_busy: Callable[[], bool],                     # agent is actively working
         get_mood: Callable[[], str],                     # "" / drowsy / sleeping / stretch
         is_pinned: Callable[[], bool] = None,            #  from menu
         is_user_paused: Callable[[], bool] = None,       # menu pause-N-min
@@ -161,7 +161,7 @@ class RoutineController:
         (state pinned near-continuously to "working" via working_hold_sec)
         the 26-34s chatter timer got wiped every tick and effectively never
         fired -- "not feeling her speak every 30s". Chatter should keep
-        piping up even while she's busy/TPA-working, same philosophy as
+        piping up even while she's busy/agent-working, same philosophy as
         is_busy already being disabled for the walk/rest routine.
         """
         if not self._enabled:

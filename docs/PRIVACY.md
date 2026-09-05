@@ -16,13 +16,12 @@ and how to turn any of it off.
 
 ## What each detector observes
 
-Squid started life watching **TPA**, a separate internal
-CLI coding agent — process CPU, subagent files, `errors.log` content,
-shell children, and a private sitecustomize.py-driven approval-alert
-signal. All of that was removed 2026-08-27: TPA was never
-actually installed/run in this environment, so none of it ever fired
-anything in practice. Nothing described below reads anything under
-`~/.tpa/` any more.
+Squid started life watching a third-party CLI coding agent — process
+CPU, subagent files, `errors.log` content, shell children, and a private
+sitecustomize.py-driven approval-alert signal. All of that was removed
+2026-08-27: that agent was never actually installed/run in this
+environment, so none of it ever fired anything in practice. Nothing
+described below reads any of its files.
 
 ### Claude Code's flag wave — `scripts/claude_pet_hook.py`
 
@@ -190,8 +189,8 @@ Edit `~/.squid-pet/settings.json`:
 }
 ```
 
-There's no `tpa` trigger to toggle any more (TPADetector was
-removed) -- the flag-wave alert is a separate mechanism with its own
+The removed agent's trigger is gone from this list too (its detector went
+with it) -- the flag-wave alert is a separate mechanism with its own
 on/off switch, `approval_alert_enabled` in `~/.squid-pet/config.json`
 (default `true`), independent of the `triggers` block above.
 

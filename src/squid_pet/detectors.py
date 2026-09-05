@@ -7,14 +7,14 @@ The StateMachine ORs across all enabled detectors. This lets squid-pet
 react to Claude Code / Codex activity, git commits, terminal commands,
 and IDE bursts.
 
-Pink-2026-08-22: TPADetector (the original TPA-aware busy/thinking/
-celebrating/grooving/concerned detector) was removed -- TPA was
+Pink-2026-08-22: the legacy-agent detector (the original busy/thinking/
+celebrating/grooving/concerned detector, built for a third-party CLI
+coding agent this project first watched) was removed -- that agent was
 never actually installed/run on this machine, so it never fired anything
-in practice. The TPA-specific approval_needed/flag-wave machinery in
-watcher.py (find_tpa_processes, tpa_pids_awaiting_input,
-per_process_pending_approval_idle, etc.) is untouched and still fully
-TPA-driven -- it's kept pending a Claude-Code-native replacement signal
-(see the Notification-hook idea in that change's discussion).
+in practice. Its approval_needed/flag-wave machinery in watcher.py was
+left in place at the time, pending a Claude-Code-native replacement
+signal; that replacement (an official Notification hook) landed
+2026-08-26 and the legacy path is gone.
 
 Design goals:
 * Each detector is fully unit-testable in isolation. All filesystem,
@@ -921,9 +921,9 @@ def build_detectors(settings: dict | None = None) -> list:
     """Build a list of Detector instances from the ``triggers`` subsection
     of settings.json. Missing keys take DEFAULT_TRIGGERS values.
 
-    Pink-2026-08-22: TPADetector removed (TPA was never
-    actually run on this machine). A settings.json with a leftover
-    "tpa" key is harmless -- it's simply ignored.
+    Pink-2026-08-22: the legacy-agent detector was removed (that agent was
+    never actually run on this machine). A settings.json carrying a
+    leftover trigger key for it is harmless -- unknown keys are ignored.
     """
     s = (settings or {}).get("triggers", {}) if settings else {}
     project_dirs = s.get("project_dirs", DEFAULT_TRIGGERS["project_dirs"])
