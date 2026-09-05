@@ -1,6 +1,6 @@
 [project]
 name = "squid-pet"
-version = "0.2.1"
+version = "0.3.0"
 description = "A desktop companion pet that watches Claude Code, Codex, and your IDE/git activity and reacts to it"
 readme = "README.md"
 license = { text = "MIT" }

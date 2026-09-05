@@ -8,6 +8,10 @@ Today she watches Claude Code and Codex. Over time, we want Squid to become a mo
 
 > Your agents are becoming more autonomous. Squid gives them a presence.
 
+[![Squid reacting to a real Claude Code session](docs/demo.gif)](docs/demo.mp4)
+
+*Squid tracking a live session — reasoning, working, waving when she needs you, celebrating when the task lands.* ▶ **[Watch the full demo](docs/demo.mp4)** (64s, with sound)
+
 ## Why Squid?
 
 AI coding agents can now work for minutes — or much longer — without you watching the terminal.
@@ -26,12 +30,6 @@ You can glance over and know:
 | the agent is reasoning | files/tools are actively changing | the task finished | the agent is waiting for input or approval | you've stepped away |
 
 Squid is deliberately small, ambient, and opinionated. She stays out of the way until you need her.
-
-## See her in action
-
-[![Squid reacting to a real Claude Code session](docs/demo.gif)](docs/demo.mp4)
-
-*Squid waving for approval on a real `./deploy.sh --production` prompt, then celebrating when the task lands.* ▶ **[Watch the full demo](docs/demo.mp4)** (64s, with sound)
 
 ## Quick start
 
