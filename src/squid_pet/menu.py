@@ -114,7 +114,6 @@ class _MenuTarget(NSObject):
     def pauseWander60_(self, s): self.api._menu_pause_wander(60)
     def resumeWander_(self, s):  self.api._menu_resume_wander()
     def toggleMute_(self, s): self.api._menu_toggle_mute()
-    def toggleLLMBubbles_(self, s): self.api._menu_toggle_llm_bubbles()
     def toggleApprovalAlert_(self, s): self.api._menu_toggle_approval_alert()
     def calmSquid_(self, s): self.api._menu_calm_squid()
 
@@ -237,15 +236,6 @@ def _populate_menu(menu, target, api) -> None:
         else f"{EMO_MUTE}  Mute bubbles"
     )
     _add(bub, mute_label, target, "toggleMute:", checked=muted_now)
-    try:
-        llm_on = api.is_llm_bubbles_enabled()
-    except Exception:
-        llm_on = False
-    llm_label = (
-        f"{EMO_SPARKLE}  LLM bubbles (on)" if llm_on
-        else f"{EMO_SPARKLE}  LLM bubbles (off)"
-    )
-    _add(bub, llm_label, target, "toggleLLMBubbles:", checked=llm_on)
     try:
         alert_on = api.is_approval_alert_enabled()
     except Exception:

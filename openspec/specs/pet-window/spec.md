@@ -120,7 +120,7 @@ to JavaScript via pywebview's `js_api`:
 | `clear_bubble()` | Ack a displayed bubble so it is not replayed |
 | `set_wander_edge(edge)` / `set_wander_sub_state(s)` / `get_wander_sub_state()` | Wander → frontend animation cues |
 | `notify_mood(mood)` / `get_frontend_mood()` | Frontend-derived mood (drowsy etc.) reported back |
-| `is_hidden()` / `is_muted()` / `is_llm_bubbles_enabled()` / `is_approval_alert_enabled()` / `is_squid_waving()` | Menu + frontend state queries |
+| `is_hidden()` / `is_muted()` / `is_approval_alert_enabled()` / `is_squid_waving()` | Menu + frontend state queries |
 | `signal_ready()` | Frontend boot handshake |
 | `debug_log(msg)` | Route a frontend log line into the Python log |
 | `quit()` | Close the window |

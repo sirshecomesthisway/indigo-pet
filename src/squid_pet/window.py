@@ -20,7 +20,6 @@ import webview
 
 from . import watcher
 from .passthrough import PassthroughController
-from . import llm_client as _llm_client_mod
 from . import observer
 from . import config
 
@@ -659,11 +658,9 @@ class PetApi:
         self._wanderer = None                  # WanderController (set in on_loaded)
         self._routine = None                   # RoutineController (set in on_loaded)
         # Live StateMachine ref (set by watcher_thread() via
-        # set_state_machine()) -- lets update()'s LLM-bubble context
-        # enrichment read the Git detector's current signal. Was
-        # None forever pre-2026-08-17 (a dead self._git_detector
-        # lookup that never matched anything), so the enrichment
-        # always silently used its defaults.
+        # set_state_machine()). Read by _wake() to hand the state machine
+        # an awake hold, and by _current_shell_cmdline() for the live
+        # agent detector's shell child.
         self._sm: "watcher.StateMachine | None" = None
         self._frontend_mood: str = ""          # JS mood: ""/drowsy/sleeping/stretch
         # Set when on_loaded fires; the watchdog in main() uses this to
@@ -683,32 +680,7 @@ class PetApi:
         # "Still working on X" periodic refresh (see _maybe_reannounce_working).
         self._last_working_bubble_at: float = 0.0
         self._last_working_bubble_text: str = ""
-        # LLM-enriched bubbles (opt-in via ~/.squid-pet/config.json).
-        # llm-bubbles polish 2026-06-27, item 1: construct the LLMClient
-        # unconditionally (cheap -- just reads puppy.cfg once) so that
-        # toggling `llm_bubbles` later via the menu takes effect live
-        # without a restart. Observer gates on config.llm_bubbles_enabled
-        # per-dispatch instead of caching the decision here.
-        _model = config.get("llm_bubbles_model", "claude-sonnet-4-6")
-        _llm = _llm_client_mod.LLMClient(model=_model)
-        if not _llm.is_available():
-            print(
-                "[squid-pet] llm_client: no puppy_token in ~/.tpa/puppy.cfg "
-                "-- bubbles will be rule-based only until token appears",
-                flush=True,
-            )
-            _llm = None  # Observer treats None as "never dispatch LLM"
-        else:
-            cur_state = "ON" if config.llm_bubbles_enabled() else "OFF"
-            print(f"[squid-pet] llm_client wired, model={_model}, "
-                  f"current llm_bubbles={cur_state} (toggle live via menu)",
-                  flush=True)
-        self._observer = observer.Observer(
-            get_muted=config.is_muted,
-            llm_client=_llm,
-            publish_cb=self._publish_llm_bubble,
-            get_llm_enabled=config.llm_bubbles_enabled,
-        )
+        self._observer = observer.Observer(get_muted=config.is_muted)
 
     def signal_ready(self) -> dict:
         """Called by JS on its first successful get_state poll. Provides a
@@ -747,38 +719,10 @@ class PetApi:
             # empty on this machine. Now reads the live Claude Code/Codex
             # detector's own shell_cmdline (see _current_shell_cmdline).
             shell_cmd = self._current_shell_cmdline()
-            # Fix B (2026-06-28): collect richer signals for LLM context
-            # so the model can be specific ("shipped", "fetching deps")
-            # instead of generic ("settle in"). All best-effort -- a
-            # failure to read any signal just omits it from the context.
-            # Pink-2026-08-22: subagent_name/llm_streaming/cpu_pct/tool_age
-            # were all TPA-only signals (subagent_sessions/*.pkl,
-            # TPADetector.llm_streaming/cpu_percent/tool_activity_age)
-            # and always empty/zero on this machine since TPA was
-            # never run -- removed along with TPADetector. Left as
-            # static defaults; Observer.on_state_change's signature keeps
-            # these kwargs so it still degrades gracefully.
-            subagent_name = None
-            llm_streaming = False
-            git_active = False
-            cpu_pct = 0.0
-            tool_age = float("inf")
-            try:
-                # Git active: GitDetector reads .git/HEAD/index/refs mtimes
-                gd = self._sm._git_detector if self._sm is not None else None
-                if gd is not None:
-                    git_active = bool(gd.is_celebrating(state.timestamp) or gd.is_busy(state.timestamp))
-            except Exception:
-                pass
             bubble = self._observer.on_state_change(
                 prev_state, state.state,
                 concern_reason=getattr(state, "concern_reason", "") or "",
                 shell_cmdline=shell_cmd,
-                subagent_name=subagent_name,
-                llm_streaming=llm_streaming,
-                git_active=git_active,
-                cpu_pct=cpu_pct,
-                tool_age=tool_age,
                 state_reason=getattr(state, "state_reason", "") or "",
                 approval_label=_waiting_label(
                     getattr(state, "state_reason", "") or ""),
@@ -891,18 +835,6 @@ class PetApi:
         sees pending_bubble=None instead of replaying the same line."""
         with self._lock:
             self._pending_bubble = None
-
-    def _publish_llm_bubble(self, text: str) -> None:
-        """Callback the Observer's LLM worker thread uses to publish a
-        background-generated bubble. Overwrites whatever rule-based
-        bubble was set immediately by the same state transition.
-
-        SAFE TO CALL FROM ANY THREAD: uses self._lock for the write.
-        """
-        if not text:
-            return
-        with self._lock:
-            self._pending_bubble = text
 
     def _fire_idle_chatter(self) -> None:
         """RoutineController's chatter_cb -- fires on a ~26-34s timer
@@ -1236,21 +1168,6 @@ class PetApi:
                 self._menu.refresh_status_icon()
             except Exception as e:
                 print(f"[squid-pet] status icon refresh failed: {e}", flush=True)
-
-    def is_llm_bubbles_enabled(self) -> bool:
-        """JS+menu exposed: current state of llm_bubbles flag."""
-        return config.llm_bubbles_enabled()
-
-    def _menu_toggle_llm_bubbles(self) -> None:
-        """Menu action: flip llm_bubbles flag. Takes effect on next
-        Squid restart -- the LLMClient is constructed once at startup
-        because we don't want to read puppy.cfg on every state change.
-        Shows a brief bubble so the user knows the toggle landed."""
-        new_state = config.toggle_llm_bubbles()
-        msg = "llm on next restart" if new_state else "llm off next restart"
-        with self._lock:
-            self._pending_bubble = msg
-        print(f"[squid-pet] llm_bubbles toggled -> {new_state}", flush=True)
 
     def is_approval_alert_enabled(self) -> bool:
         from . import config as _cfg

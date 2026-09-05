@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import random
 import logging
-import threading
 from typing import Callable, Optional, Union
 
 log = logging.getLogger(__name__)
@@ -32,76 +31,6 @@ MAX_BUBBLE_CHARS = 32
 # drowsy after a few minutes, so this lands roughly once or twice per
 # awake-idle stretch -- present without hounding you.
 IDEA_PROMPT_CHANCE = 0.2
-
-# ----------------------------------------------------------------------
-# LLM enrichment layer (llm-bubbles change 2026-06-24)
-# ----------------------------------------------------------------------
-# When an LLMClient is wired in, certain "rich-context" state transitions
-# (working / concerned / celebrating / grooving) ALSO fire a background
-# LLM call that may produce a more contextual bubble line. The rule-based
-# bubble is published immediately as before -- the LLM line, if it
-# arrives in time and respects the 32-char cap, overwrites it. If the LLM
-# call fails, times out, returns empty, or returns too-long text, the
-# rule-based bubble stays. Squid never goes silent because of LLM issues.
-#
-# Triggers NOT in this set keep their rule-based-only behavior:
-#   - thinking/back_to_idle: too frequent, not enough context
-#   - poke/shake/sprint/drowsy/waking: interaction emotes, snappy beats smart
-# ----------------------------------------------------------------------
-LLM_ENRICH_TRIGGERS = frozenset({"working", "concerned", "celebrating", "grooving"})
-
-# The voice contract for the LLM. Anything beyond a single short
-# observation breaks the bubble UI. Empty string = stay silent.
-OBSERVER_SYSTEM_PROMPT = (
-    "You are Squid, a tiny pink octopus pet who lives on the corner "
-    "of the user's screen. You watch them work with their AI coding "
-    "agent (Claude Code, Codex, or similar) but you are NOT the agent "
-    "and NEVER speak as it. You are a passive observer who occasionally "
-    "pipes up.\n\n"
-    "VOICE: dry, fond, perceptive. Lowercase. Fragmentary. Like a cat "
-    "noticing a thing. Asterisk-actions like *peeks* or *flops* are fine.\n\n"
-    "HARD RULES:\n"
-    "- Reply with AT MOST 30 characters, including spaces. Shorter is better.\n"
-    "- Reply with an EMPTY STRING if there's nothing worth saying.\n"
-    "- Never use !, ?, all-caps, emoji, or quotation marks.\n"
-    "- Never say 'I' or 'you' or 'we'. Pure observation only.\n"
-    "- Never explain yourself, never apologize, never narrate.\n"
-    "- Never reference being an AI, model, or language system.\n"
-    "- Stay silent more often than you speak. Silence is the default.\n\n"
-    "CONTEXT SIGNALS in the user message (use them, do not invent):\n"
-    "  shell=git push   -> reply like: shipping it, pushing\n"
-    "  shell=git commit -> reply like: sealed it, committed\n"
-    "  shell=pytest     -> reply like: pytest, hm   or   watching tests\n"
-    "  shell=git diff   -> reply like: *peeks at the diff*\n"
-    "  shell=uv pip|npm -> reply like: fetching deps\n"
-    "  subagent=NAME    -> reply like: ohhh, subagent   or   help arrived\n"
-    "  llm=streaming with no shell -> reply like: thinking out loud, model talking\n"
-    "  git=just-changed (no shell) -> reply like: noticed a commit\n"
-    "  reason=ratelimit -> reply like: ugh, capped\n"
-    "  from=working to=idle        -> reply like: back to idle, *flops*\n"
-    "  from=working to=celebrating -> reply like: shipped, finally, done done\n"
-    "  no obvious signal           -> reply with EMPTY STRING\n\n"
-    "Examples of GOOD outputs (note: no emoji, no !, no punctuation flourish):\n"
-    "  pytest, hm\n"
-    "  ohhh, a subagent\n"
-    "  uhoh\n"
-    "  *peeks at the diff*\n"
-    "  shipped\n"
-    "  back to idle\n"
-    "  fetching deps\n"
-    "  thinking out loud\n"
-    "  sealed it\n"
-    "  (empty string)\n"
-    "  (empty string)\n"
-    "  (empty string)\n\n"
-    "Examples of BAD outputs (DO NOT do these):\n"
-    "  Great job!  -- has ! and capital letter\n"
-    "  \U0001f389 nice push  -- has emoji\n"
-    "  Pushed to main, nice!  -- has capital and !\n"
-    "  I see you ran pytest  -- says I and you, narrates\n"
-    "  Let me know if you need anything  -- offers help, sounds like an assistant"
-)
-
 
 # ----------------------------------------------------------------------
 # BUBBLE_LINES -- the voice contract. Pink owns this dict.
@@ -260,7 +189,7 @@ BUBBLE_LINES: dict[str, LineSpec] = {
 STATE_TRIGGERS: list[tuple[str, Optional[frozenset[str]], str]] = [
     # TPA is waving flag -- awaiting Pink's input (Pink 2026-07-02).
     # Fires on any transition INTO approval_needed. Rule-based lines
-    # from BUBBLE_LINES["approval_needed"]; LLM enrich may overwrite.
+    # from BUBBLE_LINES["approval_needed"].
     ("approval_needed", None, "approval_needed"),
 
     # New thinking turn (covers idle -> thinking, but NOT working -> thinking
@@ -336,8 +265,8 @@ def _format_concern_reason(reason: str) -> Optional[str]:
 # watcher.py's celebrating branch sets a specific state_reason naming
 # which detector's signal fired; this maps that to a clear, deterministic
 # bubble instead of a random mood-only pick. Unlike _format_concern_reason,
-# this is NOT probabilistic and doesn't go through the LLM-enrich path --
-# "why" deserves a consistent answer, not personality-driven variety.
+# this is NOT probabilistic -- "why" deserves a consistent answer, not
+# personality-driven variety.
 #
 # Pink-2026-08-30: "claude celebrating" briefly removed from this table
 # (Stop fires every turn, not just "the task is done", so it was moved
@@ -386,7 +315,7 @@ def _format_celebrate_reason(state_reason: str) -> Optional[str]:
 #
 # There WAS a path for this ("Fix C", 2026-06-28): a 50% chance to use
 # state_reason verbatim if it started with one of
-# ("shell ", "subagent", "llm streaming", "error:", "writing", "post-busy").
+# ("shell ", "subagent", "streaming", "error:", "writing", "post-busy").
 # Two things were wrong with it. Those prefixes no longer match what the
 # watcher emits -- "file write detected (claude_code)", "claude streaming"
 # and "claude turn in flight" all miss -- so the path was mostly dead. And
@@ -537,36 +466,16 @@ class Observer:
     changes are picked up live without restart).
     """
 
-    def __init__(
-        self,
-        get_muted: Callable[[], bool],
-        llm_client: Optional["object"] = None,
-        publish_cb: Optional[Callable[[str], None]] = None,
-        get_llm_enabled: Optional[Callable[[], bool]] = None,
-    ):
+    def __init__(self, get_muted: Callable[[], bool]):
         """get_muted: callback returning current mute state (queried per call).
 
-        llm_client: optional LLMClient instance. Held regardless of current
-            llm_bubbles config state (constructing it is cheap, no network).
-            The actual gating happens at dispatch time -- see get_llm_enabled.
-
-        publish_cb: callback the LLM worker uses to publish its result.
-            Required if llm_client is provided. Signature: publish_cb(text).
-            The window-side implementation typically sets _pending_bubble.
-
-        get_llm_enabled: callback returning the CURRENT value of the
-            llm_bubbles config flag. Queried on every dispatch so menu
-            toggles take effect without a Squid restart (llm-bubbles polish
-            2026-06-27, item 1). If None, defaults to "always enabled when
-            llm_client is available and is_available()" -- back-compat
-            behavior for older tests/embedders.
+        Pink-2026-09-04: this used to also take an LLM client, a publish
+        callback and an enable-getter, for a background enrichment pass that
+        could overwrite a rule-based bubble with a model-written one. That
+        whole layer is gone along with its backend; every
+        bubble is rule-based now, decided synchronously right here.
         """
         self._get_muted = get_muted
-        # Hold the LLM client; gate on get_llm_enabled() at dispatch time
-        # rather than caching the "is it enabled" decision at __init__.
-        self._llm = llm_client if (llm_client and getattr(llm_client, "is_available", lambda: False)()) else None
-        self._publish_cb = publish_cb
-        self._get_llm_enabled = get_llm_enabled or (lambda: True)
 
     # ------------------------------------------------------------------
     # Internal: random pick + length guard
@@ -598,75 +507,6 @@ class Observer:
         return random.choice(valid)
 
     # ------------------------------------------------------------------
-    # LLM enrichment -- fires in background, may overwrite rule-based bubble
-    # ------------------------------------------------------------------
-    def _async_enrich(self, trigger_key: str, context: str, *, is_specific: bool = False) -> None:
-        """Fire a background LLM call. On success, publish via callback.
-
-        Runs in a daemon thread so it never blocks the watcher loop. The
-        LLM call itself is rate-limited inside LLMClient.ask() (5s min
-        between calls per process), so even a busy state machine won't
-        burst-call the gateway. All failures are silent -- the rule-based
-        bubble is already published, so the user sees something either way.
-        """
-        if self._llm is None or self._publish_cb is None:
-            return
-        if self._get_muted():
-            return
-        # Hot-reload gate (llm-bubbles polish 2026-06-27, item 1): the
-        # llm_bubbles config flag is queried per-dispatch via the
-        # get_llm_enabled callback, so flipping the menu toggle (or
-        # editing config.json) takes effect on the very next state
-        # change. No Squid restart needed.
-        if not self._get_llm_enabled():
-            return
-        if trigger_key not in LLM_ENRICH_TRIGGERS:
-            return
-        # Fix A (2026-06-28): if the rule-based bubble is already SPECIFIC
-        # (e.g. "running git commit", "rate limited"), don't let the LLM
-        # overwrite it with a generic mood like "settle in". Concrete info
-        # beats poetic emote -- Pink's words: "say something meaningful".
-        if is_specific:
-            return
-
-        def _worker():
-            try:
-                # Compact context: trigger + reason. The system prompt
-                # does the heavy lifting of voicing the line.
-                user_msg = f"trigger={trigger_key}; context={context[:240]}"
-                reply = self._llm.ask(
-                    system=OBSERVER_SYSTEM_PROMPT,
-                    user=user_msg,
-                    max_tokens=40,
-                )
-            except Exception as e:  # noqa: BLE001 -- defensive
-                log.warning("observer: async enrich failed (%s)", type(e).__name__)
-                return
-
-            if reply is None:
-                return  # rate-limited or HTTP failure -- keep rule-based
-            reply = reply.strip().strip('"\'')
-            if not reply:
-                return  # model chose silence -- keep rule-based
-            if len(reply) > MAX_BUBBLE_CHARS:
-                # Hallucinated past the limit. Drop entirely rather than
-                # truncating -- truncation creates ugly mid-word cuts.
-                log.warning("observer: llm reply %d chars > %d, dropped",
-                            len(reply), MAX_BUBBLE_CHARS)
-                return
-            # Re-check mute right before publishing -- user may have muted
-            # while the call was in-flight.
-            if self._get_muted():
-                return
-            try:
-                self._publish_cb(reply)
-            except Exception as e:  # noqa: BLE001
-                log.warning("observer: publish_cb raised (%s)", type(e).__name__)
-
-        t = threading.Thread(target=_worker, name="squid-llm-enrich", daemon=True)
-        t.start()
-
-    # ------------------------------------------------------------------
     # State-change trigger
     # ------------------------------------------------------------------
     def on_state_change(
@@ -676,13 +516,6 @@ class Observer:
         *,
         concern_reason: str = "",
         shell_cmdline: Optional[list[str]] = None,
-        # Fix B (2026-06-28): richer LLM context. All optional, all
-        # back-compat -- existing callers/tests work unchanged.
-        subagent_name: Optional[str] = None,
-        llm_streaming: bool = False,
-        git_active: bool = False,
-        cpu_pct: float = 0.0,
-        tool_age: float = float("inf"),
         # Fix C (2026-06-28): state machine's "why" string. When non-empty
         # AND starts with an interesting prefix, 50% chance Squid uses it
         # verbatim as the bubble (the "mix mood + reason" path Pink chose).
@@ -742,10 +575,6 @@ class Observer:
         elif trigger_key == "working" and shell_cmdline:
             specific = _shell_cmd_bubble(shell_cmdline)
             if specific is not None and len(specific) <= MAX_BUBBLE_CHARS:
-                # Still fire LLM enrich -- the shell-cmd bubble is fine
-                # but LLM may produce something contextually nicer.
-                context = f"old={old} new={new} shell={' '.join(shell_cmdline[:6])}"
-                self._async_enrich(trigger_key, context, is_specific=True)
                 return specific
 
         # Explain the move (Pink-2026-09-01). Replaces the old 50%
@@ -754,39 +583,11 @@ class Observer:
         # Not a coin flip: if she changed state, you get to know why. Falls
         # through to a personality line only when the reason is unmapped,
         # so a newly-added internal string can never leak into a bubble.
-        #
-        # Returns without _async_enrich for the same reason the concern and
-        # celebrate paths do: the LLM would overwrite a true, specific
-        # answer with mood-mush.
         explained = _explain_reason(state_reason, approval_label)
         if explained is not None:
             return explained
 
-        rule_bubble = self._pick(trigger_key)
-        # Background LLM enrich: may overwrite the rule-based line if it
-        # arrives in time. Context bundles all the signals we have.
-        # Fix B (2026-06-28): include subagent name, llm-streaming heartbeat,
-        # git activity, cpu, and tool age so the model has enough to say
-        # something specific instead of falling back to mood-mush like
-        # "settle in".
-        if rule_bubble is not None:
-            ctx_parts = [f"from={old}", f"to={new}"]
-            if shell_cmdline:
-                ctx_parts.append(f"shell={' '.join(shell_cmdline[:4])}")
-            if subagent_name:
-                ctx_parts.append(f"subagent={subagent_name}")
-            if llm_streaming:
-                ctx_parts.append("llm=streaming")
-            if git_active:
-                ctx_parts.append("git=just-changed")
-            if cpu_pct > 0:
-                ctx_parts.append(f"cpu={cpu_pct:.0f}%")
-            if tool_age < 30:
-                ctx_parts.append(f"tool_age={tool_age:.0f}s")
-            if concern_reason:
-                ctx_parts.append(f"reason={concern_reason[:120]}")
-            self._async_enrich(trigger_key, "; ".join(ctx_parts))
-        return rule_bubble
+        return self._pick(trigger_key)
 
     # ------------------------------------------------------------------
     # "Still working" refresh -- NOT a state transition

@@ -20,14 +20,6 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS: dict[str, Any] = {
     "muted": False,
-    # llm-bubbles change 2026-06-24: opt-in LLM-enriched speech bubbles.
-    # When True, eligible state transitions ALSO fire a background LLM
-    # call (via puppy-backend, using the user's own puppy_token from
-    # ~/.tpa/puppy.cfg) that may replace the rule-based bubble
-    # with a more contextual line. Off by default so the pet works
-    # the same out of the box for every associate.
-    "llm_bubbles": False,
-    "llm_bubbles_model": "claude-sonnet-4-6",
     # post-e2e-polish 2026-06-27 Fix 1: celebrate hold duration in seconds.
     # Was 4s hard-coded in 3 places; bumped to 20s after Pink noted
     # she never sees Squid celebrate (window closed before she glanced).
@@ -39,16 +31,8 @@ DEFAULTS: dict[str, Any] = {
     # to "thinking" during LLM-generation gaps in active sessions. Hot-
     # reloadable. Set to 60+ for very long generation windows.
     "tool_active_window_sec": 20,
-    # Fix 7: sticky working window -- bridges LLM-gen gaps
+    # Fix 7: sticky working window -- bridges model-generation gaps
     "working_hold_sec": 25,
-    # llm-bubbles polish 2026-06-27, item 3: hard daily cap to prevent
-    # runaway puppy-backend costs. Enforced silently in LLMClient.ask()
-    # -- over-cap calls return None and rule-based bubbles fill in.
-    # Persistent across Squid restarts via ~/.squid-pet/llm_usage.json.
-    # Resets at midnight local time. Set to 0 to disable LLM bubbles
-    # entirely (functionally equivalent to llm_bubbles=False but lets
-    # you flip the menu toggle without re-enabling network calls).
-    "llm_bubbles_daily_cap": 500,
 }
 
 
@@ -91,19 +75,6 @@ def toggle_muted() -> bool:
     new_val = not is_muted()
     set("muted", new_val)
     return new_val
-
-def llm_bubbles_enabled() -> bool:
-    """True iff llm_bubbles=True AND a puppy_token is loadable. Cheap to
-    call -- file read happens lazily inside LLMClient on construction."""
-    return bool(get("llm_bubbles", False))
-
-
-def toggle_llm_bubbles() -> bool:
-    """Flip the llm_bubbles flag, persist, return new value."""
-    new_val = not llm_bubbles_enabled()
-    set("llm_bubbles", new_val)
-    return new_val
-
 
 def approval_alert_enabled() -> bool:
     """Approval-needed notification + sticky bubble (default ON)."""

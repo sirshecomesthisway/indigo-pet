@@ -123,36 +123,26 @@ Beyond state transitions and gestures, the Observer SHALL expose:
 - **WHEN** the frontend mood changes to `sleeping`
 - **THEN** the Observer returns None
 
-### Requirement: Optional LLM enrichment may replace a generated line
+### Requirement: Every bubble is rule-based
 
-The Observer MAY hold an `LLMClient`. When one is available AND the
-`llm_bubbles` config flag is currently true, a dispatched trigger SHALL
-publish its `BUBBLE_LINES` pick immediately and then ask the model, on a
-background daemon thread, for a context-aware alternative. If a reply
-arrives and respects the `MAX_BUBBLE_CHARS` (32) cap, it SHALL overwrite
-the pending bubble via the publish callback; otherwise the original line
-stands.
+The Observer SHALL decide each bubble synchronously, from `BUBBLE_LINES`
+and the reason-formatting helpers, and return it to its caller. It SHALL
+NOT hold a model client, spawn background work, or perform network I/O.
 
-The flag SHALL be read through a callback on EVERY dispatch, not captured
-at construction, so the menu toggle takes effect without restarting Squid.
+- **Why**: Squid used to also run an optional LLM enrichment pass -- a
+  background daemon thread that could overwrite a rule-based bubble with a
+  model-written line. It was removed on 2026-09-04 along with its only
+  backend, a gateway reached through a third-party CLI agent's config file
+  and credential. That backend had already stopped working (the credential
+  file no longer exists on any machine running Squid), so the feature was
+  dead weight: a config flag, a menu toggle, a daily-call cap and a
+  publish callback that could never fire.
 
-The client SHALL be constructed regardless of the current flag value
-(construction is cheap and does no network I/O), and reports itself
-unavailable when no credential loads. Enrichment SHALL be bounded by a
-per-call timeout (`HTTP_TIMEOUT_SEC`, 10 s), a per-process minimum gap
-between calls (`MIN_CALL_GAP_SEC`, 5 s), and a daily call cap
-(`llm_bubbles_daily_cap`, default 500, persisted in
-`~/.squid-pet/llm_usage.json` and reset on date rollover). The cap SHALL be
-enforced silently: over it, `ask()` returns None and the rule-based line
-stands, with no user-visible error.
+#### Scenario: A trigger dispatches
+- **WHEN** a state transition matches a `STATE_TRIGGERS` entry
+- **THEN** the Observer returns exactly one line, chosen before it returns
+- **AND** no thread is started and no network call is made
 
-The credential SHALL be read from the user's OWN
-`~/.tpa/puppy.cfg` at runtime, with no embedded token and no
-fallback path that could reuse one person's token for another's session.
-- **Note**: this is the one surviving TPA dependency. Everything
-  else about TPA was removed on 2026-08-27; the LLM bubbles feature
-  still borrows its config file and its internal-hosted model endpoints, so
-  LLM bubbles are unavailable to anyone without that file.
 
 Enrichment SHALL never block the bubble: a slow, failed, or over-length
 reply is simply dropped.

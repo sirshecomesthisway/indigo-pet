@@ -1001,7 +1001,7 @@ class StateMachine:
             from .detectors import build_detectors as _bd
             detectors = _bd(settings)
         self.detectors = list(detectors)
-        self._refresh_tpa_detector_ref()
+        self._refresh_detector_refs()
 
     # --- Settings load + hot-reload ----------------------------------
     def _load_settings(self) -> dict:
@@ -1034,27 +1034,27 @@ class StateMachine:
         from .detectors import build_detectors as _bd
         new_detectors = _bd(settings)
         self.detectors = list(new_detectors)
-        self._refresh_tpa_detector_ref()
+        self._refresh_detector_refs()
         enabled_names = [d.name for d in self.detectors if d.enabled]
         print(f"[squid-pet] settings.json changed -- detectors reloaded: "
               f"{enabled_names}", flush=True)
 
-    def _refresh_tpa_detector_ref(self) -> None:
-        """Re-point the Claude-Code/Codex/Git detector caches after a
-        detector list swap. Claude/Codex feed the same rich
-        working/thinking cascade in _compute_inner (see
-        claude-code-detector and codex-detector design docs); Git is
-        cached here too so PetApi.update()'s LLM-bubble context
-        enrichment (window.py) can read live git-activity signal
-        without walking self.detectors itself on every state change."""
+    def _refresh_detector_refs(self) -> None:
+        """Re-point the Claude-Code/Codex detector caches after a detector
+        list swap. Both feed the same rich working/thinking cascade in
+        _compute_inner (see claude-code-detector and codex-detector design
+        docs), which reads them on every tick and should not have to walk
+        self.detectors to find them.
+
+        Pink-2026-09-04: a _git_detector ref was cached here too, solely so
+        PetApi.update() could pass live git-activity into the LLM-bubble
+        context. That enrichment layer is gone; the GitDetector itself still
+        runs as a normal member of self.detectors."""
         self._claude_detector = next(
             (d for d in self.detectors if d.name == "claude_code"), None
         )
         self._codex_detector = next(
             (d for d in self.detectors if d.name == "codex"), None
-        )
-        self._git_detector = next(
-            (d for d in self.detectors if d.name == "git"), None
         )
         # Sticky celebrate window (post-CPU-drop)
         self.celebrate_until = 0.0
