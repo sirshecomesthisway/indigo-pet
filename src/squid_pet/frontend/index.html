@@ -780,9 +780,25 @@
       setTimeout(() => {
         _mood = "";
         notifyMoodToBackend("");
-        // Restore current state's base sprite (filter coerces to idle.png)
-        setSpriteSrcDirect(spriteUrl(currentState));
-        console.log("[squid] stretch complete -> awake");
+        // Restore the base sprite for whatever state she is in NOW -- with
+        // one exception: never a sleeping one. Waking up cannot end on the
+        // sprite you woke from.
+        //
+        // The old comment here claimed spriteUrl() "coerces to idle.png".
+        // That stopped being true on 2026-06-29, when "sleeping" joined the
+        // VALID set -- from then on this line restored sleeping.png, and the
+        // wake transition ended by putting her straight back to sleep. Pink
+        // caught it live on 2026-09-04.
+        //
+        // The backend now holds her awake too (watcher.py hold_awake_until),
+        // so currentState is normally "idle" by the time this fires. The
+        // guard stays because the two clocks are not synchronised: the
+        // watcher recomputes every 1.0s and this poll loop runs every 800ms,
+        // so a wake landing just after a watcher tick can be up to 1.8s from
+        // a fresh state -- longer than the 1.5s stretch.
+        const base = currentState === "sleeping" ? "idle" : currentState;
+        setSpriteSrcDirect(spriteUrl(base));
+        console.log(`[squid] stretch complete -> awake (base=${base})`);
       }, STRETCH_DURATION_MS);
     }
 

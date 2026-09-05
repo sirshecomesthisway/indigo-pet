@@ -261,3 +261,69 @@ def test_a_fresh_machine_does_not_sleep_on_its_first_tick(monkeypatch):
     assert sm._agent_idle_since == 0.0
 
     assert sm.compute().state != "sleeping"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Awake hold — the wake override reaches the state machine (2026-09-04)
+# ──────────────────────────────────────────────────────────────────────
+# A wake (poke, sprint, or the 15-min periodic auto-wake) used to be a
+# frontend-only affair: PetApi bumped wake_trigger_seq and held
+# user_wake_until, the JS mood layer played stretch.png for 1.5s -- and
+# then handed the sprite back to the state layer, which was still being
+# told "sleeping" and painted sleeping.png straight back on. She stretched
+# and carried on sleeping, and the whole 3-minute awake window was inert:
+# no idle sprite, no idle breathing, no walk/look routine (RoutineController
+# gates its action lap on state == "idle").
+#
+# The fix is a hold the state machine itself honours, so ONE clock decides
+# whether she is asleep and every layer downstream agrees.
+def test_awake_hold_suppresses_sleeping(monkeypatch):
+    install_world(monkeypatch, idle=0.0)
+    sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
+    assert sm.compute().state == "sleeping"          # baseline
+
+    sm.hold_awake_until(time.time() + 180.0)
+
+    st = sm.compute()
+    assert st.state == "idle", "a wake must actually take her out of sleeping"
+
+
+def test_awake_hold_expires_and_she_sleeps_again(monkeypatch):
+    install_world(monkeypatch, idle=0.0)
+    sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
+    sm.hold_awake_until(time.time() - 1.0)           # window already closed
+
+    assert sm.compute().state == "sleeping"
+
+
+def test_awake_hold_does_not_touch_the_agent_quiet_clock(monkeypatch):
+    """Spec (state-detection): the wake override SHALL NOT modify
+    agent_idle_seconds -- that field keeps reflecting real agent activity, so
+    the frontend's own drowsy/sleeping thresholds stay honest and she drops
+    straight back to sleep when the hold lapses, with no second stretch."""
+    install_world(monkeypatch, idle=0.0)
+    sm = make_machine_bare()
+    quiet_for = watcher.IDLE_THRESHOLD_SEC + 1
+    _agents_quiet_for(sm, quiet_for)
+    sm.hold_awake_until(time.time() + 180.0)
+
+    st = sm.compute()
+    assert st.state == "idle"
+    assert st.agent_idle_seconds >= quiet_for, "quiet clock must keep running"
+
+
+def test_a_later_wake_extends_the_hold_but_an_earlier_one_never_shortens_it(monkeypatch):
+    """poke() grants 60s and the periodic wake grants 180s. Whichever
+    reaches further into the future wins -- a poke landing 10s into an
+    auto-wake window must not cut that window short."""
+    install_world(monkeypatch, idle=0.0)
+    sm = make_machine_bare()
+    _agents_quiet_for(sm, watcher.IDLE_THRESHOLD_SEC + 1)
+    now = time.time()
+
+    sm.hold_awake_until(now + 180.0)
+    sm.hold_awake_until(now + 60.0)                  # shorter, lands second
+
+    assert sm.compute().state == "idle"

@@ -700,8 +700,9 @@ class PetApi:
         self._passthrough = p
 
     def set_state_machine(self, sm: "watcher.StateMachine") -> None:
-        """Called once by watcher_thread() so update()'s LLM-bubble
-        context enrichment can read the live Git detector signal."""
+        """Called once by watcher_thread(), before its first compute, so
+        _wake() can hand the machine an awake hold and _current_shell_cmdline()
+        can read the live agent detector."""
         self._sm = sm
 
     def update(self, state: watcher.PetState) -> None:
@@ -780,11 +781,26 @@ class PetApi:
         in index.html re-enters drowsy/sleeping the instant agent_idle_seconds
         is re-checked, since nothing reset that counter. Also resets the
         periodic auto-wake clock so this wake (real or periodic) pushes the
-        next periodic wake out by a full PERIODIC_WAKE_CADENCE_SEC."""
+        next periodic wake out by a full PERIODIC_WAKE_CADENCE_SEC.
+
+        Pink-2026-09-04: the same window is now handed to the state machine
+        as an awake hold. Until then this method only set the two fields
+        above -- both frontend-only -- so the watcher went on reporting
+        "sleeping" for the whole window and index.html's wakeUpWithStretch()
+        ended by restoring the sprite for that still-sleeping state. The
+        visible result was a stretch that led straight back to sleep, with
+        no idle sprite, no idle breathing and no walk/look routine
+        (RoutineController requires state == "idle"). The state machine is
+        wired in by watcher_thread() after construction, so main()'s first
+        update() and tests building PetApi via __new__ simply have no
+        machine to tell -- degrade rather than raise."""
         now = _time.time()
         self._wake_trigger_seq += 1
         self._user_wake_until = now + duration_sec
         self._last_wake_at = now
+        sm = getattr(self, "_sm", None)
+        if sm is not None:
+            sm.hold_awake_until(now + duration_sec)
 
     def get_state(self) -> dict:
         # Periodic auto-wake: while genuinely drowsy/sleeping (not just

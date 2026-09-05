@@ -240,6 +240,39 @@ def test_both_layers_call_the_same_moment_asleep():
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# The wake transition must not end on a sleep sprite (2026-09-04)
+# ──────────────────────────────────────────────────────────────────────
+def _frontend_function(name: str) -> str:
+    """Pull one JS function body out of index.html, up to the next
+    top-level `function` declaration. Same motivation as _frontend_const
+    above: the frontend has no test harness, so the invariants it shares
+    with Python get pinned from here."""
+    html = (Path(window.__file__).parent / "frontend" / "index.html").read_text()
+    m = re.search(rf"\n    function {name}\(.*?\n    \}}\n", html, re.S)
+    assert m, f"{name}() not found in index.html"
+    return m.group(0)
+
+
+def test_waking_never_restores_a_sleep_sprite():
+    """wakeUpWithStretch() ends by restoring the base sprite for the
+    CURRENT backend state. spriteUrl()'s VALID set has included "sleeping"
+    since 2026-06-29, so an unguarded restore paints sleeping.png as the
+    final frame of waking up -- she stretches and goes straight back to
+    sleep, which is exactly what Pink saw on 2026-09-04.
+
+    The backend awake hold (watcher.hold_awake_until) normally has state
+    back to "idle" before the 1.5s stretch ends, but the watcher's 1.0s
+    recompute and the frontend's 800ms poll are not synchronised, so this
+    guard is what makes the last frame deterministic."""
+    body = _frontend_function("wakeUpWithStretch")
+    assert 'currentState === "sleeping" ? "idle"' in body, (
+        "wakeUpWithStretch() must coerce a sleeping currentState to idle "
+        "before restoring the base sprite; without it the wake transition "
+        "ends on sleeping.png."
+    )
+
+
 def test_frontend_reads_the_field_name_petstate_actually_writes():
     """The agent-idle clock crosses a language boundary: watcher.PetState
     defines the field, asdict() puts it in the get_state() payload, and

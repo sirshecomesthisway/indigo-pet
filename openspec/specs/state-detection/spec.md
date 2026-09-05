@@ -454,6 +454,24 @@ The override SHALL be set by poke and swing-to-wake gestures. The override
 SHALL NOT modify `agent_idle_seconds` (that field continues to reflect actual
 state-machine activity).
 
+`PetApi._wake()` SHALL also hand the same window to the state machine via
+`StateMachine.hold_awake_until(now + duration)`, which suppresses the
+`sleeping` branch of the cascade until that timestamp. `hold_awake_until`
+SHALL take the later of the existing hold and the new one, so a 60s poke
+landing inside a 180s auto-wake window neither extends nor truncates it.
+Suppression is scoped to the `sleeping` branch alone: it does not reset
+`_agent_idle_since`, so `agent_idle_seconds` keeps climbing and both layers
+re-enter sleep together when the hold lapses.
+
+- **Why**: the override was frontend-only until 2026-09-04. The watcher
+  went on reporting `sleeping` for the whole window, so `index.html`'s
+  `wakeUpWithStretch()` -- which ends by restoring the base sprite for the
+  CURRENT state -- put `sleeping.png` straight back after the 1.5s stretch.
+  She visibly stretched and went back to sleep, and everything gated on
+  `state == "idle"` (the walk/look routine, the idle squish, the idle
+  breathing animation) sat out the entire awake window. One clock has to
+  decide whether she is asleep, or the layers disagree.
+
 `PetApi` SHALL also maintain a `_wake_trigger_seq: int` counter incremented
 on every wake event. The frontend MAY use this counter to detect
 "new wake event since last poll" without needing to compare timestamps.
@@ -489,7 +507,16 @@ next one is a full cadence away.
 - **WHEN** Squid has been drowsy or sleeping for 15 minutes
 - **AND** no gesture and no agent activity has occurred
 - **THEN** a wake cycle fires (stretch transition + ~3 min awake window)
+- **AND** the watcher stops reporting `sleeping` for the length of that
+       window, so the sprite, the idle breathing animation and the
+       walk/look routine all come with her
 - **AND** she returns to drowsy/sleeping after that window
+
+#### Scenario: The awake window ends
+- **WHEN** the awake hold lapses and the agents are still quiet
+- **THEN** the watcher reports `sleeping` again on the next tick
+- **AND** the frontend mood layer re-enters sleeping in the same beat,
+       because `agent_idle_seconds` was never reset -- no second stretch
 
 #### Scenario: A poke resets the periodic clock
 - **WHEN** the user pokes her 14 minutes into a sleep

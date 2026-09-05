@@ -1069,6 +1069,18 @@ class StateMachine:
         # Hold "working" for working_hold_sec between tool calls
         # so Squid does not flicker to "thinking" in LLM-gen gaps.
         self.working_hold_until = 0.0
+        # Pink-2026-09-04: awake hold. A wake -- poke, sprint, or the
+        # 15-min periodic auto-wake -- used to live entirely in PetApi
+        # (wake_trigger_seq + user_wake_until), which only the frontend
+        # mood layer reads. The cascade below never heard about it, so it
+        # kept answering "sleeping" right through the awake window: the JS
+        # played stretch.png for 1.5s and then restored the sprite for the
+        # CURRENT state, which was still sleeping. She stretched and went
+        # straight back to sleep, and nothing that keys off state ran
+        # either (RoutineController gates its walk/look lap on
+        # state == "idle"). Suppressing the sleeping branch for the length
+        # of the hold puts one clock in charge, so every layer agrees.
+        self.awake_hold_until: float = 0.0
         # Agent-idle tracking: clock starts whenever state enters "idle".
         # Independent of macOS HID activity -- you can keep typing in Slack
         # and this clock still ticks up. Surfaced as
@@ -1084,6 +1096,16 @@ class StateMachine:
     _AGENT_ACTIVE_STATES = frozenset({
         "thinking", "working", "grooving", "celebrating", "concerned"
     })
+
+    def hold_awake_until(self, timestamp: float) -> None:
+        """Suppress the sleeping branch until `timestamp` (epoch seconds).
+
+        Called by PetApi._wake(), the shared helper behind poke, sprint and
+        the periodic auto-wake. Takes the LATER of the current hold and the
+        new one so a 60s poke landing inside a 180s auto-wake window extends
+        nothing and cuts nothing short.
+        """
+        self.awake_hold_until = max(self.awake_hold_until, timestamp)
 
     def compute(self, *, notify: bool = True) -> PetState:
         """Run the cascade, then layer in agent_idle_seconds tracking.
@@ -1433,8 +1455,13 @@ class StateMachine:
             or codex_celebrating
             or now < self.celebrate_until
         )
+        # A live awake hold (see __init__) outranks the quiet clock. It
+        # deliberately does NOT reset _agent_idle_since: the spec requires
+        # agent_idle_seconds to keep reflecting real agent activity, so when
+        # the hold lapses she drops back to sleeping in the same tick the
+        # frontend's own threshold does -- no second stretch, no drift.
         if (agent_quiet_for >= IDLE_THRESHOLD_SEC and not agent_actively_busy
-                and not celebration_pending):
+                and not celebration_pending and now >= self.awake_hold_until):
             st.state = "sleeping"
             st.state_reason = f"agents quiet {int(agent_quiet_for // 60)}m"
             st.message = f"💤 idle {int(agent_quiet_for // 60)}m"
